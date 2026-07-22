@@ -45,7 +45,7 @@ class DeviceBuffer final {
 };
 
 __global__ void VectorAddKernel(const float *left, const float *right, float *result, std::size_t element_count) {
-  const auto index = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  const auto index = (static_cast<std::size_t>(blockIdx.x) * blockDim.x) + threadIdx.x;
   if (index < element_count) {
     result[index] = left[index] + right[index];
   }
