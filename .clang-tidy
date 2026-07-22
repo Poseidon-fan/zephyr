@@ -62,7 +62,11 @@ CheckOptions:
   - { key: readability-identifier-naming.UnionCase,           value: CamelCase  }
   - { key: readability-identifier-naming.VariableCase,        value: lower_case }
 WarningsAsErrors: '*'
-HeaderFilterRegex: '/(src|test)/include'
+HeaderFilterRegex: '(^|.*/)(src|bindings/python|deps/ttl)/.*'
+ExcludeHeaderFilterRegex: '(^|.*/)deps/3rd/.*'
+HeaderFileExtensions: ['hpp']
+ImplementationFileExtensions: ['cpp', 'cu']
+SystemHeaders: false
 
 #### Disabled checks and why: #####
 #
