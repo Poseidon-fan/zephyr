@@ -1,4 +1,4 @@
-from ._C import VectorAdder as _NativeVectorAdder
+from ._C import VectorAdder as _NativeVectorAdder  # pyright: ignore[reportMissingModuleSource]
 
 
 class VectorAdder:
