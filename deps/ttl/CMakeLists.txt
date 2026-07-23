@@ -1,8 +1,10 @@
+option(TTL_BUILD_TESTING "Build the TTL test suite" OFF)
+
 file(
     GLOB_RECURSE TTL_SOURCES
     CONFIGURE_DEPENDS
-    "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/*.cu"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cu"
 )
 
 add_library(ttl STATIC ${TTL_SOURCES})
@@ -36,3 +38,8 @@ set_target_properties(
         CUDA_VISIBILITY_PRESET hidden
         VISIBILITY_INLINES_HIDDEN ON
 )
+
+if(TTL_BUILD_TESTING)
+    enable_testing()
+    add_subdirectory(test)
+endif()

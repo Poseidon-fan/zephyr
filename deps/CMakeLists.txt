@@ -1,3 +1,4 @@
+add_subdirectory(3rd)
 add_subdirectory(ttl)
 
 # Add other project-owned dependencies alongside ttl.
