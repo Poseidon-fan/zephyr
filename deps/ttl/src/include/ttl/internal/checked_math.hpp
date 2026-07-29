@@ -19,10 +19,8 @@ concept CheckedInteger = std::integral<T> && std::same_as<T, std::remove_cv_t<T>
                          !std::same_as<T, char> && !std::same_as<T, wchar_t> && !std::same_as<T, char8_t> &&
                          !std::same_as<T, char16_t> && !std::same_as<T, char32_t> && (sizeof(T) <= sizeof(uint64_t));
 
-namespace detail {
-
 template <CheckedInteger T>
-[[nodiscard]] auto IntegerToString(T value) -> std::string {
+[[nodiscard]] auto CheckedIntegerToString(T value) -> std::string {
   if constexpr (std::signed_integral<T>) {
     return std::to_string(static_cast<int64_t>(value));
   }
@@ -30,32 +28,32 @@ template <CheckedInteger T>
 }
 
 template <CheckedInteger T>
-[[noreturn]] void ThrowBinaryOverflow(std::string_view description, T lhs, std::string_view operation, T rhs,
-                                      std::source_location location) {
+[[noreturn]] void ThrowCheckedBinaryOverflow(std::string_view description, T lhs, std::string_view operation, T rhs,
+                                             std::source_location location) {
   std::string message;
   message.reserve(description.size() + operation.size() + 64);
   message.append(description);
   message.append(" overflow: ");
-  message.append(IntegerToString(lhs));
+  message.append(CheckedIntegerToString(lhs));
   message.push_back(' ');
   message.append(operation);
   message.push_back(' ');
-  message.append(IntegerToString(rhs));
+  message.append(CheckedIntegerToString(rhs));
   throw OverflowError(std::move(message), location);
 }
 
 template <CheckedInteger From>
-[[noreturn]] void ThrowNarrowingError(std::string_view description, From value, std::source_location location) {
+[[noreturn]] void ThrowCheckedNarrowingError(std::string_view description, From value, std::source_location location) {
   std::string message;
   message.reserve(description.size() + 64);
   message.append(description);
   message.append(" out of range: ");
-  message.append(IntegerToString(value));
+  message.append(CheckedIntegerToString(value));
   throw OverflowError(std::move(message), location);
 }
 
-[[noreturn]] inline void ThrowInvalidMathArgument(std::string_view description, std::string_view reason,
-                                                  std::source_location location) {
+[[noreturn]] inline void ThrowInvalidCheckedMathArgument(std::string_view description, std::string_view reason,
+                                                         std::source_location location) {
   std::string message;
   message.reserve(description.size() + reason.size() + 2);
   message.append(description);
@@ -64,15 +62,13 @@ template <CheckedInteger From>
   throw InvalidArgumentError(std::move(message), location);
 }
 
-}  // namespace detail
-
 template <CheckedInteger T>
 [[nodiscard]] auto CheckedAdd(T lhs, T rhs, std::string_view description,
                               std::source_location location = std::source_location::current()) -> T {
   // Arithmetic is checked against T's range; these helpers never widen the result type.
   T result;
   if (__builtin_add_overflow(lhs, rhs, &result)) {
-    detail::ThrowBinaryOverflow(description, lhs, "+", rhs, location);
+    ThrowCheckedBinaryOverflow(description, lhs, "+", rhs, location);
   }
   return result;
 }
@@ -82,7 +78,7 @@ template <CheckedInteger T>
                                    std::source_location location = std::source_location::current()) -> T {
   T result;
   if (__builtin_sub_overflow(lhs, rhs, &result)) {
-    detail::ThrowBinaryOverflow(description, lhs, "-", rhs, location);
+    ThrowCheckedBinaryOverflow(description, lhs, "-", rhs, location);
   }
   return result;
 }
@@ -92,7 +88,7 @@ template <CheckedInteger T>
                                    std::source_location location = std::source_location::current()) -> T {
   T result;
   if (__builtin_mul_overflow(lhs, rhs, &result)) {
-    detail::ThrowBinaryOverflow(description, lhs, "*", rhs, location);
+    ThrowCheckedBinaryOverflow(description, lhs, "*", rhs, location);
   }
   return result;
 }
@@ -101,7 +97,7 @@ template <CheckedInteger To, CheckedInteger From>
 [[nodiscard]] auto CheckedNarrow(From value, std::string_view description,
                                  std::source_location location = std::source_location::current()) -> To {
   if (!std::in_range<To>(value)) {
-    detail::ThrowNarrowingError(description, value, location);
+    ThrowCheckedNarrowingError(description, value, location);
   }
   return static_cast<To>(value);
 }
@@ -111,7 +107,7 @@ template <CheckedInteger T>
                                 std::source_location location = std::source_location::current()) -> size_t {
   if constexpr (std::signed_integral<T>) {
     if (num_elements < 0) {
-      detail::ThrowInvalidMathArgument("byte size", "element count must be non-negative", location);
+      ThrowInvalidCheckedMathArgument("byte size", "element count must be non-negative", location);
     }
   }
   const auto count = CheckedNarrow<size_t>(num_elements, "element count", location);
@@ -124,7 +120,7 @@ template <CheckedInteger T>
     -> size_t {
   if constexpr (std::signed_integral<T>) {
     if (offset < 0) {
-      detail::ThrowInvalidMathArgument("element offset", "must be non-negative", location);
+      ThrowInvalidCheckedMathArgument("element offset", "must be non-negative", location);
     }
   }
   const auto converted_offset = CheckedNarrow<size_t>(offset, "element offset", location);
@@ -134,7 +130,7 @@ template <CheckedInteger T>
 [[nodiscard]] inline auto AlignUp(size_t value, size_t alignment, std::string_view description = "alignment",
                                   std::source_location location = std::source_location::current()) -> size_t {
   if (!std::has_single_bit(alignment)) {
-    detail::ThrowInvalidMathArgument(description, "alignment must be a non-zero power of two", location);
+    ThrowInvalidCheckedMathArgument(description, "alignment must be a non-zero power of two", location);
   }
   const auto mask = alignment - 1;
   return CheckedAdd(value, mask, description, location) & ~mask;
@@ -144,11 +140,11 @@ template <CheckedInteger T>
 [[nodiscard]] auto CeilDivide(T dividend, T divisor, std::string_view description = "ceil divide",
                               std::source_location location = std::source_location::current()) -> T {
   if (divisor <= 0) {
-    detail::ThrowInvalidMathArgument(description, "divisor must be positive", location);
+    ThrowInvalidCheckedMathArgument(description, "divisor must be positive", location);
   }
   if constexpr (std::signed_integral<T>) {
     if (dividend < 0) {
-      detail::ThrowInvalidMathArgument(description, "dividend must be non-negative", location);
+      ThrowInvalidCheckedMathArgument(description, "dividend must be non-negative", location);
     }
   }
   return static_cast<T>((dividend / divisor) + static_cast<T>(dividend % divisor != 0));

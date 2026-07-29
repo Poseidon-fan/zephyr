@@ -4,6 +4,7 @@ file(
     GLOB_RECURSE TTL_TEST_SOURCES
     CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/*_test.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/*_test.cu"
 )
 
 add_custom_target(ttl_build_tests)
@@ -19,7 +20,7 @@ foreach(ttl_test_source IN LISTS TTL_TEST_SOURCES)
     file(RELATIVE_PATH ttl_test_relative_path "${CMAKE_CURRENT_SOURCE_DIR}" "${ttl_test_source}")
     get_filename_component(ttl_test_category "${ttl_test_relative_path}" DIRECTORY)
     string(REPLACE "/" "_" ttl_test_name "${ttl_test_relative_path}")
-    string(REGEX REPLACE "\\.cpp$" "" ttl_test_name "${ttl_test_name}")
+    string(REGEX REPLACE "\\.(cpp|cu)$" "" ttl_test_name "${ttl_test_name}")
     string(REPLACE "/" "_" ttl_test_category "${ttl_test_category}")
     if(ttl_test_category STREQUAL "")
         set(ttl_test_category general)
