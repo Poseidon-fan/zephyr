@@ -24,6 +24,7 @@ target_link_libraries(
     ttl
     PRIVATE
         zephyr::project_warnings
+        CUDA::cudart
         CUDA::cublas
         CUDA::cublasLt
         CUDA::curand

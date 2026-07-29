@@ -1,0 +1,56 @@
+#pragma once
+
+#include <cstdint>
+#include <optional>
+#include <source_location>
+#include <string_view>
+
+#include <cublas_v2.h>
+#include <cuda_runtime_api.h>
+#include <nccl.h>
+
+#include "ttl/device.hpp"
+#include "ttl/error_sink.hpp"
+
+namespace ttl::internal {
+
+/** Context attached to an error reported through ErrorSink. */
+struct ErrorReportContext final {
+  std::source_location location_;
+  std::optional<Device> device_;
+  std::optional<uint64_t> stream_id_;
+};
+
+/** Throw CudaError unless status is cudaSuccess. */
+void CheckCuda(cudaError_t status, std::string_view operation,
+               std::source_location location = std::source_location::current());
+
+/** Throw CublasError unless status is CUBLAS_STATUS_SUCCESS. */
+void CheckCublas(cublasStatus_t status, std::string_view operation,
+                 std::source_location location = std::source_location::current());
+
+/**
+ * Throw NcclError unless status is ncclSuccess.
+ *
+ * ncclInProgress is a valid state for selected nonblocking NCCL APIs, but is not success. Callers of those APIs must
+ * handle it before using this function.
+ */
+void CheckNccl(ncclResult_t status, std::string_view operation,
+               std::source_location location = std::source_location::current());
+
+/** Check the current thread's pending kernel launch error without clearing CUDA's last-error state. */
+void CheckCudaKernelLaunch(std::string_view kernel, std::source_location location = std::source_location::current());
+
+/** Report a CUDA failure without throwing. */
+void TryCuda(cudaError_t status, std::string_view operation, ErrorSink &error_sink,
+             const ErrorReportContext &context) noexcept;
+
+/** Report a cuBLAS failure without throwing. */
+void TryCublas(cublasStatus_t status, std::string_view operation, ErrorSink &error_sink,
+               const ErrorReportContext &context) noexcept;
+
+/** Report an NCCL failure without throwing. */
+void TryNccl(ncclResult_t status, std::string_view operation, ErrorSink &error_sink,
+             const ErrorReportContext &context) noexcept;
+
+}  // namespace ttl::internal
