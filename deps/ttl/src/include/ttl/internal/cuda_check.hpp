@@ -41,16 +41,16 @@ void CheckNccl(ncclResult_t status, std::string_view operation,
 /** Check the current thread's pending kernel launch error without clearing CUDA's last-error state. */
 void CheckCudaKernelLaunch(std::string_view kernel, std::source_location location = std::source_location::current());
 
-/** Report a CUDA failure without throwing. */
-void TryCuda(cudaError_t status, std::string_view operation, ErrorSink &error_sink,
-             const ErrorReportContext &context) noexcept;
+/** Return whether a CUDA call succeeded, reporting a failure without throwing. */
+auto TryCuda(cudaError_t status, std::string_view operation, ErrorSink &error_sink,
+             const ErrorReportContext &context) noexcept -> bool;
 
-/** Report a cuBLAS failure without throwing. */
-void TryCublas(cublasStatus_t status, std::string_view operation, ErrorSink &error_sink,
-               const ErrorReportContext &context) noexcept;
+/** Return whether a cuBLAS call succeeded, reporting a failure without throwing. */
+auto TryCublas(cublasStatus_t status, std::string_view operation, ErrorSink &error_sink,
+               const ErrorReportContext &context) noexcept -> bool;
 
-/** Report an NCCL failure without throwing. */
-void TryNccl(ncclResult_t status, std::string_view operation, ErrorSink &error_sink,
-             const ErrorReportContext &context) noexcept;
+/** Return whether an NCCL call succeeded, reporting a failure without throwing. */
+auto TryNccl(ncclResult_t status, std::string_view operation, ErrorSink &error_sink,
+             const ErrorReportContext &context) noexcept -> bool;
 
 }  // namespace ttl::internal

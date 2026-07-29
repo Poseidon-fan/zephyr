@@ -69,6 +69,9 @@ const CudaApi FAKE_CUDA_API{
     .get_device_properties_ = FakeGetDeviceProperties,
     .get_device_ = FakeGetDevice,
     .set_device_ = FakeSetDevice,
+    .get_stream_priority_range_ = cudaDeviceGetStreamPriorityRange,
+    .create_stream_with_priority_ = cudaStreamCreateWithPriority,
+    .destroy_stream_ = cudaStreamDestroy,
 };
 
 [[nodiscard]] auto MakeSupportedProperties() -> cudaDeviceProp {

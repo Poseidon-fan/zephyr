@@ -113,25 +113,31 @@ void CheckCudaKernelLaunch(std::string_view kernel, std::source_location locatio
   CheckCuda(cudaPeekAtLastError(), kernel, location);
 }
 
-void TryCuda(cudaError_t status, std::string_view operation, ErrorSink &error_sink,
-             const ErrorReportContext &context) noexcept {
-  if (status != cudaSuccess) {
-    TryReport(ErrorCode::CUDA, error_sink, context, [&] { return FormatCudaError(status, operation); });
+auto TryCuda(cudaError_t status, std::string_view operation, ErrorSink &error_sink,
+             const ErrorReportContext &context) noexcept -> bool {
+  if (status == cudaSuccess) {
+    return true;
   }
+  TryReport(ErrorCode::CUDA, error_sink, context, [&] { return FormatCudaError(status, operation); });
+  return false;
 }
 
-void TryCublas(cublasStatus_t status, std::string_view operation, ErrorSink &error_sink,
-               const ErrorReportContext &context) noexcept {
-  if (status != CUBLAS_STATUS_SUCCESS) {
-    TryReport(ErrorCode::CUBLAS, error_sink, context, [&] { return FormatCublasError(status, operation); });
+auto TryCublas(cublasStatus_t status, std::string_view operation, ErrorSink &error_sink,
+               const ErrorReportContext &context) noexcept -> bool {
+  if (status == CUBLAS_STATUS_SUCCESS) {
+    return true;
   }
+  TryReport(ErrorCode::CUBLAS, error_sink, context, [&] { return FormatCublasError(status, operation); });
+  return false;
 }
 
-void TryNccl(ncclResult_t status, std::string_view operation, ErrorSink &error_sink,
-             const ErrorReportContext &context) noexcept {
-  if (status != ncclSuccess) {
-    TryReport(ErrorCode::NCCL, error_sink, context, [&] { return FormatNcclError(status, operation); });
+auto TryNccl(ncclResult_t status, std::string_view operation, ErrorSink &error_sink,
+             const ErrorReportContext &context) noexcept -> bool {
+  if (status == ncclSuccess) {
+    return true;
   }
+  TryReport(ErrorCode::NCCL, error_sink, context, [&] { return FormatNcclError(status, operation); });
+  return false;
 }
 
 }  // namespace ttl::internal

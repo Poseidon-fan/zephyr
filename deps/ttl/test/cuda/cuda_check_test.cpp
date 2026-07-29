@@ -86,9 +86,9 @@ TEST(CudaCheckTest, TryFunctionsIgnoreSuccess) {
       .stream_id_ = uint64_t{9},
   };
 
-  TryCuda(cudaSuccess, "cuda success", error_sink, context);
-  TryCublas(CUBLAS_STATUS_SUCCESS, "cublas success", error_sink, context);
-  TryNccl(ncclSuccess, "nccl success", error_sink, context);
+  EXPECT_TRUE(TryCuda(cudaSuccess, "cuda success", error_sink, context));
+  EXPECT_TRUE(TryCublas(CUBLAS_STATUS_SUCCESS, "cublas success", error_sink, context));
+  EXPECT_TRUE(TryNccl(ncclSuccess, "nccl success", error_sink, context));
 
   EXPECT_EQ(error_sink.GetReportCount(), 0);
   EXPECT_FALSE(error_sink.GetRecord().has_value());
@@ -98,12 +98,12 @@ TEST(CudaCheckTest, TryCudaReportsOwningContextWithoutThrowing) {
   RecordingErrorSink error_sink;
   const auto location = std::source_location::current();
 
-  EXPECT_NO_THROW(TryCuda(cudaErrorInvalidDevice, "restore device", error_sink,
-                          ErrorReportContext{
-                              .location_ = location,
-                              .device_ = Device{3},
-                              .stream_id_ = uint64_t{42},
-                          }));
+  EXPECT_FALSE(TryCuda(cudaErrorInvalidDevice, "restore device", error_sink,
+                       ErrorReportContext{
+                           .location_ = location,
+                           .device_ = Device{3},
+                           .stream_id_ = uint64_t{42},
+                       }));
 
   ASSERT_TRUE(error_sink.GetRecord().has_value());
   const auto &record = *error_sink.GetRecord();
@@ -124,8 +124,8 @@ TEST(CudaCheckTest, TryCublasAndTryNcclReportCorrectCategories) {
       .stream_id_ = std::nullopt,
   };
 
-  TryCublas(CUBLAS_STATUS_EXECUTION_FAILED, "cublas launch", cublas_error_sink, context);
-  TryNccl(ncclInvalidUsage, "nccl enqueue", nccl_error_sink, context);
+  EXPECT_FALSE(TryCublas(CUBLAS_STATUS_EXECUTION_FAILED, "cublas launch", cublas_error_sink, context));
+  EXPECT_FALSE(TryNccl(ncclInvalidUsage, "nccl enqueue", nccl_error_sink, context));
 
   ASSERT_TRUE(cublas_error_sink.GetRecord().has_value());
   EXPECT_EQ(cublas_error_sink.GetRecord()->code_, ErrorCode::CUBLAS);

@@ -15,6 +15,9 @@ struct CudaApi final {
   decltype(&cudaGetDeviceProperties) get_device_properties_;
   decltype(&cudaGetDevice) get_device_;
   decltype(&cudaSetDevice) set_device_;
+  decltype(&cudaDeviceGetStreamPriorityRange) get_stream_priority_range_;
+  decltype(&cudaStreamCreateWithPriority) create_stream_with_priority_;
+  decltype(&cudaStreamDestroy) destroy_stream_;
 };
 
 /** Return the process-lifetime table backed by the real CUDA Runtime API. */
