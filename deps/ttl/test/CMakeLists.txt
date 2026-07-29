@@ -34,6 +34,7 @@ foreach(ttl_test_source IN LISTS TTL_TEST_SOURCES)
         PRIVATE
             ttl::ttl
             zephyr::project_warnings
+            CUDA::cudart
             GTest::gtest
             GTest::gmock_main
     )

@@ -11,6 +11,8 @@ namespace ttl::internal {
  * and the table must outlive every object that references it.
  */
 struct CudaApi final {
+  decltype(&cudaGetDeviceCount) get_device_count_;
+  decltype(&cudaGetDeviceProperties) get_device_properties_;
   decltype(&cudaGetDevice) get_device_;
   decltype(&cudaSetDevice) set_device_;
 };

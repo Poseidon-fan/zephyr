@@ -6,6 +6,8 @@ namespace ttl::internal {
 namespace {
 
 constinit const CudaApi CUDA_API{
+    .get_device_count_ = cudaGetDeviceCount,
+    .get_device_properties_ = cudaGetDeviceProperties,
     .get_device_ = cudaGetDevice,
     .set_device_ = cudaSetDevice,
 };

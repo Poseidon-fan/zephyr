@@ -46,6 +46,8 @@ auto FakeSetDevice(int device) -> cudaError_t {
 }
 
 const CudaApi FAKE_CUDA_API{
+    .get_device_count_ = cudaGetDeviceCount,
+    .get_device_properties_ = cudaGetDeviceProperties,
     .get_device_ = FakeGetDevice,
     .set_device_ = FakeSetDevice,
 };
