@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <optional>
 #include <source_location>
+#include <string>
 #include <string_view>
 #include <utility>
 
@@ -50,9 +51,16 @@ const CudaApi FAKE_CUDA_API{
     .get_device_properties_ = cudaGetDeviceProperties,
     .get_device_ = FakeGetDevice,
     .set_device_ = FakeSetDevice,
+    .get_last_error_ = cudaGetLastError,
     .get_stream_priority_range_ = cudaDeviceGetStreamPriorityRange,
     .create_stream_with_priority_ = cudaStreamCreateWithPriority,
     .destroy_stream_ = cudaStreamDestroy,
+    .create_event_with_flags_ = cudaEventCreateWithFlags,
+    .record_event_ = cudaEventRecord,
+    .query_event_ = cudaEventQuery,
+    .synchronize_event_ = cudaEventSynchronize,
+    .destroy_event_ = cudaEventDestroy,
+    .stream_wait_event_ = cudaStreamWaitEvent,
 };
 
 class RecordingErrorSink final : public ErrorSink {
@@ -73,6 +81,9 @@ class RecordingErrorSink final : public ErrorSink {
 class DeviceGuardTest : public testing::Test {
  protected:
   void SetUp() override { fake_cuda_state = FakeCudaState{}; }
+
+ private:
+  ScopedCudaApiOverride cuda_api_override_{FAKE_CUDA_API};
 };
 
 TEST_F(DeviceGuardTest, DoesNotSetOrRestoreWhenTargetIsAlreadyCurrent) {
@@ -80,7 +91,7 @@ TEST_F(DeviceGuardTest, DoesNotSetOrRestoreWhenTargetIsAlreadyCurrent) {
   RecordingErrorSink error_sink;
 
   {
-    DeviceGuard guard{Device{2}, error_sink, FAKE_CUDA_API};
+    DeviceGuard guard{Device{2}, error_sink};
     EXPECT_EQ(fake_cuda_state.current_device_, 2);
     EXPECT_EQ(fake_cuda_state.get_count_, 1);
     EXPECT_EQ(fake_cuda_state.set_count_, 0);
@@ -95,7 +106,7 @@ TEST_F(DeviceGuardTest, SwitchesToTargetAndRestoresPreviousDevice) {
   RecordingErrorSink error_sink;
 
   {
-    DeviceGuard guard{Device{3}, error_sink, FAKE_CUDA_API};
+    DeviceGuard guard{Device{3}, error_sink};
     EXPECT_EQ(fake_cuda_state.current_device_, 3);
     EXPECT_EQ(fake_cuda_state.set_count_, 1);
   }
@@ -112,7 +123,7 @@ TEST_F(DeviceGuardTest, GetDeviceFailureThrowsAtConstructionCallSite) {
   const auto location = std::source_location::current();
 
   try {
-    DeviceGuard guard{Device{1}, error_sink, FAKE_CUDA_API, location};
+    DeviceGuard guard{Device{1}, error_sink, location};
     FAIL() << "DeviceGuard did not throw";
   } catch (const CudaError &error) {
     EXPECT_NE(error.GetMessage().find("cudaGetDevice"), std::string_view::npos);
@@ -128,7 +139,7 @@ TEST_F(DeviceGuardTest, SetDeviceFailureDoesNotAttemptRestore) {
   fake_cuda_state.set_status_ = cudaErrorInvalidDevice;
   RecordingErrorSink error_sink;
 
-  EXPECT_THROW((DeviceGuard{Device{4}, error_sink, FAKE_CUDA_API}), CudaError);
+  EXPECT_THROW((DeviceGuard{Device{4}, error_sink}), CudaError);
 
   EXPECT_EQ(fake_cuda_state.current_device_, 0);
   EXPECT_EQ(fake_cuda_state.set_count_, 1);
@@ -141,7 +152,7 @@ TEST_F(DeviceGuardTest, RestoreFailureIsReportedWithoutEscapingDestructor) {
   const auto location = std::source_location::current();
 
   {
-    DeviceGuard guard{Device{2}, error_sink, FAKE_CUDA_API, location};
+    DeviceGuard guard{Device{2}, error_sink, location};
     ASSERT_EQ(fake_cuda_state.current_device_, 2);
     fake_cuda_state.set_status_ = cudaErrorInvalidDevice;
   }
@@ -155,6 +166,64 @@ TEST_F(DeviceGuardTest, RestoreFailureIsReportedWithoutEscapingDestructor) {
   EXPECT_FALSE(record.stream_id_.has_value());
   EXPECT_NE(record.message_.find("restore previous device"), std::string::npos);
   EXPECT_EQ(record.location_.line(), location.line());
+}
+
+TEST_F(DeviceGuardTest, CleanupGuardSwitchesAndRestoresWithoutThrowing) {
+  fake_cuda_state.current_device_ = 1;
+  RecordingErrorSink error_sink;
+  const ErrorReportContext context{
+      .location_ = std::source_location::current(),
+      .device_ = Device{2},
+      .stream_id_ = std::nullopt,
+  };
+
+  {
+    CleanupDeviceGuard guard{Device{2}, error_sink, context, "destroy test resource",
+                             "restore after test resource destruction"};
+    EXPECT_TRUE(guard);
+    EXPECT_EQ(fake_cuda_state.current_device_, 2);
+  }
+
+  EXPECT_EQ(fake_cuda_state.current_device_, 1);
+  EXPECT_EQ(fake_cuda_state.set_count_, 2);
+  EXPECT_EQ(error_sink.GetReportCount(), 0);
+}
+
+TEST_F(DeviceGuardTest, CleanupGuardReportsGetFailureAndRemainsInactive) {
+  fake_cuda_state.get_status_ = cudaErrorInitializationError;
+  RecordingErrorSink error_sink;
+  const ErrorReportContext context{
+      .location_ = std::source_location::current(),
+      .device_ = Device{2},
+      .stream_id_ = std::nullopt,
+  };
+
+  CleanupDeviceGuard guard{Device{2}, error_sink, context, "destroy test resource",
+                           "restore after test resource destruction"};
+
+  EXPECT_FALSE(guard);
+  EXPECT_EQ(fake_cuda_state.set_count_, 0);
+  ASSERT_TRUE(error_sink.GetRecord().has_value());
+  EXPECT_NE(error_sink.GetRecord()->message_.find("cudaGetDevice (destroy test resource)"), std::string::npos);
+}
+
+TEST_F(DeviceGuardTest, CleanupGuardReportsSetFailureAndRemainsInactive) {
+  fake_cuda_state.current_device_ = 0;
+  fake_cuda_state.set_status_ = cudaErrorInvalidDevice;
+  RecordingErrorSink error_sink;
+  const ErrorReportContext context{
+      .location_ = std::source_location::current(),
+      .device_ = Device{2},
+      .stream_id_ = std::nullopt,
+  };
+
+  CleanupDeviceGuard guard{Device{2}, error_sink, context, "destroy test resource",
+                           "restore after test resource destruction"};
+
+  EXPECT_FALSE(guard);
+  EXPECT_EQ(fake_cuda_state.set_count_, 1);
+  ASSERT_TRUE(error_sink.GetRecord().has_value());
+  EXPECT_NE(error_sink.GetRecord()->message_.find("cudaSetDevice (destroy test resource)"), std::string::npos);
 }
 
 }  // namespace

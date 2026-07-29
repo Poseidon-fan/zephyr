@@ -45,6 +45,10 @@ void CheckCudaKernelLaunch(std::string_view kernel, std::source_location locatio
 auto TryCuda(cudaError_t status, std::string_view operation, ErrorSink &error_sink,
              const ErrorReportContext &context) noexcept -> bool;
 
+/** As above, appending a parenthesized detail to the operation name only on failure. */
+auto TryCuda(cudaError_t status, std::string_view operation, std::string_view detail, ErrorSink &error_sink,
+             const ErrorReportContext &context) noexcept -> bool;
+
 /** Return whether a cuBLAS call succeeded, reporting a failure without throwing. */
 auto TryCublas(cublasStatus_t status, std::string_view operation, ErrorSink &error_sink,
                const ErrorReportContext &context) noexcept -> bool;

@@ -8,6 +8,7 @@
 #include <cuda_runtime_api.h>
 
 #include "ttl/error.hpp"
+#include "ttl/internal/cuda_api.hpp"
 #include "ttl/internal/cuda_check.hpp"
 
 namespace ttl::internal {
@@ -81,10 +82,7 @@ void ValidateNativeProperties(Device device, const cudaDeviceProp &properties, s
 }  // namespace
 
 auto QueryDeviceProperties(Device device, std::source_location location) -> DeviceProperties {
-  return QueryDeviceProperties(device, GetCudaApi(), location);
-}
-
-auto QueryDeviceProperties(Device device, const CudaApi &cuda_api, std::source_location location) -> DeviceProperties {
+  const auto &cuda_api = GetCudaApi();
   int device_count = 0;
   CheckCuda(cuda_api.get_device_count_(&device_count), "cudaGetDeviceCount", location);
   if (device_count < 0) {

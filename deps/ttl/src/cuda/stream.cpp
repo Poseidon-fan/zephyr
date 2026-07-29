@@ -64,19 +64,17 @@ void ValidateExternalStream(cudaStream_t stream, std::source_location location) 
 }  // namespace
 
 StreamState::StreamState(Device device, int32_t priority, std::shared_ptr<ErrorSink> error_sink,
-                         const CudaApi &cuda_api, std::source_location location)
+                         std::source_location location)
     : id_(NextStreamId(location)),
       device_(device),
       stream_(nullptr),
       error_sink_(std::move(error_sink)),
-      get_device_(cuda_api.get_device_),
-      set_device_(cuda_api.set_device_),
-      destroy_stream_(cuda_api.destroy_stream_),
       location_(location),
       is_external_(false) {
   ValidateErrorSink(error_sink_, location_);
 
-  DeviceGuard device_guard{device_, *error_sink_, cuda_api, location_};
+  DeviceGuard device_guard{device_, *error_sink_, location_};
+  const auto &cuda_api = GetCudaApi();
   int least_priority = 0;
   int greatest_priority = 0;
   CheckCuda(cuda_api.get_stream_priority_range_(&least_priority, &greatest_priority),
@@ -96,15 +94,12 @@ StreamState::StreamState(Device device, int32_t priority, std::shared_ptr<ErrorS
 }
 
 StreamState::StreamState(Device device, cudaStream_t stream, std::shared_ptr<void> external_owner,
-                         std::shared_ptr<ErrorSink> error_sink, const CudaApi &cuda_api, std::source_location location)
+                         std::shared_ptr<ErrorSink> error_sink, std::source_location location)
     : id_(NextStreamId(location)),
       device_(device),
       stream_(stream),
       external_owner_(std::move(external_owner)),
       error_sink_(std::move(error_sink)),
-      get_device_(cuda_api.get_device_),
-      set_device_(cuda_api.set_device_),
-      destroy_stream_(cuda_api.destroy_stream_),
       location_(location),
       is_external_(true) {
   ValidateErrorSink(error_sink_, location_);
@@ -122,22 +117,12 @@ StreamState::~StreamState() noexcept {
       .stream_id_ = id_,
   };
 
-  // Switch device manully because noexcept destructors cannot throw.
-  int previous_device = -1;
-  if (!TryCuda(get_device_(&previous_device), "cudaGetDevice (destroy stream)", *error_sink_, context)) {
+  CleanupDeviceGuard device_guard{device_, *error_sink_, context, "destroy stream", "restore after stream destruction"};
+  if (!device_guard) {
     return;
   }
 
-  const bool changed_device = previous_device != device_.GetOrdinal();
-  if (changed_device &&
-      !TryCuda(set_device_(device_.GetOrdinal()), "cudaSetDevice (destroy stream)", *error_sink_, context)) {
-    return;
-  }
-
-  TryCuda(destroy_stream_(stream_), "cudaStreamDestroy", *error_sink_, context);
-  if (changed_device) {
-    TryCuda(set_device_(previous_device), "cudaSetDevice (restore after stream destruction)", *error_sink_, context);
-  }
+  TryCuda(GetCudaApi().destroy_stream_(stream_), "cudaStreamDestroy", *error_sink_, context);
 }
 
 auto StreamState::GetId() const noexcept -> uint64_t { return id_; }
@@ -150,21 +135,20 @@ auto StreamState::IsExternal() const noexcept -> bool { return is_external_; }
 
 auto StreamAccess::CreateOwned(Device device, int32_t priority, std::shared_ptr<ErrorSink> error_sink,
                                std::source_location location) -> Stream {
-  return CreateOwned(device, priority, std::move(error_sink), GetCudaApi(), location);
-}
-
-auto StreamAccess::CreateOwned(Device device, int32_t priority, std::shared_ptr<ErrorSink> error_sink,
-                               const CudaApi &cuda_api, std::source_location location) -> Stream {
-  return Stream{std::make_shared<StreamState>(device, priority, std::move(error_sink), cuda_api, location)};
+  return Stream{std::make_shared<StreamState>(device, priority, std::move(error_sink), location)};
 }
 
 auto StreamAccess::WrapExternal(Device device, cudaStream_t stream, std::shared_ptr<void> external_owner,
                                 std::shared_ptr<ErrorSink> error_sink, std::source_location location) -> Stream {
-  return Stream{std::make_shared<StreamState>(device, stream, std::move(external_owner), std::move(error_sink),
-                                              GetCudaApi(), location)};
+  return Stream{
+      std::make_shared<StreamState>(device, stream, std::move(external_owner), std::move(error_sink), location)};
 }
 
 auto StreamAccess::GetState(const Stream &stream) noexcept -> std::shared_ptr<StreamState> { return stream.state_; }
+
+auto StreamAccess::GetErrorSink(const Stream &stream) noexcept -> std::shared_ptr<ErrorSink> {
+  return stream.state_->error_sink_;
+}
 
 auto StreamAccess::GetNative(const Stream &stream) noexcept -> cudaStream_t { return stream.state_->GetNative(); }
 

@@ -97,9 +97,16 @@ const CudaApi FAKE_CUDA_API{
     .get_device_properties_ = cudaGetDeviceProperties,
     .get_device_ = FakeGetDevice,
     .set_device_ = FakeSetDevice,
+    .get_last_error_ = cudaGetLastError,
     .get_stream_priority_range_ = FakeGetStreamPriorityRange,
     .create_stream_with_priority_ = FakeCreateStreamWithPriority,
     .destroy_stream_ = FakeDestroyStream,
+    .create_event_with_flags_ = cudaEventCreateWithFlags,
+    .record_event_ = cudaEventRecord,
+    .query_event_ = cudaEventQuery,
+    .synchronize_event_ = cudaEventSynchronize,
+    .destroy_event_ = cudaEventDestroy,
+    .stream_wait_event_ = cudaStreamWaitEvent,
 };
 
 class RecordingErrorSink final : public ErrorSink {
@@ -123,6 +130,9 @@ class StreamTest : public testing::Test {
     fake_cuda_state = FakeCudaState{};
     fake_cuda_state.stream_to_create_ = reinterpret_cast<cudaStream_t>(&fake_stream_storage);
   }
+
+ private:
+  ScopedCudaApiOverride cuda_api_override_{FAKE_CUDA_API};
 };
 
 TEST_F(StreamTest, CreatesNonBlockingOwnedStreamAndSharesItsIdentity) {
@@ -131,7 +141,7 @@ TEST_F(StreamTest, CreatesNonBlockingOwnedStreamAndSharesItsIdentity) {
   uint64_t stream_id = 0;
 
   {
-    const auto stream = StreamAccess::CreateOwned(Device{2}, -2, error_sink, FAKE_CUDA_API);
+    const auto stream = StreamAccess::CreateOwned(Device{2}, -2, error_sink);
     const auto stream_copy = stream;
     stream_id = stream.GetId();
 
@@ -158,8 +168,8 @@ TEST_F(StreamTest, AssignsDistinctProcessWideIds) {
   const auto error_sink = std::make_shared<RecordingErrorSink>();
   fake_cuda_state.current_device_ = 0;
 
-  const auto first = StreamAccess::CreateOwned(Device{0}, 0, error_sink, FAKE_CUDA_API);
-  const auto second = StreamAccess::CreateOwned(Device{0}, 0, error_sink, FAKE_CUDA_API);
+  const auto first = StreamAccess::CreateOwned(Device{0}, 0, error_sink);
+  const auto second = StreamAccess::CreateOwned(Device{0}, 0, error_sink);
 
   EXPECT_NE(first.GetId(), second.GetId());
 }
@@ -169,7 +179,7 @@ TEST_F(StreamTest, KeepsCleanupErrorSinkAliveUntilTheLastStreamOwner) {
   const std::weak_ptr<RecordingErrorSink> weak_error_sink = error_sink;
 
   {
-    const auto stream = StreamAccess::CreateOwned(Device{0}, 0, error_sink, FAKE_CUDA_API);
+    const auto stream = StreamAccess::CreateOwned(Device{0}, 0, error_sink);
     error_sink.reset();
     EXPECT_FALSE(weak_error_sink.expired());
   }
@@ -183,7 +193,7 @@ TEST_F(StreamTest, KeepsNativeStreamAliveThroughInternalStateLease) {
   std::shared_ptr<StreamState> state_lease;
 
   {
-    const auto stream = StreamAccess::CreateOwned(Device{0}, 0, error_sink, FAKE_CUDA_API);
+    const auto stream = StreamAccess::CreateOwned(Device{0}, 0, error_sink);
     state_lease = StreamAccess::GetState(stream);
   }
 
@@ -197,7 +207,7 @@ TEST_F(StreamTest, RejectsPriorityOutsideDeviceRangeAtCallSite) {
   const auto location = std::source_location::current();
 
   try {
-    static_cast<void>(StreamAccess::CreateOwned(Device{0}, -4, error_sink, FAKE_CUDA_API, location));
+    static_cast<void>(StreamAccess::CreateOwned(Device{0}, -4, error_sink, location));
     FAIL() << "CreateOwned did not throw";
   } catch (const InvalidArgumentError &error) {
     EXPECT_THAT(error.GetMessage(), HasSubstr("priority -4"));
@@ -213,29 +223,29 @@ TEST_F(StreamTest, RejectsPriorityOutsideDeviceRangeAtCallSite) {
 TEST_F(StreamTest, ReportsPriorityQueryAndCreationFailures) {
   const auto error_sink = std::make_shared<RecordingErrorSink>();
   fake_cuda_state.get_priority_range_status_ = cudaErrorInitializationError;
-  EXPECT_THROW(static_cast<void>(StreamAccess::CreateOwned(Device{0}, 0, error_sink, FAKE_CUDA_API)), CudaError);
+  EXPECT_THROW(static_cast<void>(StreamAccess::CreateOwned(Device{0}, 0, error_sink)), CudaError);
   EXPECT_EQ(fake_cuda_state.create_stream_call_count_, 0);
 
   fake_cuda_state.get_priority_range_status_ = cudaSuccess;
   fake_cuda_state.create_stream_status_ = cudaErrorDevicesUnavailable;
-  EXPECT_THROW(static_cast<void>(StreamAccess::CreateOwned(Device{0}, 0, error_sink, FAKE_CUDA_API)), CudaError);
+  EXPECT_THROW(static_cast<void>(StreamAccess::CreateOwned(Device{0}, 0, error_sink)), CudaError);
 }
 
 TEST_F(StreamTest, RejectsInvalidSuccessfulCudaResults) {
   const auto error_sink = std::make_shared<RecordingErrorSink>();
   fake_cuda_state.least_priority_ = -3;
   fake_cuda_state.greatest_priority_ = 0;
-  EXPECT_THROW(static_cast<void>(StreamAccess::CreateOwned(Device{0}, 0, error_sink, FAKE_CUDA_API)), InternalError);
+  EXPECT_THROW(static_cast<void>(StreamAccess::CreateOwned(Device{0}, 0, error_sink)), InternalError);
   EXPECT_EQ(fake_cuda_state.create_stream_call_count_, 0);
 
   fake_cuda_state.least_priority_ = 0;
   fake_cuda_state.greatest_priority_ = -3;
   fake_cuda_state.stream_to_create_ = nullptr;
-  EXPECT_THROW(static_cast<void>(StreamAccess::CreateOwned(Device{0}, 0, error_sink, FAKE_CUDA_API)), InternalError);
+  EXPECT_THROW(static_cast<void>(StreamAccess::CreateOwned(Device{0}, 0, error_sink)), InternalError);
 }
 
 TEST_F(StreamTest, RejectsNullErrorSinkBeforeCallingCuda) {
-  EXPECT_THROW(static_cast<void>(StreamAccess::CreateOwned(Device{0}, 0, std::shared_ptr<ErrorSink>{}, FAKE_CUDA_API)),
+  EXPECT_THROW(static_cast<void>(StreamAccess::CreateOwned(Device{0}, 0, std::shared_ptr<ErrorSink>{})),
                InvalidArgumentError);
   EXPECT_EQ(fake_cuda_state.get_device_call_count_, 0);
   EXPECT_EQ(fake_cuda_state.create_stream_call_count_, 0);
@@ -247,7 +257,7 @@ TEST_F(StreamTest, ReportsDestroyFailureWithDeviceStreamAndCallSite) {
   uint64_t stream_id = 0;
 
   {
-    const auto stream = StreamAccess::CreateOwned(Device{0}, 0, error_sink, FAKE_CUDA_API, location);
+    const auto stream = StreamAccess::CreateOwned(Device{0}, 0, error_sink, location);
     stream_id = stream.GetId();
     fake_cuda_state.destroy_stream_status_ = cudaErrorInvalidResourceHandle;
   }
@@ -266,7 +276,7 @@ TEST_F(StreamTest, DoesNotDestroyWhenCleanupCannotSelectTheOwningDevice) {
   const auto error_sink = std::make_shared<RecordingErrorSink>();
 
   {
-    const auto stream = StreamAccess::CreateOwned(Device{0}, 0, error_sink, FAKE_CUDA_API);
+    const auto stream = StreamAccess::CreateOwned(Device{0}, 0, error_sink);
     fake_cuda_state.fail_set_device_ = 0;
   }
 
@@ -279,7 +289,7 @@ TEST_F(StreamTest, DoesNotDestroyWhenCleanupCannotReadTheCurrentDevice) {
   const auto error_sink = std::make_shared<RecordingErrorSink>();
 
   {
-    const auto stream = StreamAccess::CreateOwned(Device{0}, 0, error_sink, FAKE_CUDA_API);
+    const auto stream = StreamAccess::CreateOwned(Device{0}, 0, error_sink);
     fake_cuda_state.get_device_status_ = cudaErrorInitializationError;
   }
 
@@ -293,7 +303,7 @@ TEST_F(StreamTest, ReportsRestoreFailureAfterDestroyingOwnedStream) {
   const auto error_sink = std::make_shared<RecordingErrorSink>();
 
   {
-    const auto stream = StreamAccess::CreateOwned(Device{0}, 0, error_sink, FAKE_CUDA_API);
+    const auto stream = StreamAccess::CreateOwned(Device{0}, 0, error_sink);
     fake_cuda_state.fail_set_device_ = 1;
   }
 

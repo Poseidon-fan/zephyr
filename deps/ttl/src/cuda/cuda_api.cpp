@@ -1,5 +1,8 @@
 #include "ttl/internal/cuda_api.hpp"
 
+#include <atomic>
+#include <exception>
+
 #include <cuda_runtime_api.h>
 
 namespace ttl::internal {
@@ -10,13 +13,31 @@ constinit const CudaApi CUDA_API{
     .get_device_properties_ = cudaGetDeviceProperties,
     .get_device_ = cudaGetDevice,
     .set_device_ = cudaSetDevice,
+    .get_last_error_ = cudaGetLastError,
     .get_stream_priority_range_ = cudaDeviceGetStreamPriorityRange,
     .create_stream_with_priority_ = cudaStreamCreateWithPriority,
     .destroy_stream_ = cudaStreamDestroy,
+    .create_event_with_flags_ = cudaEventCreateWithFlags,
+    .record_event_ = cudaEventRecord,
+    .query_event_ = cudaEventQuery,
+    .synchronize_event_ = cudaEventSynchronize,
+    .destroy_event_ = cudaEventDestroy,
+    .stream_wait_event_ = cudaStreamWaitEvent,
 };
+
+constinit std::atomic<const CudaApi *> active_cuda_api{&CUDA_API};
 
 }  // namespace
 
-auto GetCudaApi() noexcept -> const CudaApi & { return CUDA_API; }
+auto GetCudaApi() noexcept -> const CudaApi & { return *active_cuda_api.load(std::memory_order_acquire); }
+
+ScopedCudaApiOverride::ScopedCudaApiOverride(const CudaApi &cuda_api) noexcept
+    : cuda_api_(&cuda_api), previous_cuda_api_(active_cuda_api.exchange(cuda_api_, std::memory_order_acq_rel)) {}
+
+ScopedCudaApiOverride::~ScopedCudaApiOverride() noexcept {
+  if (active_cuda_api.exchange(previous_cuda_api_, std::memory_order_acq_rel) != cuda_api_) {
+    std::terminate();
+  }
+}
 
 }  // namespace ttl::internal

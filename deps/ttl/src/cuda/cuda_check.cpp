@@ -122,6 +122,23 @@ auto TryCuda(cudaError_t status, std::string_view operation, ErrorSink &error_si
   return false;
 }
 
+auto TryCuda(cudaError_t status, std::string_view operation, std::string_view detail, ErrorSink &error_sink,
+             const ErrorReportContext &context) noexcept -> bool {
+  if (status == cudaSuccess) {
+    return true;
+  }
+  TryReport(ErrorCode::CUDA, error_sink, context, [&] {
+    std::string qualified_operation;
+    qualified_operation.reserve(operation.size() + detail.size() + 3);
+    qualified_operation.append(operation);
+    qualified_operation.append(" (");
+    qualified_operation.append(detail);
+    qualified_operation.push_back(')');
+    return FormatCudaError(status, qualified_operation);
+  });
+  return false;
+}
+
 auto TryCublas(cublasStatus_t status, std::string_view operation, ErrorSink &error_sink,
                const ErrorReportContext &context) noexcept -> bool {
   if (status == CUBLAS_STATUS_SUCCESS) {

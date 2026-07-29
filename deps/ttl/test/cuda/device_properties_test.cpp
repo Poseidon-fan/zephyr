@@ -69,9 +69,16 @@ const CudaApi FAKE_CUDA_API{
     .get_device_properties_ = FakeGetDeviceProperties,
     .get_device_ = FakeGetDevice,
     .set_device_ = FakeSetDevice,
+    .get_last_error_ = cudaGetLastError,
     .get_stream_priority_range_ = cudaDeviceGetStreamPriorityRange,
     .create_stream_with_priority_ = cudaStreamCreateWithPriority,
     .destroy_stream_ = cudaStreamDestroy,
+    .create_event_with_flags_ = cudaEventCreateWithFlags,
+    .record_event_ = cudaEventRecord,
+    .query_event_ = cudaEventQuery,
+    .synchronize_event_ = cudaEventSynchronize,
+    .destroy_event_ = cudaEventDestroy,
+    .stream_wait_event_ = cudaStreamWaitEvent,
 };
 
 [[nodiscard]] auto MakeSupportedProperties() -> cudaDeviceProp {
@@ -95,6 +102,9 @@ class DevicePropertiesTest : public testing::Test {
     fake_cuda_state = FakeCudaState{};
     fake_cuda_state.properties_ = MakeSupportedProperties();
   }
+
+ private:
+  ScopedCudaApiOverride cuda_api_override_{FAKE_CUDA_API};
 };
 
 TEST(ComputeCapabilityTest, EncodesSmVersionWithoutNarrowing) {
@@ -114,7 +124,7 @@ TEST_F(DevicePropertiesTest, QueriesAndMapsValidatedPropertiesWithoutChangingCur
   fake_cuda_state.properties_.minor = 0;
   fake_cuda_state.properties_.clusterLaunch = 1;
 
-  const auto properties = QueryDeviceProperties(Device{1}, FAKE_CUDA_API);
+  const auto properties = QueryDeviceProperties(Device{1});
 
   EXPECT_EQ(properties.device_, Device{1});
   EXPECT_EQ(properties.name_, "NVIDIA Test GPU");
@@ -132,7 +142,7 @@ TEST_F(DevicePropertiesTest, QueriesAndMapsValidatedPropertiesWithoutChangingCur
 TEST_F(DevicePropertiesTest, AcceptsNonNullTerminatedCudaDeviceName) {
   std::fill(std::begin(fake_cuda_state.properties_.name), std::end(fake_cuda_state.properties_.name), 'x');
 
-  const auto properties = QueryDeviceProperties(Device{0}, FAKE_CUDA_API);
+  const auto properties = QueryDeviceProperties(Device{0});
 
   EXPECT_EQ(properties.name_, std::string(sizeof(fake_cuda_state.properties_.name), 'x'));
 }
@@ -142,7 +152,7 @@ TEST_F(DevicePropertiesTest, ReportsDeviceCountFailureAtCallSite) {
   const auto location = std::source_location::current();
 
   try {
-    static_cast<void>(QueryDeviceProperties(Device{0}, FAKE_CUDA_API, location));
+    static_cast<void>(QueryDeviceProperties(Device{0}, location));
     FAIL() << "QueryDeviceProperties did not throw";
   } catch (const CudaError &error) {
     EXPECT_THAT(error.GetMessage(), HasSubstr("cudaGetDeviceCount"));
@@ -156,7 +166,7 @@ TEST_F(DevicePropertiesTest, ReportsDeviceCountFailureAtCallSite) {
 TEST_F(DevicePropertiesTest, RejectsNegativeDeviceCountAsInternalError) {
   fake_cuda_state.device_count_ = -1;
 
-  EXPECT_THROW(static_cast<void>(QueryDeviceProperties(Device{0}, FAKE_CUDA_API)), InternalError);
+  EXPECT_THROW(static_cast<void>(QueryDeviceProperties(Device{0})), InternalError);
   EXPECT_EQ(fake_cuda_state.get_device_properties_call_count_, 0);
 }
 
@@ -165,7 +175,7 @@ TEST_F(DevicePropertiesTest, RejectsOrdinalOutsideVisibleDeviceRange) {
   const auto location = std::source_location::current();
 
   try {
-    static_cast<void>(QueryDeviceProperties(Device{1}, FAKE_CUDA_API, location));
+    static_cast<void>(QueryDeviceProperties(Device{1}, location));
     FAIL() << "QueryDeviceProperties did not throw";
   } catch (const InvalidArgumentError &error) {
     EXPECT_THAT(error.GetMessage(), HasSubstr("device ordinal 1"));
@@ -182,7 +192,7 @@ TEST_F(DevicePropertiesTest, ReportsDevicePropertiesFailure) {
   fake_cuda_state.get_device_properties_status_ = cudaErrorInvalidDevice;
 
   try {
-    static_cast<void>(QueryDeviceProperties(Device{0}, FAKE_CUDA_API));
+    static_cast<void>(QueryDeviceProperties(Device{0}));
     FAIL() << "QueryDeviceProperties did not throw";
   } catch (const CudaError &error) {
     EXPECT_THAT(error.GetMessage(), HasSubstr("cudaGetDeviceProperties"));
@@ -197,7 +207,7 @@ TEST_F(DevicePropertiesTest, RejectsDevicesBelowSm80) {
   fake_cuda_state.properties_.minor = 9;
 
   try {
-    static_cast<void>(QueryDeviceProperties(Device{0}, FAKE_CUDA_API));
+    static_cast<void>(QueryDeviceProperties(Device{0}));
     FAIL() << "QueryDeviceProperties did not throw";
   } catch (const NotSupportedError &error) {
     EXPECT_THAT(error.GetMessage(), HasSubstr("7.9"));
@@ -211,29 +221,29 @@ TEST_F(DevicePropertiesTest, RejectsDevicesBelowSm80) {
 TEST_F(DevicePropertiesTest, RejectsInvalidComputeCapabilityFromCuda) {
   fake_cuda_state.properties_.minor = 10;
 
-  EXPECT_THROW(static_cast<void>(QueryDeviceProperties(Device{0}, FAKE_CUDA_API)), InternalError);
+  EXPECT_THROW(static_cast<void>(QueryDeviceProperties(Device{0})), InternalError);
 }
 
 TEST_F(DevicePropertiesTest, RejectsUnsupportedExecutionCapabilities) {
   fake_cuda_state.properties_.warpSize = 16;
-  EXPECT_THROW(static_cast<void>(QueryDeviceProperties(Device{0}, FAKE_CUDA_API)), NotSupportedError);
+  EXPECT_THROW(static_cast<void>(QueryDeviceProperties(Device{0})), NotSupportedError);
 
   fake_cuda_state.properties_ = MakeSupportedProperties();
   fake_cuda_state.properties_.memoryPoolsSupported = 0;
-  EXPECT_THROW(static_cast<void>(QueryDeviceProperties(Device{0}, FAKE_CUDA_API)), NotSupportedError);
+  EXPECT_THROW(static_cast<void>(QueryDeviceProperties(Device{0})), NotSupportedError);
 
   fake_cuda_state.properties_ = MakeSupportedProperties();
   fake_cuda_state.properties_.computeMode = cudaComputeModeProhibited;
-  EXPECT_THROW(static_cast<void>(QueryDeviceProperties(Device{0}, FAKE_CUDA_API)), NotSupportedError);
+  EXPECT_THROW(static_cast<void>(QueryDeviceProperties(Device{0})), NotSupportedError);
 }
 
 TEST_F(DevicePropertiesTest, RejectsInvalidLaunchResourceProperties) {
   fake_cuda_state.properties_.multiProcessorCount = 0;
-  EXPECT_THROW(static_cast<void>(QueryDeviceProperties(Device{0}, FAKE_CUDA_API)), InternalError);
+  EXPECT_THROW(static_cast<void>(QueryDeviceProperties(Device{0})), InternalError);
 
   fake_cuda_state.properties_ = MakeSupportedProperties();
   fake_cuda_state.properties_.sharedMemPerBlockOptin = 0;
-  EXPECT_THROW(static_cast<void>(QueryDeviceProperties(Device{0}, FAKE_CUDA_API)), InternalError);
+  EXPECT_THROW(static_cast<void>(QueryDeviceProperties(Device{0})), InternalError);
 }
 
 }  // namespace
