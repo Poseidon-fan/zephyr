@@ -12,6 +12,7 @@ using testing::HasSubstr;
 
 TEST(ErrorCodeTest, ConvertsEveryCodeToString) {
   EXPECT_EQ(ErrorCodeToString(ErrorCode::INVALID_ARGUMENT), "INVALID_ARGUMENT");
+  EXPECT_EQ(ErrorCodeToString(ErrorCode::OVERFLOW), "OVERFLOW");
   EXPECT_EQ(ErrorCodeToString(ErrorCode::NOT_SUPPORTED), "NOT_SUPPORTED");
   EXPECT_EQ(ErrorCodeToString(ErrorCode::OUT_OF_MEMORY), "OUT_OF_MEMORY");
   EXPECT_EQ(ErrorCodeToString(ErrorCode::CUDA), "CUDA");
@@ -38,6 +39,7 @@ TEST(ErrorTest, PreservesStructuredFieldsAndFormatsWhat) {
 
 TEST(ErrorTest, DerivedErrorsAreCatchableAsError) {
   EXPECT_THROW({ throw CudaError("cudaSetDevice failed"); }, Error);
+  EXPECT_THROW({ throw OverflowError("tensor byte size overflow"); }, Error);
 }
 
 }  // namespace ttl

@@ -36,6 +36,7 @@ foreach(ttl_test_source IN LISTS TTL_TEST_SOURCES)
             GTest::gtest
             GTest::gmock_main
     )
+    target_include_directories(${ttl_test_name} PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../src/include")
 
     set_target_properties(
         ${ttl_test_name}

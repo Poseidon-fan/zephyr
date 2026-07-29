@@ -17,6 +17,7 @@ namespace ttl {
  */
 enum class ErrorCode : uint8_t {
   INVALID_ARGUMENT,
+  OVERFLOW,
   NOT_SUPPORTED,
   OUT_OF_MEMORY,
   CUDA,
@@ -32,6 +33,8 @@ enum class ErrorCode : uint8_t {
   switch (code) {
     case ErrorCode::INVALID_ARGUMENT:
       return "INVALID_ARGUMENT";
+    case ErrorCode::OVERFLOW:
+      return "OVERFLOW";
     case ErrorCode::NOT_SUPPORTED:
       return "NOT_SUPPORTED";
     case ErrorCode::OUT_OF_MEMORY:
@@ -78,6 +81,13 @@ class InvalidArgumentError final : public Error {
  public:
   explicit InvalidArgumentError(std::string message, std::source_location location = std::source_location::current())
       : Error(ErrorCode::INVALID_ARGUMENT, std::move(message), location) {}
+};
+
+/** An integer calculation or checked conversion cannot be represented by its destination type. */
+class OverflowError final : public Error {
+ public:
+  explicit OverflowError(std::string message, std::source_location location = std::source_location::current())
+      : Error(ErrorCode::OVERFLOW, std::move(message), location) {}
 };
 
 /** The requested operation is outside TTL's documented hardware, dtype, layout, or API support boundary. */
