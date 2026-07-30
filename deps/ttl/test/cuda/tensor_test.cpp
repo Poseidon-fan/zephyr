@@ -162,6 +162,8 @@ auto FakeGetPointerAttributes(cudaPointerAttributes *attributes, const void * /*
   return cuda_api;
 }
 
+const CudaApi FAKE_CUDA_API = MakeFakeCudaApi();
+
 class RecordingErrorSink final : public ErrorSink {
  public:
   void Report(ErrorRecord /*error*/) noexcept override { report_count_.fetch_add(1, std::memory_order_relaxed); }
@@ -212,8 +214,7 @@ class TensorTest : public testing::Test {
   std::unique_ptr<Stream> allocation_stream_;
 
  private:
-  CudaApi cuda_api_{MakeFakeCudaApi()};
-  ScopedCudaApiOverride cuda_api_override_{cuda_api_};
+  ScopedCudaApiOverride cuda_api_override_{FAKE_CUDA_API};
 };
 
 TEST(TensorFlagsTest, StoresIndependentFlags) {

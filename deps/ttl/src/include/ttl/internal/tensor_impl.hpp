@@ -101,4 +101,7 @@ class TensorAccess final {
                           std::source_location location = std::source_location::current());
 };
 
+/** Return whether a layout maps every logical element to one unique element in one dense storage interval. */
+[[nodiscard]] auto IsNonOverlappingDenseLayout(const Shape &shape, const Strides &strides) noexcept -> bool;
+
 }  // namespace ttl::internal

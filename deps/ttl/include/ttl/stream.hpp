@@ -27,6 +27,8 @@ class Stream final {
   Stream() = delete;
   Stream(const Stream &) noexcept = default;
   auto operator=(const Stream &) noexcept -> Stream & = default;
+  Stream(Stream &&) noexcept = default;
+  auto operator=(Stream &&) noexcept -> Stream & = default;
 
   [[nodiscard]] auto GetDevice() const noexcept -> Device;
   [[nodiscard]] auto GetId() const noexcept -> uint64_t;
@@ -44,5 +46,7 @@ static_assert(!std::default_initializable<Stream>);
 static_assert(std::copy_constructible<Stream>);
 static_assert(std::is_nothrow_copy_constructible_v<Stream>);
 static_assert(std::is_nothrow_copy_assignable_v<Stream>);
+static_assert(std::is_nothrow_move_constructible_v<Stream>);
+static_assert(std::is_nothrow_move_assignable_v<Stream>);
 
 }  // namespace ttl

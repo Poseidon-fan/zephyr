@@ -303,6 +303,8 @@ auto FakeCanAccessPeer(int *can_access, int /* device */, int /* peer */) -> cud
   return cuda_api;
 }
 
+const CudaApi FAKE_CUDA_API = MakeFakeCudaApi();
+
 class RecordingErrorSink final : public ErrorSink {
  public:
   void Report(ErrorRecord error) noexcept override {
@@ -348,8 +350,7 @@ class DeviceAllocatorTest : public testing::Test {
   void SetUp() override { ResetFakeCudaState(); }
 
  private:
-  CudaApi cuda_api_{MakeFakeCudaApi()};
-  ScopedCudaApiOverride cuda_api_override_{cuda_api_};
+  ScopedCudaApiOverride cuda_api_override_{FAKE_CUDA_API};
 };
 
 TEST_F(DeviceAllocatorTest, CreatesPrivatePoolAndRepresentsZeroByteStorageWithoutCudaAllocation) {

@@ -13,7 +13,10 @@
 #include "ttl/device.hpp"
 #include "ttl/dtype.hpp"
 #include "ttl/error.hpp"
+#include "ttl/execution_context.hpp"
 #include "ttl/internal/checked_math.hpp"
+#include "ttl/internal/device_allocator.hpp"
+#include "ttl/internal/execution_context.hpp"
 #include "ttl/internal/storage.hpp"
 #include "ttl/internal/tensor_impl.hpp"
 #include "ttl/shape.hpp"
@@ -85,7 +88,7 @@ void ValidateTensorStorage(const Storage &storage, const TensorByteRange &byte_r
   return false;
 }
 
-[[nodiscard]] auto IsNonOverlappingDense(const Shape &shape, const Strides &strides) noexcept -> bool {
+[[nodiscard]] auto ComputeIsNonOverlappingDense(const Shape &shape, const Strides &strides) noexcept -> bool {
   if (shape.GetNumElements() <= 1) {
     return true;
   }
@@ -122,7 +125,7 @@ void ValidateTensorStorage(const Storage &storage, const TensorByteRange &byte_r
   if (HasZeroStride(shape, strides)) {
     flags.Set(TensorFlag::HAS_ZERO_STRIDE);
   }
-  if (IsNonOverlappingDense(shape, strides)) {
+  if (ComputeIsNonOverlappingDense(shape, strides)) {
     flags.Set(TensorFlag::NON_OVERLAPPING_DENSE);
   }
   return flags;
@@ -137,6 +140,10 @@ void ValidateTensorStorage(const Storage &storage, const TensorByteRange &byte_r
 }
 
 }  // namespace
+
+auto IsNonOverlappingDenseLayout(const Shape &shape, const Strides &strides) noexcept -> bool {
+  return shape.GetRank() == strides.GetRank() && ComputeIsNonOverlappingDense(shape, strides);
+}
 
 TensorImpl::TensorImpl(std::shared_ptr<Storage> storage, DType dtype, Shape shape, Strides strides,
                        int64_t storage_offset, TensorFlags flags) noexcept
@@ -279,6 +286,33 @@ auto ClassifyAlias(const Tensor &lhs, const Tensor &rhs, std::source_location lo
     }
   }
   return AliasKind::MAY_OVERLAP;
+}
+
+auto Empty(ExecutionContext &context, const Shape &shape, DType dtype, std::source_location location) -> Tensor {
+  return EmptyStrided(context, shape, GetContiguousStrides(shape, location), dtype, location);
+}
+
+auto EmptyStrided(ExecutionContext &context, const Shape &shape, const Strides &strides, DType dtype,
+                  std::source_location location) -> Tensor {
+  internal::ContextUseGuard use_guard{context, internal::ContextUseMode::SUBMIT, location};
+  if (shape.GetRank() != strides.GetRank()) {
+    throw InvalidArgumentError("empty-strided shape and strides must have the same rank", location);
+  }
+  if (!internal::IsNonOverlappingDenseLayout(shape, strides)) {
+    throw InvalidArgumentError("empty-strided layout must be non-overlapping and dense", location);
+  }
+
+  const auto dtype_info = GetDTypeInfo(dtype, location);
+  const auto bytes = internal::CheckedBytes(shape.GetNumElements(), dtype_info.size_bytes_, location);
+  auto storage = internal::ContextAccess::GetAllocator(context, location)
+                     ->Allocate(context.GetStream(), bytes, 256,
+                                internal::AllocationContext{
+                                    .operation_ = "EmptyStrided",
+                                    .output_shape_ = shape,
+                                    .dtype_ = dtype,
+                                    .location_ = location,
+                                });
+  return internal::TensorFactory::Create(std::move(storage), dtype, shape, strides, 0, location);
 }
 
 }  // namespace ttl

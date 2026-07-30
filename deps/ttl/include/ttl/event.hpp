@@ -27,6 +27,8 @@ class Event final {
   Event() = delete;
   Event(const Event &) noexcept = default;
   auto operator=(const Event &) noexcept -> Event & = default;
+  Event(Event &&) noexcept = default;
+  auto operator=(Event &&) noexcept -> Event & = default;
 
   [[nodiscard]] auto GetDevice() const noexcept -> Device;
   [[nodiscard]] auto Query(std::source_location location = std::source_location::current()) const -> bool;
@@ -44,5 +46,7 @@ static_assert(!std::default_initializable<Event>);
 static_assert(std::copy_constructible<Event>);
 static_assert(std::is_nothrow_copy_constructible_v<Event>);
 static_assert(std::is_nothrow_copy_assignable_v<Event>);
+static_assert(std::is_nothrow_move_constructible_v<Event>);
+static_assert(std::is_nothrow_move_assignable_v<Event>);
 
 }  // namespace ttl

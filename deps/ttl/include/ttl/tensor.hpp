@@ -20,6 +20,8 @@ class TensorImpl;
 
 namespace ttl {
 
+class ExecutionContext;
+
 /** Conservative relationship between the storage regions reachable by two tensors. */
 enum class AliasKind : uint8_t {
   DISJOINT,
@@ -80,5 +82,13 @@ class Tensor final {
  */
 [[nodiscard]] auto ClassifyAlias(const Tensor &lhs, const Tensor &rhs,
                                  std::source_location location = std::source_location::current()) -> AliasKind;
+
+/** Allocate an uninitialized contiguous tensor on the execution context's device and stream. */
+[[nodiscard]] auto Empty(ExecutionContext &context, const Shape &shape, DType dtype,
+                         std::source_location location = std::source_location::current()) -> Tensor;
+
+/** Allocate an uninitialized non-overlapping dense tensor with explicit element strides. */
+[[nodiscard]] auto EmptyStrided(ExecutionContext &context, const Shape &shape, const Strides &strides, DType dtype,
+                                std::source_location location = std::source_location::current()) -> Tensor;
 
 }  // namespace ttl

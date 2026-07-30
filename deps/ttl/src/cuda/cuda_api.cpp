@@ -14,6 +14,7 @@ constinit const CudaApi CUDA_API{
     .get_device_ = cudaGetDevice,
     .set_device_ = cudaSetDevice,
     .get_last_error_ = cudaGetLastError,
+    .peek_at_last_error_ = cudaPeekAtLastError,
     .get_stream_priority_range_ = cudaDeviceGetStreamPriorityRange,
     .create_stream_with_priority_ = cudaStreamCreateWithPriority,
     .destroy_stream_ = cudaStreamDestroy,

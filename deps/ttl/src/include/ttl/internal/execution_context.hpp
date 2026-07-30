@@ -1,0 +1,98 @@
+#pragma once
+
+#include <atomic>
+#include <cstdint>
+#include <memory>
+#include <optional>
+#include <source_location>
+#include <vector>
+
+#include <cuda_runtime_api.h>
+
+#include "ttl/error_sink.hpp"
+#include "ttl/execution_context.hpp"
+#include "ttl/internal/device_allocator.hpp"
+#include "ttl/internal/event_pool.hpp"
+#include "ttl/stream.hpp"
+
+namespace ttl {
+
+class Runtime;
+
+}  // namespace ttl
+
+namespace ttl::internal {
+
+class DeviceContext;
+class RuntimeState;
+
+enum class ExecutionContextStatus : uint8_t {
+  READY,
+  FAILED,
+};
+
+enum class ContextUseMode : uint8_t {
+  SUBMIT,
+  CLEANUP,
+};
+
+class ExecutionContextImpl final {
+ public:
+  ExecutionContextImpl(std::shared_ptr<RuntimeState> runtime_state, std::shared_ptr<DeviceContext> device_context,
+                       Stream stream, std::vector<Stream> auxiliary_streams, std::optional<PooledEvent> fork_event,
+                       std::vector<PooledEvent> join_events) noexcept;
+
+  ExecutionContextImpl(const ExecutionContextImpl &) = delete;
+  auto operator=(const ExecutionContextImpl &) -> ExecutionContextImpl & = delete;
+  ExecutionContextImpl(ExecutionContextImpl &&) = delete;
+  auto operator=(ExecutionContextImpl &&) -> ExecutionContextImpl & = delete;
+
+  ~ExecutionContextImpl() noexcept;
+
+  std::shared_ptr<RuntimeState> runtime_state_;
+  std::shared_ptr<DeviceContext> device_context_;
+  Stream stream_;
+  std::vector<Stream> auxiliary_streams_;
+  std::optional<PooledEvent> fork_event_;
+  std::vector<PooledEvent> join_events_;
+  std::atomic_flag in_use_ = ATOMIC_FLAG_INIT;
+  std::atomic<ExecutionContextStatus> status_{ExecutionContextStatus::READY};
+};
+
+/** Reject concurrent host use of one ExecutionContext without silently serializing it. */
+class ContextUseGuard final {
+ public:
+  ContextUseGuard(ExecutionContext &context, ContextUseMode mode, std::source_location location);
+
+  ContextUseGuard(const ContextUseGuard &) = delete;
+  auto operator=(const ContextUseGuard &) -> ContextUseGuard & = delete;
+  ContextUseGuard(ContextUseGuard &&) = delete;
+  auto operator=(ContextUseGuard &&) -> ContextUseGuard & = delete;
+
+  ~ContextUseGuard() noexcept;
+
+ private:
+  ExecutionContextImpl &impl_;
+};
+
+/** Private construction and resource gateway for Runtime and operator implementations. */
+class ContextAccess final {
+ public:
+  [[nodiscard]] static auto Create(const std::shared_ptr<RuntimeState> &runtime_state,
+                                   std::shared_ptr<DeviceContext> device_context, Stream stream,
+                                   const ExecutionContextOptions &options, std::source_location location)
+      -> ExecutionContext;
+  [[nodiscard]] static auto GetImpl(ExecutionContext &context, std::source_location location) -> ExecutionContextImpl &;
+  [[nodiscard]] static auto GetRuntimeState(ExecutionContext &context, std::source_location location)
+      -> const std::shared_ptr<RuntimeState> &;
+  [[nodiscard]] static auto GetDeviceContext(ExecutionContext &context, std::source_location location)
+      -> const std::shared_ptr<DeviceContext> &;
+  [[nodiscard]] static auto GetAllocator(ExecutionContext &context, std::source_location location)
+      -> const std::shared_ptr<DeviceAllocator> &;
+  [[nodiscard]] static auto GetErrorSink(ExecutionContext &context, std::source_location location)
+      -> const std::shared_ptr<ErrorSink> &;
+  [[nodiscard]] static auto GetStream(ExecutionContext &context, std::source_location location) -> const Stream &;
+  [[nodiscard]] static auto GetNativeStream(ExecutionContext &context, std::source_location location) -> cudaStream_t;
+};
+
+}  // namespace ttl::internal

@@ -498,6 +498,7 @@ class DeviceAllocatorImpl final {
     CheckCuda(GetCudaApi().trim_memory_pool_(pool_, 0), "cudaMemPoolTrimTo", location);
     CheckCuda(GetCudaApi().destroy_memory_pool_(pool_), "cudaMemPoolDestroy", location);
     pool_ = nullptr;
+    reclaim_stream_.reset();
     status_.store(AllocatorStatus::CLOSED, std::memory_order_release);
   }
 

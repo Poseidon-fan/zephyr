@@ -19,6 +19,7 @@ struct CudaApi final {
   decltype(&cudaGetDevice) get_device_;
   decltype(&cudaSetDevice) set_device_;
   decltype(&cudaGetLastError) get_last_error_;
+  decltype(&cudaPeekAtLastError) peek_at_last_error_;
   decltype(&cudaDeviceGetStreamPriorityRange) get_stream_priority_range_;
   decltype(&cudaStreamCreateWithPriority) create_stream_with_priority_;
   decltype(&cudaStreamDestroy) destroy_stream_;
