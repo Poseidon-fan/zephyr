@@ -47,11 +47,18 @@ OpGuard::OpGuard(ExecutionContext &context, std::string_view operation, std::sou
 }
 
 void OpGuard::RecordTensorOnStream(const Tensor &tensor, const Stream &stream) {
-  Storage &storage = *TensorAccess::GetStorage(tensor, location_);
-  if (storage.GetDevice() != context_.GetDevice() || stream.GetDevice() != context_.GetDevice()) {
+  ValidateTensor(tensor);
+  if (stream.GetDevice() != context_.GetDevice()) {
+    throw InvalidArgumentError("operator stream device does not match the execution context", location_);
+  }
+  TensorAccess::GetStorage(tensor, location_)->RecordUsage(stream);
+}
+
+void OpGuard::ValidateTensor(const Tensor &tensor) const {
+  const auto &storage = *TensorAccess::GetStorage(tensor, location_);
+  if (storage.GetDevice() != context_.GetDevice()) {
     throw InvalidArgumentError(FormatWrongTensorDevice(context_.GetDevice(), storage.GetDevice()), location_);
   }
-  storage.RecordUsage(stream);
 }
 
 void OpGuard::RecordTensor(const Tensor &tensor) { RecordTensorOnStream(tensor, context_.GetStream()); }

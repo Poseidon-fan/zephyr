@@ -37,18 +37,18 @@ enum class IteratorPath : uint8_t {
 };
 
 struct ElementwiseParameters32 final {
-  std::array<std::byte *, TTL_MAX_ITERATOR_OPERANDS> pointers_{};
-  std::array<std::array<uint32_t, TTL_MAX_RANK>, TTL_MAX_ITERATOR_OPERANDS> strides_bytes_{};
-  std::array<uint32_t, TTL_MAX_RANK> shape_{};
+  std::byte *pointers_[TTL_MAX_ITERATOR_OPERANDS]{};
+  uint32_t strides_bytes_[TTL_MAX_ITERATOR_OPERANDS][TTL_MAX_RANK]{};
+  uint32_t shape_[TTL_MAX_RANK]{};
   uint32_t num_elements_{0};
   uint8_t rank_{0};
   uint8_t operand_count_{0};
 };
 
 struct ElementwiseParameters64 final {
-  std::array<std::byte *, TTL_MAX_ITERATOR_OPERANDS> pointers_{};
-  std::array<std::array<uint64_t, TTL_MAX_RANK>, TTL_MAX_ITERATOR_OPERANDS> strides_bytes_{};
-  std::array<uint64_t, TTL_MAX_RANK> shape_{};
+  std::byte *pointers_[TTL_MAX_ITERATOR_OPERANDS]{};
+  uint64_t strides_bytes_[TTL_MAX_ITERATOR_OPERANDS][TTL_MAX_RANK]{};
+  uint64_t shape_[TTL_MAX_RANK]{};
   uint64_t num_elements_{0};
   uint8_t rank_{0};
   uint8_t operand_count_{0};

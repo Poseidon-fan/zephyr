@@ -236,6 +236,8 @@ concept TensorStorageType = !std::is_volatile_v<T> && requires {
 };
 
 template <TensorStorageType T>
+// CUDA-mode clang-tidy misclassifies this dependent constexpr variable template as dynamically initialized.
+// NOLINTNEXTLINE(bugprone-dynamic-static-initializers)
 inline constexpr DType DTYPE_OF = DTypeOf<std::remove_cv_t<T>>::VALUE;
 
 template <DType dtype>

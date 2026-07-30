@@ -101,6 +101,8 @@ concept CudaStorageType = !std::is_volatile_v<T> && requires {
 };
 
 template <CudaStorageType T>
+// CUDA-mode clang-tidy misclassifies this dependent constexpr variable template as dynamically initialized.
+// NOLINTNEXTLINE(bugprone-dynamic-static-initializers)
 inline constexpr DType CUDA_DTYPE_OF = CudaDTypeOf<std::remove_cv_t<T>>::VALUE;
 
 static_assert(sizeof(CudaTypeForT<DType::BOOL>) == sizeof(StorageTypeForT<DType::BOOL>));
@@ -113,9 +115,8 @@ static_assert(sizeof(CudaTypeForT<DType::BFLOAT16>) == sizeof(StorageTypeForT<DT
 static_assert(alignof(CudaTypeForT<DType::BFLOAT16>) == alignof(StorageTypeForT<DType::BFLOAT16>));
 
 template <typename Function, typename Type>
-concept CudaDTypeVisitorForOne = requires(Function &&function) {
-  std::forward<Function>(function)(std::type_identity<Type>{});
-};
+concept CudaDTypeVisitorForOne =
+    requires(Function &&function) { std::forward<Function>(function)(std::type_identity<Type>{}); };
 
 template <typename Function, typename... Types>
 concept CudaDTypeVisitorFor = (CudaDTypeVisitorForOne<Function, Types> && ...);
@@ -153,9 +154,9 @@ concept CudaDTypeVisitorFor = (CudaDTypeVisitorForOne<Function, Types> && ...);
  * Every specialization must return one common type.
  */
 template <typename Function>
-requires CudaDTypeVisitorFor<Function &&, CudaTypeForT<DType::BOOL>, CudaTypeForT<DType::UINT8>,
-                             CudaTypeForT<DType::INT32>, CudaTypeForT<DType::INT64>, CudaTypeForT<DType::FLOAT16>,
-                             CudaTypeForT<DType::BFLOAT16>, CudaTypeForT<DType::FLOAT32>>
+  requires CudaDTypeVisitorFor<Function &&, CudaTypeForT<DType::BOOL>, CudaTypeForT<DType::UINT8>,
+                               CudaTypeForT<DType::INT32>, CudaTypeForT<DType::INT64>, CudaTypeForT<DType::FLOAT16>,
+                               CudaTypeForT<DType::BFLOAT16>, CudaTypeForT<DType::FLOAT32>>
 auto DispatchCudaDType(DType dtype, std::string_view operation, Function &&function,
                        std::source_location location = std::source_location::current()) -> decltype(auto) {
   switch (dtype) {
@@ -179,9 +180,9 @@ auto DispatchCudaDType(DType dtype, std::string_view operation, Function &&funct
 
 /** Dispatch UINT8, INT32, INT64, FLOAT16, BFLOAT16, or FLOAT32; BOOL is excluded. */
 template <typename Function>
-requires CudaDTypeVisitorFor<Function &&, CudaTypeForT<DType::UINT8>, CudaTypeForT<DType::INT32>,
-                             CudaTypeForT<DType::INT64>, CudaTypeForT<DType::FLOAT16>, CudaTypeForT<DType::BFLOAT16>,
-                             CudaTypeForT<DType::FLOAT32>>
+  requires CudaDTypeVisitorFor<Function &&, CudaTypeForT<DType::UINT8>, CudaTypeForT<DType::INT32>,
+                               CudaTypeForT<DType::INT64>, CudaTypeForT<DType::FLOAT16>, CudaTypeForT<DType::BFLOAT16>,
+                               CudaTypeForT<DType::FLOAT32>>
 auto DispatchCudaNumericDType(DType dtype, std::string_view operation, Function &&function,
                               std::source_location location = std::source_location::current()) -> decltype(auto) {
   switch (dtype) {
@@ -205,8 +206,8 @@ auto DispatchCudaNumericDType(DType dtype, std::string_view operation, Function 
 
 /** Dispatch UINT8, INT32, or INT64; BOOL is excluded. */
 template <typename Function>
-requires CudaDTypeVisitorFor<Function &&, CudaTypeForT<DType::UINT8>, CudaTypeForT<DType::INT32>,
-                             CudaTypeForT<DType::INT64>>
+  requires CudaDTypeVisitorFor<Function &&, CudaTypeForT<DType::UINT8>, CudaTypeForT<DType::INT32>,
+                               CudaTypeForT<DType::INT64>>
 auto DispatchCudaIntegralDType(DType dtype, std::string_view operation, Function &&function,
                                std::source_location location = std::source_location::current()) -> decltype(auto) {
   switch (dtype) {
@@ -227,8 +228,8 @@ auto DispatchCudaIntegralDType(DType dtype, std::string_view operation, Function
 
 /** Dispatch FLOAT16, BFLOAT16, or FLOAT32. */
 template <typename Function>
-requires CudaDTypeVisitorFor<Function &&, CudaTypeForT<DType::FLOAT16>, CudaTypeForT<DType::BFLOAT16>,
-                             CudaTypeForT<DType::FLOAT32>>
+  requires CudaDTypeVisitorFor<Function &&, CudaTypeForT<DType::FLOAT16>, CudaTypeForT<DType::BFLOAT16>,
+                               CudaTypeForT<DType::FLOAT32>>
 auto DispatchCudaFloatingDType(DType dtype, std::string_view operation, Function &&function,
                                std::source_location location = std::source_location::current()) -> decltype(auto) {
   switch (dtype) {

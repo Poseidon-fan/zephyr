@@ -33,6 +33,8 @@ constinit const CudaApi CUDA_API{
     .trim_memory_pool_ = cudaMemPoolTrimTo,
     .malloc_from_pool_async_ = static_cast<CudaApi::MallocFromPoolAsync>(cudaMallocFromPoolAsync),
     .free_async_ = cudaFreeAsync,
+    .memset_async_ = cudaMemsetAsync,
+    .memcpy_async_ = cudaMemcpyAsync,
     .get_memory_info_ = cudaMemGetInfo,
     .get_pointer_attributes_ = cudaPointerGetAttributes,
     .can_access_peer_ = cudaDeviceCanAccessPeer,

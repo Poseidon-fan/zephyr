@@ -38,6 +38,8 @@ struct CudaApi final {
   decltype(&cudaMemPoolTrimTo) trim_memory_pool_;
   MallocFromPoolAsync malloc_from_pool_async_;
   decltype(&cudaFreeAsync) free_async_;
+  decltype(&cudaMemsetAsync) memset_async_;
+  decltype(&cudaMemcpyAsync) memcpy_async_;
   decltype(&cudaMemGetInfo) get_memory_info_;
   decltype(&cudaPointerGetAttributes) get_pointer_attributes_;
   decltype(&cudaDeviceCanAccessPeer) can_access_peer_;

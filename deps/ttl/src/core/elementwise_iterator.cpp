@@ -473,10 +473,12 @@ auto ElementwiseIterator::MakeParameters32(std::source_location location) const 
   }
 
   ElementwiseParameters32 parameters;
-  parameters.pointers_ = pointers_;
   parameters.num_elements_ = static_cast<uint32_t>(num_elements_);
   parameters.rank_ = rank_;
   parameters.operand_count_ = operand_count_;
+  for (size_t operand = 0; operand < operand_count_; ++operand) {
+    parameters.pointers_[operand] = pointers_[operand];
+  }
   for (size_t axis = 0; axis < rank_; ++axis) {
     parameters.shape_[axis] = static_cast<uint32_t>(iteration_shape_[axis]);
     for (size_t operand = 0; operand < operand_count_; ++operand) {
@@ -488,12 +490,18 @@ auto ElementwiseIterator::MakeParameters32(std::source_location location) const 
 
 auto ElementwiseIterator::MakeParameters64() const noexcept -> ElementwiseParameters64 {
   ElementwiseParameters64 parameters;
-  parameters.pointers_ = pointers_;
-  parameters.strides_bytes_ = strides_bytes_;
-  parameters.shape_ = iteration_shape_;
   parameters.num_elements_ = static_cast<uint64_t>(num_elements_);
   parameters.rank_ = rank_;
   parameters.operand_count_ = operand_count_;
+  for (size_t operand = 0; operand < operand_count_; ++operand) {
+    parameters.pointers_[operand] = pointers_[operand];
+    for (size_t axis = 0; axis < rank_; ++axis) {
+      parameters.strides_bytes_[operand][axis] = strides_bytes_[operand][axis];
+    }
+  }
+  for (size_t axis = 0; axis < rank_; ++axis) {
+    parameters.shape_[axis] = iteration_shape_[axis];
+  }
   return parameters;
 }
 

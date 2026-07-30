@@ -28,6 +28,7 @@ class OpGuard final {
   OpGuard(OpGuard &&) = delete;
   auto operator=(OpGuard &&) -> OpGuard & = delete;
 
+  void ValidateTensor(const Tensor &tensor) const;
   void RecordTensor(const Tensor &tensor);
   void CheckLaunch() const;
 
