@@ -201,6 +201,15 @@ auto TensorAccess::GetStorage(const Tensor &tensor, std::source_location locatio
   return GetImpl(tensor, location).GetStorage();
 }
 
+auto TensorAccess::GetData(const Tensor &tensor, std::source_location location) -> const void * {
+  const auto &impl = GetImpl(tensor, location);
+  return tensor.GetDataPointer(impl.GetDType(), location);
+}
+
+auto TensorAccess::GetMutableData(Tensor &tensor, std::source_location location) -> void * {
+  return const_cast<void *>(GetData(tensor, location));
+}
+
 void TensorAccess::RecordUsage(const Tensor &tensor, const Stream &stream, std::source_location location) {
   GetStorage(tensor, location)->RecordUsage(stream);
 }

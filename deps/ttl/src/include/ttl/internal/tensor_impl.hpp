@@ -89,6 +89,10 @@ class TensorAccess final {
   [[nodiscard]] static auto GetStorage(const Tensor &tensor,
                                        std::source_location location = std::source_location::current())
       -> const std::shared_ptr<Storage> &;
+  [[nodiscard]] static auto GetData(const Tensor &tensor,
+                                    std::source_location location = std::source_location::current()) -> const void *;
+  [[nodiscard]] static auto GetMutableData(Tensor &tensor,
+                                           std::source_location location = std::source_location::current()) -> void *;
 
   template <TensorStorageType T>
   [[nodiscard]] static auto GetMutableData(Tensor &tensor,

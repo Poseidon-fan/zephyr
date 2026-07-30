@@ -21,10 +21,12 @@
 #include "ttl/internal/allocation.hpp"
 #include "ttl/internal/cuda_api.hpp"
 #include "ttl/internal/device_allocator.hpp"
+#include "ttl/internal/elementwise_iterator.hpp"
 #include "ttl/internal/event_pool.hpp"
 #include "ttl/internal/storage.hpp"
 #include "ttl/internal/stream.hpp"
 #include "ttl/internal/tensor_impl.hpp"
+#include "ttl/layout.hpp"
 #include "ttl/shape.hpp"
 #include "ttl/stream.hpp"
 
@@ -436,6 +438,298 @@ TEST_F(TensorTest, RejectsMovedFromTensorAtCheckedOperationBoundaries) {
   EXPECT_THROW([[maybe_unused]] const auto *data = tensor.GetData<float>(), InvalidArgumentError);
   // NOLINTNEXTLINE(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
   EXPECT_THROW([[maybe_unused]] const auto alias = ClassifyAlias(tensor, moved_tensor), InvalidArgumentError);
+}
+
+TEST_F(TensorTest, CreatesCompatibleViewsAndInfersReshapeDimensions) {
+  auto storage = MakeStorage(1024);
+  const auto input = TensorFactory::Create(storage, DType::FLOAT32, Shape{2, 3, 4}, Strides{12, 4, 1}, 2);
+
+  const auto matrix = View(input, Shape{6, 4});
+  EXPECT_EQ(matrix.GetShape(), Shape({6, 4}));
+  EXPECT_EQ(matrix.GetStrides(), Strides({4, 1}));
+  EXPECT_EQ(matrix.GetStorageOffset(), 2);
+  EXPECT_EQ(matrix.GetData<float>(), input.GetData<float>());
+
+  constexpr std::array<int64_t, 3> requested{2, -1, 2};
+  EXPECT_EQ(InferReshape(input, requested), Shape({2, 6, 2}));
+  const auto inferred = View(input, requested);
+  EXPECT_EQ(inferred.GetShape(), Shape({2, 6, 2}));
+  EXPECT_EQ(inferred.GetStrides(), Strides({12, 2, 1}));
+
+  const auto transposed = Transpose(input, 0, 1);
+  EXPECT_THROW([[maybe_unused]] const auto flattened = View(transposed, Shape{24}), InvalidArgumentError);
+
+  const auto size_one = TensorFactory::Create(storage, DType::FLOAT32, Shape{2, 1, 3}, Strides{3, 99, 1}, 0);
+  const auto removed_size_one = View(size_one, Shape{2, 3});
+  EXPECT_EQ(removed_size_one.GetStrides(), Strides({3, 1}));
+
+  auto empty_storage = MakeStorage(0);
+  const auto empty = TensorFactory::Create(empty_storage, DType::FLOAT32, Shape{2, 0, 3}, Strides{0, 0, 0}, 0);
+  const auto reshaped_empty = View(empty, Shape{0, 6});
+  EXPECT_EQ(reshaped_empty.GetStrides(), Strides({6, 1}));
+  EXPECT_EQ(reshaped_empty.GetData<float>(), nullptr);
+}
+
+TEST_F(TensorTest, RejectsInvalidReshapeRequests) {
+  auto storage = MakeStorage(64);
+  const auto input = TensorFactory::Create(storage, DType::FLOAT32, Shape{2, 3}, Strides{3, 1}, 0);
+  const auto empty = TensorFactory::Create(MakeStorage(0), DType::FLOAT32, Shape{0, 3}, Strides{3, 1}, 0);
+
+  constexpr std::array<int64_t, 2> multiple_inferred{-1, -1};
+  constexpr std::array<int64_t, 1> negative{-2};
+  constexpr std::array<int64_t, 2> wrong_count{4, 2};
+  constexpr std::array<int64_t, 2> nonintegral{-1, 4};
+  constexpr std::array<int64_t, 2> empty_inferred{-1, 3};
+
+  EXPECT_THROW([[maybe_unused]] const auto shape = InferReshape(input, multiple_inferred), InvalidArgumentError);
+  EXPECT_THROW([[maybe_unused]] const auto shape = InferReshape(input, negative), InvalidArgumentError);
+  EXPECT_THROW([[maybe_unused]] const auto shape = InferReshape(input, wrong_count), InvalidArgumentError);
+  EXPECT_THROW([[maybe_unused]] const auto shape = InferReshape(input, nonintegral), InvalidArgumentError);
+  EXPECT_THROW([[maybe_unused]] const auto shape = InferReshape(empty, empty_inferred), InvalidArgumentError);
+}
+
+TEST_F(TensorTest, AppliesMetadataOnlyDimensionTransforms) {
+  auto storage = MakeStorage(1024);
+  const auto input = TensorFactory::Create(storage, DType::FLOAT32, Shape{2, 1, 3, 4}, Strides{12, 12, 4, 1}, 0);
+
+  constexpr std::array<int64_t, 4> axes{-1, 0, 2, 1};
+  const auto permuted = Permute(input, axes);
+  EXPECT_EQ(permuted.GetShape(), Shape({4, 2, 3, 1}));
+  EXPECT_EQ(permuted.GetStrides(), Strides({1, 12, 4, 12}));
+
+  const auto transposed = Transpose(input, 0, -1);
+  EXPECT_EQ(transposed.GetShape(), Shape({4, 1, 3, 2}));
+  EXPECT_EQ(transposed.GetStrides(), Strides({1, 12, 4, 12}));
+
+  const auto squeezed = Squeeze(input);
+  EXPECT_EQ(squeezed.GetShape(), Shape({2, 3, 4}));
+  EXPECT_EQ(squeezed.GetStrides(), Strides({12, 4, 1}));
+  EXPECT_EQ(Squeeze(input, 1).GetShape(), squeezed.GetShape());
+  EXPECT_THROW([[maybe_unused]] const auto invalid = Squeeze(input, 0), InvalidArgumentError);
+
+  const auto inserted = Unsqueeze(squeezed, 1);
+  EXPECT_EQ(inserted.GetShape(), input.GetShape());
+  EXPECT_EQ(inserted.GetStrides(), input.GetStrides());
+  const auto appended = Unsqueeze(squeezed, -1);
+  EXPECT_EQ(appended.GetShape(), Shape({2, 3, 4, 1}));
+  EXPECT_EQ(appended.GetStrides(), Strides({12, 4, 1, 1}));
+
+  constexpr std::array<int64_t, 4> identity_axes{0, 1, 2, 3};
+  EXPECT_EQ(ClassifyAlias(input, Permute(input, identity_axes)), AliasKind::EXACT);
+  constexpr std::array<int64_t, 4> duplicate_axes{0, 1, 1, 3};
+  EXPECT_THROW([[maybe_unused]] const auto invalid = Permute(input, duplicate_axes), InvalidArgumentError);
+  EXPECT_THROW([[maybe_unused]] const auto invalid = Unsqueeze(input, 5), InvalidArgumentError);
+}
+
+TEST_F(TensorTest, AppliesRangesSelectionsAndBroadcastViews) {
+  auto storage = MakeStorage(1024);
+  const auto input = TensorFactory::Create(storage, DType::FLOAT32, Shape{4, 5}, Strides{5, 1}, 0);
+
+  const auto narrowed = Narrow(input, 0, -3, 2);
+  EXPECT_EQ(narrowed.GetShape(), Shape({2, 5}));
+  EXPECT_EQ(narrowed.GetStrides(), input.GetStrides());
+  EXPECT_EQ(narrowed.GetStorageOffset(), 5);
+
+  const auto sliced = Slice(input, 1, 1, std::nullopt, 2);
+  EXPECT_EQ(sliced.GetShape(), Shape({4, 2}));
+  EXPECT_EQ(sliced.GetStrides(), Strides({5, 2}));
+  EXPECT_EQ(sliced.GetStorageOffset(), 1);
+  EXPECT_FALSE(sliced.IsNonOverlappingDense());
+
+  const auto empty_slice = Slice(input, 1, 5, 2);
+  EXPECT_EQ(empty_slice.GetShape(), Shape({4, 0}));
+  EXPECT_EQ(empty_slice.GetStorageOffset(), 5);
+
+  const auto selected = Select(input, 0, -1);
+  EXPECT_EQ(selected.GetShape(), Shape({5}));
+  EXPECT_EQ(selected.GetStrides(), Strides({1}));
+  EXPECT_EQ(selected.GetStorageOffset(), 15);
+
+  const auto row = TensorFactory::Create(storage, DType::FLOAT32, Shape{1, 3}, Strides{3, 1}, 0);
+  const auto expanded = Expand(row, Shape{2, 4, 3});
+  EXPECT_EQ(expanded.GetStrides(), Strides({0, 0, 1}));
+  EXPECT_TRUE(expanded.HasZeroStride());
+  EXPECT_FALSE(expanded.IsNonOverlappingDense());
+
+  const std::array shapes{Shape{2, 1, 0}, Shape{1, 3, 1}};
+  EXPECT_EQ(BroadcastShapes(shapes), Shape({2, 3, 0}));
+  EXPECT_EQ(BroadcastShapes(std::span<const Shape>{}), Shape{});
+
+  EXPECT_THROW([[maybe_unused]] const auto invalid = Narrow(input, 0, 3, 2), InvalidArgumentError);
+  EXPECT_THROW([[maybe_unused]] const auto invalid = Slice(input, 0, std::nullopt, std::nullopt, 0),
+               InvalidArgumentError);
+  EXPECT_THROW([[maybe_unused]] const auto invalid = Select(input, 1, 5), InvalidArgumentError);
+  EXPECT_THROW([[maybe_unused]] const auto invalid = Expand(input, Shape{4}), InvalidArgumentError);
+  const std::array incompatible_shapes{Shape{2}, Shape{3}};
+  EXPECT_THROW([[maybe_unused]] const auto invalid = BroadcastShapes(incompatible_shapes), InvalidArgumentError);
+}
+
+TEST_F(TensorTest, BuildsBroadcastAndScalarElementwisePlans) {
+  auto output = TensorFactory::Create(MakeStorage(64), DType::FLOAT32, Shape{2, 3}, Strides{3, 1}, 0);
+  const auto lhs = TensorFactory::Create(MakeStorage(64), DType::FLOAT32, Shape{2, 3}, Strides{3, 1}, 0);
+  const auto rhs = TensorFactory::Create(MakeStorage(32), DType::FLOAT32, Shape{3}, Strides{1}, 0);
+
+  const auto broadcast = ElementwiseIterator::Builder{}
+                             .AddOutput(output)
+                             .AddInput(lhs)
+                             .AddInput(rhs)
+                             .SetRequireSameDType(true)
+                             .SetAliasPolicy(AliasPolicy::EXACT_ONE_BINARY_INPUT)
+                             .Build("AddOut");
+  EXPECT_EQ(broadcast.GetShape(), Shape({2, 3}));
+  EXPECT_EQ(broadcast.GetNumElements(), 6);
+  EXPECT_EQ(broadcast.GetRank(), 2);
+  EXPECT_EQ(broadcast.GetOperandCount(), 3);
+  EXPECT_EQ(broadcast.GetIndexWidth(), IndexWidth::UINT32);
+  EXPECT_EQ(broadcast.GetPath(), IteratorPath::SINGLE_INNER_STRIDE);
+  EXPECT_EQ(broadcast.GetVectorWidthElements(), 1);
+
+  const auto parameters = broadcast.MakeParameters32();
+  EXPECT_EQ(parameters.shape_[0], 2);
+  EXPECT_EQ(parameters.shape_[1], 3);
+  EXPECT_EQ(parameters.strides_bytes_[0][0], 12);
+  EXPECT_EQ(parameters.strides_bytes_[0][1], 4);
+  EXPECT_EQ(parameters.strides_bytes_[2][0], 0);
+  EXPECT_EQ(parameters.strides_bytes_[2][1], 4);
+
+  auto vector_output = TensorFactory::Create(MakeStorage(64), DType::FLOAT32, Shape{8}, Strides{1}, 0);
+  const auto vector_input = TensorFactory::Create(MakeStorage(64), DType::FLOAT32, Shape{8}, Strides{1}, 0);
+  const auto scalar = TensorFactory::Create(MakeStorage(sizeof(float)), DType::FLOAT32, Shape{}, Strides{}, 0);
+  const auto scalar_plan = ElementwiseIterator::Builder{}
+                               .AddOutput(vector_output)
+                               .AddInput(vector_input)
+                               .AddInput(scalar)
+                               .SetRequireSameDType(true)
+                               .SetAliasPolicy(AliasPolicy::EXACT_ONE_BINARY_INPUT)
+                               .Build("AddScalarOut");
+  EXPECT_EQ(scalar_plan.GetRank(), 1);
+  EXPECT_EQ(scalar_plan.GetPath(), IteratorPath::CONTIGUOUS_WITH_SCALAR_INPUTS);
+  EXPECT_EQ(scalar_plan.GetVectorWidthElements(), 4);
+  EXPECT_EQ(scalar_plan.MakeParameters32().strides_bytes_[2][0], 0);
+}
+
+TEST_F(TensorTest, ClassifiesDenseGenericAndWideIndexIteratorPaths) {
+  auto transposed_output = TensorFactory::Create(MakeStorage(64), DType::FLOAT32, Shape{3, 2}, Strides{1, 3}, 0);
+  const auto transposed_input = TensorFactory::Create(MakeStorage(64), DType::FLOAT32, Shape{3, 2}, Strides{1, 3}, 0);
+  const auto dense = ElementwiseIterator::Builder{}
+                         .AddOutput(transposed_output)
+                         .AddInput(transposed_input)
+                         .SetAliasPolicy(AliasPolicy::EXACT_UNARY)
+                         .Build("UnaryOut");
+  EXPECT_EQ(dense.GetRank(), 1);
+  EXPECT_EQ(dense.GetPath(), IteratorPath::CONTIGUOUS);
+  EXPECT_EQ(dense.MakeParameters32().shape_[0], 6);
+
+  auto generic_output = TensorFactory::Create(MakeStorage(64), DType::FLOAT32, Shape{2, 2}, Strides{2, 1}, 0);
+  const auto generic_input = TensorFactory::Create(MakeStorage(64), DType::FLOAT32, Shape{2, 2}, Strides{3, 2}, 0);
+  const auto generic = ElementwiseIterator::Builder{}
+                           .AddOutput(generic_output)
+                           .AddInput(generic_input)
+                           .SetAliasPolicy(AliasPolicy::EXACT_UNARY)
+                           .Build("UnaryOut");
+  EXPECT_EQ(generic.GetRank(), 2);
+  EXPECT_EQ(generic.GetPath(), IteratorPath::GENERIC_STRIDED);
+
+  constexpr int64_t huge_stride = int64_t{1} << 32;
+  auto *external_pointer = fake_allocations.back().bytes_.data();
+  auto wide_storage = WrapStorage(external_pointer, size_t{1} << 35);
+  const auto wide_input = TensorFactory::Create(wide_storage, DType::FLOAT32, Shape{2, 1}, Strides{huge_stride, 1}, 0);
+  auto wide_output = TensorFactory::Create(MakeStorage(32), DType::FLOAT32, Shape{2, 1}, Strides{1, 1}, 0);
+  const auto wide = ElementwiseIterator::Builder{}
+                        .AddOutput(wide_output)
+                        .AddInput(wide_input)
+                        .SetAliasPolicy(AliasPolicy::EXACT_UNARY)
+                        .Build("UnaryOut");
+  EXPECT_EQ(wide.GetIndexWidth(), IndexWidth::UINT64);
+  EXPECT_THROW([[maybe_unused]] const auto invalid = wide.MakeParameters32(), InternalError);
+  EXPECT_EQ(wide.MakeParameters64().strides_bytes_[1][0], static_cast<uint64_t>(huge_stride) * sizeof(float));
+}
+
+TEST_F(TensorTest, EnforcesElementwiseOutputDTypeShapeAndAliasContracts) {
+  auto storage = MakeStorage(128);
+  auto output = TensorFactory::Create(storage, DType::FLOAT32, Shape{4}, Strides{1}, 0);
+  const auto exact_input = output;
+
+  EXPECT_NO_THROW([[maybe_unused]] const auto iterator = ElementwiseIterator::Builder{}
+                                                             .AddOutput(output)
+                                                             .AddInput(exact_input)
+                                                             .SetAliasPolicy(AliasPolicy::EXACT_UNARY)
+                                                             .Build("UnaryOut"));
+  EXPECT_THROW([[maybe_unused]] const auto iterator = ElementwiseIterator::Builder{}
+                                                          .AddOutput(output)
+                                                          .AddInput(exact_input)
+                                                          .SetAliasPolicy(AliasPolicy::NO_ALIAS)
+                                                          .Build("UnaryOut"),
+               InvalidArgumentError);
+
+  auto partial_output = TensorFactory::Create(storage, DType::FLOAT32, Shape{4}, Strides{1}, 0);
+  const auto partial_input = TensorFactory::Create(storage, DType::FLOAT32, Shape{4}, Strides{1}, 1);
+  EXPECT_THROW([[maybe_unused]] const auto iterator = ElementwiseIterator::Builder{}
+                                                          .AddOutput(partial_output)
+                                                          .AddInput(partial_input)
+                                                          .SetAliasPolicy(AliasPolicy::COPY)
+                                                          .Build("CopyOut"),
+               InvalidArgumentError);
+
+  const auto broadcast_source =
+      TensorFactory::Create(MakeStorage(sizeof(float)), DType::FLOAT32, Shape{1}, Strides{1}, 0);
+  auto broadcast_output = Expand(broadcast_source, Shape{4});
+  const auto separate_input = TensorFactory::Create(MakeStorage(32), DType::FLOAT32, Shape{4}, Strides{1}, 0);
+  EXPECT_THROW([[maybe_unused]] const auto iterator = ElementwiseIterator::Builder{}
+                                                          .AddOutput(broadcast_output)
+                                                          .AddInput(separate_input)
+                                                          .SetAliasPolicy(AliasPolicy::EXACT_UNARY)
+                                                          .Build("UnaryOut"),
+               InvalidArgumentError);
+
+  auto dtype_output = TensorFactory::Create(MakeStorage(32), DType::FLOAT32, Shape{4}, Strides{1}, 0);
+  const auto integer_input = TensorFactory::Create(MakeStorage(32), DType::INT32, Shape{4}, Strides{1}, 0);
+  EXPECT_THROW([[maybe_unused]] const auto iterator = ElementwiseIterator::Builder{}
+                                                          .AddOutput(dtype_output)
+                                                          .AddInput(integer_input)
+                                                          .SetRequireSameDType(true)
+                                                          .SetAliasPolicy(AliasPolicy::EXACT_UNARY)
+                                                          .Build("UnaryOut"),
+               InvalidArgumentError);
+
+  auto shape_output = TensorFactory::Create(MakeStorage(32), DType::FLOAT32, Shape{2}, Strides{1}, 0);
+  const auto shape_input = TensorFactory::Create(MakeStorage(32), DType::FLOAT32, Shape{3}, Strides{1}, 0);
+  EXPECT_THROW([[maybe_unused]] const auto iterator = ElementwiseIterator::Builder{}
+                                                          .AddOutput(shape_output)
+                                                          .AddInput(shape_input)
+                                                          .SetAliasPolicy(AliasPolicy::EXACT_UNARY)
+                                                          .Build("UnaryOut"),
+               InvalidArgumentError);
+
+  EXPECT_THROW([[maybe_unused]] const auto iterator = ElementwiseIterator::Builder{}.Build("MissingOutput"),
+               InvalidArgumentError);
+  auto builder = ElementwiseIterator::Builder{}.AddOutput(shape_output);
+  builder.AddInput(shape_input).AddInput(shape_input).AddInput(shape_input);
+  EXPECT_THROW(builder.AddInput(shape_input), InvalidArgumentError);
+}
+
+TEST_F(TensorTest, SelectsScalarVectorWidthForMisalignedViewsAndHandlesEmptyPlans) {
+  auto output = TensorFactory::Create(MakeStorage(64), DType::FLOAT32, Shape{4}, Strides{1}, 1);
+  const auto input = TensorFactory::Create(MakeStorage(64), DType::FLOAT32, Shape{4}, Strides{1}, 1);
+  const auto misaligned = ElementwiseIterator::Builder{}
+                              .AddOutput(output)
+                              .AddInput(input)
+                              .SetAliasPolicy(AliasPolicy::EXACT_UNARY)
+                              .Build("UnaryOut");
+  EXPECT_EQ(misaligned.GetPath(), IteratorPath::CONTIGUOUS);
+  EXPECT_EQ(misaligned.GetVectorWidthElements(), 1);
+
+  auto empty_output = TensorFactory::Create(MakeStorage(0), DType::FLOAT32, Shape{0, 3}, Strides{3, 1}, 0);
+  const auto broadcast_input = TensorFactory::Create(MakeStorage(0), DType::FLOAT32, Shape{0, 3}, Strides{3, 1}, 0);
+  const auto empty = ElementwiseIterator::Builder{}
+                         .AddOutput(empty_output)
+                         .AddInput(broadcast_input)
+                         .SetAliasPolicy(AliasPolicy::EXACT_UNARY)
+                         .Build("UnaryOut");
+  EXPECT_EQ(empty.GetNumElements(), 0);
+  EXPECT_EQ(empty.GetVectorWidthElements(), 1);
+  EXPECT_EQ(empty.GetIndexWidth(), IndexWidth::UINT32);
+  EXPECT_EQ(empty.MakeParameters32().num_elements_, 0);
 }
 
 }  // namespace
