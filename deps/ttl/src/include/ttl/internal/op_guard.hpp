@@ -1,7 +1,12 @@
 #pragma once
 
+#include <cstddef>
 #include <source_location>
 #include <string_view>
+
+#include <cublasLt.h>
+#include <cublas_v2.h>
+#include <driver_types.h>
 
 #include "ttl/execution_context.hpp"
 #include "ttl/internal/device_guard.hpp"
@@ -28,6 +33,10 @@ class OpGuard final {
 
   [[nodiscard]] auto GetStream() const noexcept -> const Stream &;
   [[nodiscard]] auto GetNativeStream() const noexcept -> cudaStream_t;
+  [[nodiscard]] auto GetCublasHandle() const -> cublasHandle_t;
+  [[nodiscard]] auto GetCublasLtHandle() const -> cublasLtHandle_t;
+  [[nodiscard]] auto GetBlasWorkspace() const -> void *;
+  [[nodiscard]] auto GetBlasWorkspaceBytes() const -> size_t;
 
  private:
   friend class ParallelOpScope;

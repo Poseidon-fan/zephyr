@@ -1,5 +1,6 @@
 #include "ttl/execution_context.hpp"
 
+#include <atomic>
 #include <cstddef>
 #include <memory>
 #include <optional>
@@ -7,32 +8,36 @@
 #include <utility>
 #include <vector>
 
-#include <cuda_runtime_api.h>
+#include <driver_types.h>
 
 #include "ttl/device.hpp"
 #include "ttl/error.hpp"
 #include "ttl/error_sink.hpp"
 #include "ttl/event.hpp"
+#include "ttl/internal/blas_handle_pool.hpp"
 #include "ttl/internal/cuda_api.hpp"
 #include "ttl/internal/cuda_check.hpp"
 #include "ttl/internal/device_guard.hpp"
 #include "ttl/internal/event.hpp"
 #include "ttl/internal/event_pool.hpp"
 #include "ttl/internal/execution_context.hpp"
+#include "ttl/internal/execution_lane.hpp"
 #include "ttl/internal/runtime.hpp"
 #include "ttl/internal/stream.hpp"
+#include "ttl/runtime.hpp"
 #include "ttl/stream.hpp"
 
 namespace ttl::internal {
 
 ExecutionContextImpl::ExecutionContextImpl(std::shared_ptr<RuntimeState> runtime_state,
-                                           std::shared_ptr<DeviceContext> device_context, Stream stream,
-                                           std::vector<Stream> auxiliary_streams, std::optional<PooledEvent> fork_event,
+                                           std::shared_ptr<DeviceContext> device_context, ExecutionLane primary_lane,
+                                           std::vector<ExecutionLane> auxiliary_lanes,
+                                           std::optional<PooledEvent> fork_event,
                                            std::vector<PooledEvent> join_events) noexcept
     : runtime_state_(std::move(runtime_state)),
       device_context_(std::move(device_context)),
-      stream_(std::move(stream)),
-      auxiliary_streams_(std::move(auxiliary_streams)),
+      primary_lane_(std::move(primary_lane)),
+      auxiliary_lanes_(std::move(auxiliary_lanes)),
       fork_event_(std::move(fork_event)),
       join_events_(std::move(join_events)) {}
 
@@ -60,19 +65,22 @@ ContextUseGuard::~ContextUseGuard() noexcept { impl_.in_use_.clear(std::memory_o
 auto ContextAccess::Create(const std::shared_ptr<RuntimeState> &runtime_state,
                            std::shared_ptr<DeviceContext> device_context, Stream stream,
                            const ExecutionContextOptions &options, std::source_location location) -> ExecutionContext {
-  std::vector<Stream> auxiliary_streams;
-  if (options.max_auxiliary_stream_count_ > auxiliary_streams.max_size()) {
+  ExecutionLane primary_lane{std::move(stream), device_context->GetBlasHandlePool()};
+
+  std::vector<ExecutionLane> auxiliary_lanes;
+  if (options.max_auxiliary_stream_count_ > auxiliary_lanes.max_size()) {
     throw OverflowError("auxiliary stream count exceeds the host container limit", location);
   }
-  auxiliary_streams.reserve(options.max_auxiliary_stream_count_);
+  auxiliary_lanes.reserve(options.max_auxiliary_stream_count_);
   for (size_t index = 0; index < options.max_auxiliary_stream_count_; index++) {
-    auxiliary_streams.push_back(StreamAccess::CreateOwned(stream.GetDevice(), options.stream_priority_,
-                                                          runtime_state->GetErrorSink(), location));
+    auto auxiliary_stream = StreamAccess::CreateOwned(primary_lane.GetStream().GetDevice(), options.stream_priority_,
+                                                      runtime_state->GetErrorSink(), location);
+    auxiliary_lanes.emplace_back(std::move(auxiliary_stream), device_context->GetBlasHandlePool());
   }
 
   std::optional<PooledEvent> fork_event;
   std::vector<PooledEvent> join_events;
-  if (!auxiliary_streams.empty()) {
+  if (!auxiliary_lanes.empty()) {
     const auto &event_pool = device_context->GetEventPool();
     fork_event.emplace(event_pool->Acquire(location));
     if (options.max_auxiliary_stream_count_ > join_events.max_size()) {
@@ -87,7 +95,7 @@ auto ContextAccess::Create(const std::shared_ptr<RuntimeState> &runtime_state,
   runtime_state->RegisterExecutionContext(location);
   try {
     return ExecutionContext{std::make_unique<ExecutionContextImpl>(runtime_state, std::move(device_context),
-                                                                   std::move(stream), std::move(auxiliary_streams),
+                                                                   std::move(primary_lane), std::move(auxiliary_lanes),
                                                                    std::move(fork_event), std::move(join_events))};
   } catch (...) {
     runtime_state->UnregisterExecutionContext();
@@ -123,11 +131,15 @@ auto ContextAccess::GetErrorSink(ExecutionContext &context, std::source_location
 }
 
 auto ContextAccess::GetStream(ExecutionContext &context, std::source_location location) -> const Stream & {
-  return GetImpl(context, location).stream_;
+  return GetImpl(context, location).primary_lane_.GetStream();
 }
 
 auto ContextAccess::GetNativeStream(ExecutionContext &context, std::source_location location) -> cudaStream_t {
   return StreamAccess::GetNative(GetStream(context, location));
+}
+
+auto ContextAccess::GetPrimaryLane(ExecutionContext &context, std::source_location location) -> ExecutionLane & {
+  return GetImpl(context, location).primary_lane_;
 }
 
 }  // namespace ttl::internal
@@ -143,43 +155,47 @@ auto ExecutionContext::operator=(ExecutionContext &&) noexcept -> ExecutionConte
 
 ExecutionContext::~ExecutionContext() noexcept = default;
 
-auto ExecutionContext::GetDevice() const noexcept -> Device { return impl_->stream_.GetDevice(); }
+auto ExecutionContext::GetDevice() const noexcept -> Device { return impl_->primary_lane_.GetStream().GetDevice(); }
 
-auto ExecutionContext::GetStream() const noexcept -> const Stream & { return impl_->stream_; }
+auto ExecutionContext::GetStream() const noexcept -> const Stream & { return impl_->primary_lane_.GetStream(); }
 
-auto ExecutionContext::GetAuxiliaryStreamCount() const noexcept -> size_t { return impl_->auxiliary_streams_.size(); }
+auto ExecutionContext::GetAuxiliaryStreamCount() const noexcept -> size_t { return impl_->auxiliary_lanes_.size(); }
 
-auto ExecutionContext::IsExternalStream() const noexcept -> bool { return impl_->stream_.IsExternal(); }
+auto ExecutionContext::IsExternalStream() const noexcept -> bool {
+  return impl_->primary_lane_.GetStream().IsExternal();
+}
 
 auto ExecutionContext::RecordEvent(std::source_location location) -> Event {
   internal::ContextUseGuard use_guard{*this, internal::ContextUseMode::SUBMIT, location};
-  return internal::EventAccess::Record(impl_->stream_, location);
+  return internal::EventAccess::Record(impl_->primary_lane_.GetStream(), location);
 }
 
 void ExecutionContext::Wait(const Event &event, std::source_location location) {
   internal::ContextUseGuard use_guard{*this, internal::ContextUseMode::SUBMIT, location};
-  internal::EventAccess::Wait(impl_->stream_, event, location);
+  internal::EventAccess::Wait(impl_->primary_lane_.GetStream(), event, location);
 }
 
 void ExecutionContext::Synchronize(std::source_location location) {
   internal::ContextUseGuard use_guard{*this, internal::ContextUseMode::CLEANUP, location};
   internal::DeviceGuard device_guard{GetDevice(), *impl_->runtime_state_->GetErrorSink(), location};
   const auto &cuda_api = internal::GetCudaApi();
-  auto first_status = cuda_api.synchronize_stream_(internal::StreamAccess::GetNative(impl_->stream_));
+  auto first_status = cuda_api.synchronize_stream_(internal::StreamAccess::GetNative(impl_->primary_lane_.GetStream()));
   if (impl_->status_.load(std::memory_order_acquire) == internal::ExecutionContextStatus::FAILED) {
-    for (const auto &stream : impl_->auxiliary_streams_) {
-      const auto status = cuda_api.synchronize_stream_(internal::StreamAccess::GetNative(stream));
+    for (const auto &lane : impl_->auxiliary_lanes_) {
+      const auto status = cuda_api.synchronize_stream_(internal::StreamAccess::GetNative(lane.GetStream()));
       if (first_status == cudaSuccess && status != cudaSuccess) {
         first_status = status;
       }
     }
   }
   internal::CheckCuda(first_status, "cudaStreamSynchronize", location);
+  impl_->device_context_->GetBlasHandlePool()->Poll();
   impl_->device_context_->GetAllocator()->Poll();
 }
 
 void ExecutionContext::Poll(std::source_location location) {
   internal::ContextUseGuard use_guard{*this, internal::ContextUseMode::CLEANUP, location};
+  impl_->device_context_->GetBlasHandlePool()->Poll();
   impl_->device_context_->GetAllocator()->Poll();
 }
 

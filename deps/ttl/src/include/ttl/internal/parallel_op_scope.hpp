@@ -5,7 +5,9 @@
 #include <source_location>
 #include <string_view>
 
-#include <cuda_runtime_api.h>
+#include <cublasLt.h>
+#include <cublas_v2.h>
+#include <driver_types.h>
 
 #include "ttl/internal/op_guard.hpp"
 #include "ttl/stream.hpp"
@@ -14,6 +16,7 @@
 namespace ttl::internal {
 
 class ExecutionContextImpl;
+class ExecutionLane;
 
 /**
  * Structured fork/join scope for one operator that submits work to context-private auxiliary streams.
@@ -37,6 +40,10 @@ class ParallelOpScope final {
   [[nodiscard]] auto GetAuxiliaryStreamCount() const noexcept -> size_t;
   [[nodiscard]] auto GetAuxiliaryStream(size_t index) const -> const Stream &;
   [[nodiscard]] auto GetNativeAuxiliaryStream(size_t index) const -> cudaStream_t;
+  [[nodiscard]] auto GetAuxiliaryCublasHandle(size_t index) const -> cublasHandle_t;
+  [[nodiscard]] auto GetAuxiliaryCublasLtHandle(size_t index) const -> cublasLtHandle_t;
+  [[nodiscard]] auto GetAuxiliaryBlasWorkspace(size_t index) const -> void *;
+  [[nodiscard]] auto GetAuxiliaryBlasWorkspaceBytes(size_t index) const -> size_t;
 
   void RecordTensor(const Tensor &tensor, size_t auxiliary_stream_index);
   void CheckLaunch() const;
@@ -56,6 +63,7 @@ class ParallelOpScope final {
 
   void MarkFailed() noexcept;
   [[nodiscard]] auto EnqueueJoin() noexcept -> JoinResult;
+  [[nodiscard]] auto GetAuxiliaryLane(size_t index) const -> ExecutionLane &;
 
   OpGuard &guard_;
   ExecutionContextImpl &impl_;

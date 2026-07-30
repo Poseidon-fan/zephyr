@@ -12,7 +12,10 @@
 #include <utility>
 #include <vector>
 
+#include <cublasLt.h>
+#include <cublas_v2.h>
 #include <cuda_runtime_api.h>
+#include <driver_types.h>
 #include <gtest/gtest.h>
 
 #include "ttl/device.hpp"
@@ -20,6 +23,7 @@
 #include "ttl/error.hpp"
 #include "ttl/error_sink.hpp"
 #include "ttl/execution_context.hpp"
+#include "ttl/internal/cublas_api.hpp"
 #include "ttl/internal/cuda_api.hpp"
 #include "ttl/internal/execution_context.hpp"
 #include "ttl/internal/op_guard.hpp"
@@ -32,14 +36,22 @@ namespace ttl::internal {
 namespace {
 
 constexpr size_t FAKE_RESOURCE_COUNT = 128;
-constexpr size_t FAKE_ALLOCATION_BYTES = 4096;
+constexpr size_t FAKE_ALLOCATION_BYTES = 16U * 1024U;
 constexpr int FAKE_DEVICE_COUNT = 2;
 
 struct alignas(256) FakeAllocation final {
   std::array<std::byte, FAKE_ALLOCATION_BYTES> bytes_;
 };
 
+struct FakeCublasHandle final {
+  cudaStream_t stream_{nullptr};
+  void *workspace_{nullptr};
+  size_t workspace_bytes_{0};
+  cublasPointerMode_t pointer_mode_{CUBLAS_POINTER_MODE_HOST};
+};
+
 std::array<FakeAllocation, FAKE_RESOURCE_COUNT> fake_allocations;
+std::array<FakeCublasHandle, FAKE_RESOURCE_COUNT> fake_cublas_handles;
 std::array<int, FAKE_RESOURCE_COUNT> fake_streams;
 std::array<int, FAKE_RESOURCE_COUNT> fake_events;
 std::array<int, FAKE_DEVICE_COUNT> fake_pools;
@@ -54,11 +66,17 @@ size_t fake_pool_access_count = 0;
 size_t fake_record_event_count = 0;
 size_t fake_stream_wait_count = 0;
 size_t fake_stream_synchronize_count = 0;
+size_t fake_cublas_handle_index = 0;
+size_t fake_destroyed_cublas_handle_count = 0;
+size_t fake_cublas_bind_count = 0;
 std::optional<size_t> fake_record_event_failure_call;
 std::optional<size_t> fake_create_stream_failure_call;
 std::optional<size_t> fake_stream_wait_failure_call;
+std::optional<size_t> fake_cublas_create_failure_call;
+std::optional<size_t> fake_cublas_workspace_failure_call;
 int fake_current_device = 0;
 cudaError_t fake_peek_status = cudaSuccess;
+cudaError_t fake_query_event_status = cudaSuccess;
 
 void ResetFakeCuda() {
   fake_allocation_index = 0;
@@ -72,11 +90,17 @@ void ResetFakeCuda() {
   fake_record_event_count = 0;
   fake_stream_wait_count = 0;
   fake_stream_synchronize_count = 0;
+  fake_cublas_handle_index = 0;
+  fake_destroyed_cublas_handle_count = 0;
+  fake_cublas_bind_count = 0;
   fake_record_event_failure_call.reset();
   fake_create_stream_failure_call.reset();
   fake_stream_wait_failure_call.reset();
+  fake_cublas_create_failure_call.reset();
+  fake_cublas_workspace_failure_call.reset();
   fake_current_device = 0;
   fake_peek_status = cudaSuccess;
+  fake_query_event_status = cudaSuccess;
 }
 
 auto FakeGetDeviceCount(int *count) -> cudaError_t {
@@ -162,7 +186,7 @@ auto FakeRecordEvent(cudaEvent_t /*event*/, cudaStream_t /*stream*/) -> cudaErro
   return cudaSuccess;
 }
 
-auto FakeQueryEvent(cudaEvent_t /*event*/) -> cudaError_t { return cudaSuccess; }
+auto FakeQueryEvent(cudaEvent_t /*event*/) -> cudaError_t { return fake_query_event_status; }
 
 auto FakeSynchronizeEvent(cudaEvent_t /*event*/) -> cudaError_t { return cudaSuccess; }
 
@@ -253,6 +277,53 @@ auto FakeCanAccessPeer(int *can_access, int source, int destination) -> cudaErro
   return cudaSuccess;
 }
 
+auto FakeCublasCreate(cublasHandle_t *handle) -> cublasStatus_t {
+  const auto call = fake_cublas_handle_index;
+  if (fake_cublas_create_failure_call == call) {
+    return CUBLAS_STATUS_ALLOC_FAILED;
+  }
+  if (fake_cublas_handle_index == fake_cublas_handles.size()) {
+    return CUBLAS_STATUS_ALLOC_FAILED;
+  }
+  *handle = reinterpret_cast<cublasHandle_t>(&fake_cublas_handles[fake_cublas_handle_index]);
+  fake_cublas_handle_index++;
+  return CUBLAS_STATUS_SUCCESS;
+}
+
+auto FakeCublasDestroy(cublasHandle_t /*handle*/) -> cublasStatus_t {
+  fake_destroyed_cublas_handle_count++;
+  return CUBLAS_STATUS_SUCCESS;
+}
+
+auto FakeCublasSetStream(cublasHandle_t handle, cudaStream_t stream) -> cublasStatus_t {
+  auto &state = *reinterpret_cast<FakeCublasHandle *>(handle);
+  state.stream_ = stream;
+  state.workspace_ = nullptr;
+  state.workspace_bytes_ = 0;
+  fake_cublas_bind_count++;
+  return CUBLAS_STATUS_SUCCESS;
+}
+
+auto FakeCublasSetPointerMode(cublasHandle_t handle, cublasPointerMode_t mode) -> cublasStatus_t {
+  reinterpret_cast<FakeCublasHandle *>(handle)->pointer_mode_ = mode;
+  return mode == CUBLAS_POINTER_MODE_DEVICE ? CUBLAS_STATUS_SUCCESS : CUBLAS_STATUS_INVALID_VALUE;
+}
+
+auto FakeCublasSetWorkspace(cublasHandle_t handle, void *workspace, size_t workspace_bytes) -> cublasStatus_t {
+  const auto call = fake_cublas_bind_count - 1;
+  if (fake_cublas_workspace_failure_call == call) {
+    return CUBLAS_STATUS_INVALID_VALUE;
+  }
+  if (workspace == nullptr || reinterpret_cast<uintptr_t>(workspace) % 256 != 0 ||
+      workspace_bytes != FAKE_ALLOCATION_BYTES) {
+    return CUBLAS_STATUS_INVALID_VALUE;
+  }
+  auto &state = *reinterpret_cast<FakeCublasHandle *>(handle);
+  state.workspace_ = workspace;
+  state.workspace_bytes_ = workspace_bytes;
+  return CUBLAS_STATUS_SUCCESS;
+}
+
 [[nodiscard]] auto MakeFakeCudaApi() -> CudaApi {
   auto cuda_api = GetCudaApi();
   cuda_api.get_device_count_ = FakeGetDeviceCount;
@@ -285,6 +356,16 @@ auto FakeCanAccessPeer(int *can_access, int source, int destination) -> cudaErro
   return cuda_api;
 }
 
+[[nodiscard]] auto MakeFakeCublasApi() -> CublasApi {
+  return CublasApi{
+      .create_ = FakeCublasCreate,
+      .destroy_ = FakeCublasDestroy,
+      .set_stream_ = FakeCublasSetStream,
+      .set_pointer_mode_ = FakeCublasSetPointerMode,
+      .set_workspace_ = FakeCublasSetWorkspace,
+  };
+}
+
 class RecordingErrorSink final : public ErrorSink {
  public:
   void Report(ErrorRecord error) noexcept override {
@@ -314,6 +395,7 @@ class RecordingErrorSink final : public ErrorSink {
           {
               .enable_maintenance_thread_ = false,
           },
+      .blas_workspace_bytes_ = FAKE_ALLOCATION_BYTES,
       .event_pool_capacity_per_device_ = 8,
       .event_pool_reserve_per_device_ = 2,
       .error_sink_ = error_sink,
@@ -326,6 +408,8 @@ class RuntimeTest : public testing::Test {
 
   CudaApi cuda_api_{MakeFakeCudaApi()};
   ScopedCudaApiOverride cuda_api_override_{cuda_api_};
+  CublasApi cublas_api_{MakeFakeCublasApi()};
+  ScopedCublasApiOverride cublas_api_override_{cublas_api_};
 };
 
 TEST_F(RuntimeTest, RejectsInvalidOptionsBeforePublishingResources) {
@@ -349,6 +433,10 @@ TEST_F(RuntimeTest, RejectsInvalidOptionsBeforePublishingResources) {
   memory_options.device_memory_.max_live_bytes_ = 1024;
   memory_options.device_memory_.max_reserved_bytes_ = 512;
   EXPECT_THROW([[maybe_unused]] Runtime runtime{std::move(memory_options)}, InvalidArgumentError);
+
+  auto blas_options = MakeRuntimeOptions(error_sink, {Device{0}});
+  blas_options.blas_workspace_bytes_ = 4096;
+  EXPECT_THROW([[maybe_unused]] Runtime runtime{std::move(blas_options)}, InvalidArgumentError);
 
   EXPECT_EQ(fake_stream_index, 0);
   EXPECT_TRUE(error_sink->GetRecords().empty());
@@ -586,6 +674,12 @@ TEST_F(RuntimeTest, ForksAndJoinsContextPrivateAuxiliaryStreams) {
       EXPECT_NE(parallel.GetNativeAuxiliaryStream(0), op_guard.GetNativeStream());
       EXPECT_NE(parallel.GetNativeAuxiliaryStream(1), op_guard.GetNativeStream());
       EXPECT_NE(parallel.GetNativeAuxiliaryStream(0), parallel.GetNativeAuxiliaryStream(1));
+      EXPECT_NE(op_guard.GetCublasHandle(), parallel.GetAuxiliaryCublasHandle(0));
+      EXPECT_NE(parallel.GetAuxiliaryCublasHandle(0), parallel.GetAuxiliaryCublasHandle(1));
+      EXPECT_EQ(op_guard.GetCublasLtHandle(), reinterpret_cast<cublasLtHandle_t>(op_guard.GetCublasHandle()));
+      EXPECT_EQ(op_guard.GetBlasWorkspaceBytes(), FAKE_ALLOCATION_BYTES);
+      EXPECT_EQ(parallel.GetAuxiliaryBlasWorkspaceBytes(0), FAKE_ALLOCATION_BYTES);
+      EXPECT_NE(op_guard.GetBlasWorkspace(), parallel.GetAuxiliaryBlasWorkspace(0));
       parallel.RecordTensor(tensor, 0);
       parallel.RecordTensor(tensor, 1);
       parallel.CheckLaunch();
@@ -611,6 +705,96 @@ TEST_F(RuntimeTest, ForksAndJoinsContextPrivateAuxiliaryStreams) {
   EXPECT_TRUE(error_sink->GetRecords().empty());
 }
 
+TEST_F(RuntimeTest, ReusesBlasResourcesOnlyAfterStreamCompletion) {
+  auto error_sink = std::make_shared<RecordingErrorSink>();
+  Runtime runtime{MakeRuntimeOptions(error_sink, {Device{0}})};
+
+  cublasHandle_t first_handle = nullptr;
+  {
+    auto context = runtime.CreateExecutionContext(Device{0});
+    OpGuard op_guard{context, "first cuBLAS lease"};
+    first_handle = op_guard.GetCublasHandle();
+  }
+
+  EXPECT_EQ(fake_cublas_handle_index, 1);
+  runtime.Poll();
+  {
+    auto context = runtime.CreateExecutionContext(Device{0});
+    OpGuard op_guard{context, "reused cuBLAS lease"};
+    EXPECT_EQ(op_guard.GetCublasHandle(), first_handle);
+  }
+
+  EXPECT_EQ(fake_cublas_handle_index, 1);
+  EXPECT_EQ(fake_cublas_bind_count, 2);
+  EXPECT_EQ(fake_destroyed_cublas_handle_count, 0);
+  runtime.Shutdown();
+  EXPECT_EQ(fake_destroyed_cublas_handle_count, 1);
+  EXPECT_TRUE(error_sink->GetRecords().empty());
+}
+
+TEST_F(RuntimeTest, DoesNotReuseBlasResourcesBeforeStreamCompletion) {
+  auto error_sink = std::make_shared<RecordingErrorSink>();
+  Runtime runtime{MakeRuntimeOptions(error_sink, {Device{0}})};
+
+  fake_query_event_status = cudaErrorNotReady;
+  {
+    auto first_context = runtime.CreateExecutionContext(Device{0});
+    OpGuard op_guard{first_context, "first incomplete cuBLAS lease"};
+    EXPECT_NE(op_guard.GetCublasHandle(), nullptr);
+  }
+  {
+    auto second_context = runtime.CreateExecutionContext(Device{0});
+    OpGuard op_guard{second_context, "second incomplete cuBLAS lease"};
+    EXPECT_NE(op_guard.GetCublasHandle(), nullptr);
+  }
+  EXPECT_EQ(fake_cublas_handle_index, 2);
+
+  fake_query_event_status = cudaSuccess;
+  runtime.Poll();
+  {
+    auto third_context = runtime.CreateExecutionContext(Device{0});
+    OpGuard op_guard{third_context, "completed cuBLAS lease"};
+    EXPECT_NE(op_guard.GetCublasHandle(), nullptr);
+  }
+  EXPECT_EQ(fake_cublas_handle_index, 2);
+
+  runtime.Shutdown();
+  EXPECT_EQ(fake_destroyed_cublas_handle_count, 2);
+  EXPECT_TRUE(error_sink->GetRecords().empty());
+}
+
+TEST_F(RuntimeTest, RollsBackCublasCreationAndBindingFailures) {
+  auto error_sink = std::make_shared<RecordingErrorSink>();
+  Runtime runtime{MakeRuntimeOptions(error_sink, {Device{0}})};
+
+  fake_cublas_create_failure_call = 0;
+  {
+    auto context = runtime.CreateExecutionContext(Device{0});
+    OpGuard op_guard{context, "failed cublasCreate"};
+    EXPECT_THROW([[maybe_unused]] const auto handle = op_guard.GetCublasHandle(), CublasError);
+  }
+  fake_cublas_create_failure_call.reset();
+
+  fake_cublas_workspace_failure_call = 0;
+  {
+    auto context = runtime.CreateExecutionContext(Device{0});
+    OpGuard op_guard{context, "failed cublasSetWorkspace"};
+    EXPECT_THROW([[maybe_unused]] const auto handle = op_guard.GetCublasHandle(), CublasError);
+  }
+  fake_cublas_workspace_failure_call.reset();
+  runtime.Poll();
+
+  EXPECT_EQ(fake_destroyed_cublas_handle_count, 1);
+  {
+    auto context = runtime.CreateExecutionContext(Device{0});
+    OpGuard op_guard{context, "successful cublas binding"};
+    EXPECT_NE(op_guard.GetCublasHandle(), nullptr);
+  }
+  runtime.Shutdown();
+  EXPECT_EQ(fake_destroyed_cublas_handle_count, 2);
+  EXPECT_TRUE(error_sink->GetRecords().empty());
+}
+
 TEST_F(RuntimeTest, RollsBackPartiallyConstructedAuxiliaryStreams) {
   auto error_sink = std::make_shared<RecordingErrorSink>();
   Runtime runtime{MakeRuntimeOptions(error_sink, {Device{0}})};
@@ -619,6 +803,7 @@ TEST_F(RuntimeTest, RollsBackPartiallyConstructedAuxiliaryStreams) {
   EXPECT_THROW([[maybe_unused]] auto context =
                    runtime.CreateExecutionContext(Device{0}, ExecutionContextOptions{.max_auxiliary_stream_count_ = 2}),
                CudaError);
+  runtime.Poll();
   EXPECT_EQ(fake_destroyed_stream_count, 2);
 
   {
@@ -773,6 +958,9 @@ TEST(RuntimeIntegrationTest, ExecutesOneOperatorAcrossPrimaryAndAuxiliaryStreams
       op_guard.RecordTensor(tensor);
       ParallelOpScope parallel{op_guard, 1};
       parallel.RecordTensor(tensor, 0);
+      EXPECT_NE(op_guard.GetCublasHandle(), nullptr);
+      EXPECT_NE(parallel.GetAuxiliaryCublasHandle(0), nullptr);
+      EXPECT_NE(op_guard.GetCublasHandle(), parallel.GetAuxiliaryCublasHandle(0));
 
       ASSERT_EQ(cudaMemsetAsync(data, 0x11, 128, op_guard.GetNativeStream()), cudaSuccess);
       parallel.CheckLaunch();

@@ -1,10 +1,13 @@
 #include "ttl/internal/op_guard.hpp"
 
+#include <cstddef>
 #include <source_location>
 #include <string>
 #include <string_view>
 
-#include <cuda_runtime_api.h>
+#include <cublasLt.h>
+#include <cublas_v2.h>
+#include <driver_types.h>
 
 #include "ttl/device.hpp"
 #include "ttl/error.hpp"
@@ -12,6 +15,7 @@
 #include "ttl/internal/cuda_api.hpp"
 #include "ttl/internal/cuda_check.hpp"
 #include "ttl/internal/execution_context.hpp"
+#include "ttl/internal/execution_lane.hpp"
 #include "ttl/internal/storage.hpp"
 #include "ttl/internal/stream.hpp"
 #include "ttl/internal/tensor_impl.hpp"
@@ -57,5 +61,21 @@ void OpGuard::CheckLaunch() const { CheckCuda(GetCudaApi().peek_at_last_error_()
 auto OpGuard::GetStream() const noexcept -> const Stream & { return context_.GetStream(); }
 
 auto OpGuard::GetNativeStream() const noexcept -> cudaStream_t { return StreamAccess::GetNative(context_.GetStream()); }
+
+auto OpGuard::GetCublasHandle() const -> cublasHandle_t {
+  return ContextAccess::GetPrimaryLane(context_, location_).GetCublasHandle(location_);
+}
+
+auto OpGuard::GetCublasLtHandle() const -> cublasLtHandle_t {
+  return ContextAccess::GetPrimaryLane(context_, location_).GetCublasLtHandle(location_);
+}
+
+auto OpGuard::GetBlasWorkspace() const -> void * {
+  return ContextAccess::GetPrimaryLane(context_, location_).GetBlasWorkspace(location_).GetBasePointer();
+}
+
+auto OpGuard::GetBlasWorkspaceBytes() const -> size_t {
+  return ContextAccess::GetPrimaryLane(context_, location_).GetBlasWorkspace(location_).GetCapacityBytes();
+}
 
 }  // namespace ttl::internal

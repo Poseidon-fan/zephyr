@@ -1,12 +1,16 @@
 #include "ttl/internal/parallel_op_scope.hpp"
 
+#include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <source_location>
 #include <string>
 #include <string_view>
 #include <utility>
 
-#include <cuda_runtime_api.h>
+#include <cublasLt.h>
+#include <cublas_v2.h>
+#include <driver_types.h>
 
 #include "ttl/device.hpp"
 #include "ttl/error.hpp"
@@ -16,6 +20,7 @@
 #include "ttl/internal/cuda_check.hpp"
 #include "ttl/internal/event_pool.hpp"
 #include "ttl/internal/execution_context.hpp"
+#include "ttl/internal/execution_lane.hpp"
 #include "ttl/internal/op_guard.hpp"
 #include "ttl/internal/runtime.hpp"
 #include "ttl/internal/stream.hpp"
@@ -65,7 +70,7 @@ ParallelOpScope::ParallelOpScope(OpGuard &guard, size_t auxiliary_stream_count, 
   if (auxiliary_stream_count_ == 0) {
     throw InvalidArgumentError("parallel operator scope requires at least one auxiliary stream", location_);
   }
-  if (auxiliary_stream_count_ > impl_.auxiliary_streams_.size()) {
+  if (auxiliary_stream_count_ > impl_.auxiliary_lanes_.size()) {
     throw InvalidArgumentError("parallel operator scope requested more auxiliary streams than the context owns",
                                location_);
   }
@@ -78,13 +83,13 @@ ParallelOpScope::ParallelOpScope(OpGuard &guard, size_t auxiliary_stream_count, 
 
   guard_.parallel_scope_active_ = true;
   const auto &cuda_api = GetCudaApi();
-  const auto primary_stream = StreamAccess::GetNative(impl_.stream_);
+  const auto primary_stream = StreamAccess::GetNative(impl_.primary_lane_.GetStream());
   FirstCudaFailure failure;
   failure.Observe(cuda_api.record_event_(impl_.fork_event_->GetNative(), primary_stream),
                   "cudaEventRecord (parallel fork)");
   if (failure.status_ == cudaSuccess) {
     for (size_t index = 0; index < auxiliary_stream_count_; index++) {
-      failure.Observe(cuda_api.stream_wait_event_(StreamAccess::GetNative(impl_.auxiliary_streams_[index]),
+      failure.Observe(cuda_api.stream_wait_event_(StreamAccess::GetNative(impl_.auxiliary_lanes_[index].GetStream()),
                                                   impl_.fork_event_->GetNative(), cudaEventWaitDefault),
                       "cudaStreamWaitEvent (parallel fork)");
     }
@@ -106,28 +111,48 @@ ParallelOpScope::~ParallelOpScope() noexcept {
   if (result.status_ != cudaSuccess) {
     const ErrorReportContext error_context{
         .location_ = location_,
-        .device_ = impl_.stream_.GetDevice(),
-        .stream_id_ = impl_.stream_.GetId(),
+        .device_ = impl_.primary_lane_.GetStream().GetDevice(),
+        .stream_id_ = impl_.primary_lane_.GetStream().GetId(),
     };
     TryCuda(result.status_, result.operation_, *runtime_state.GetErrorSink(), error_context);
   }
   MarkFailed();
 
-  ReportUnfinishedScope(*runtime_state.GetErrorSink(), impl_.stream_.GetDevice(), impl_.stream_.GetId(),
-                        guard_.operation_, location_);
+  ReportUnfinishedScope(*runtime_state.GetErrorSink(), impl_.primary_lane_.GetStream().GetDevice(),
+                        impl_.primary_lane_.GetStream().GetId(), guard_.operation_, location_);
 }
 
 auto ParallelOpScope::GetAuxiliaryStreamCount() const noexcept -> size_t { return auxiliary_stream_count_; }
 
-auto ParallelOpScope::GetAuxiliaryStream(size_t index) const -> const Stream & {
+auto ParallelOpScope::GetAuxiliaryLane(size_t index) const -> ExecutionLane & {
   if (index >= auxiliary_stream_count_) {
     throw InvalidArgumentError("auxiliary stream index is out of range", location_);
   }
-  return impl_.auxiliary_streams_[index];
+  return impl_.auxiliary_lanes_[index];
+}
+
+auto ParallelOpScope::GetAuxiliaryStream(size_t index) const -> const Stream & {
+  return GetAuxiliaryLane(index).GetStream();
 }
 
 auto ParallelOpScope::GetNativeAuxiliaryStream(size_t index) const -> cudaStream_t {
   return StreamAccess::GetNative(GetAuxiliaryStream(index));
+}
+
+auto ParallelOpScope::GetAuxiliaryCublasHandle(size_t index) const -> cublasHandle_t {
+  return GetAuxiliaryLane(index).GetCublasHandle(location_);
+}
+
+auto ParallelOpScope::GetAuxiliaryCublasLtHandle(size_t index) const -> cublasLtHandle_t {
+  return GetAuxiliaryLane(index).GetCublasLtHandle(location_);
+}
+
+auto ParallelOpScope::GetAuxiliaryBlasWorkspace(size_t index) const -> void * {
+  return GetAuxiliaryLane(index).GetBlasWorkspace(location_).GetBasePointer();
+}
+
+auto ParallelOpScope::GetAuxiliaryBlasWorkspaceBytes(size_t index) const -> size_t {
+  return GetAuxiliaryLane(index).GetBlasWorkspace(location_).GetCapacityBytes();
 }
 
 void ParallelOpScope::RecordTensor(const Tensor &tensor, size_t auxiliary_stream_index) {
@@ -163,12 +188,12 @@ void ParallelOpScope::MarkFailed() noexcept {
 
 auto ParallelOpScope::EnqueueJoin() noexcept -> JoinResult {
   const auto &cuda_api = GetCudaApi();
-  const auto primary_stream = StreamAccess::GetNative(impl_.stream_);
+  const auto primary_stream = StreamAccess::GetNative(impl_.primary_lane_.GetStream());
   FirstCudaFailure failure;
 
   for (size_t index = 0; index < auxiliary_stream_count_; index++) {
-    const auto record_status = cuda_api.record_event_(impl_.join_events_[index].GetNative(),
-                                                      StreamAccess::GetNative(impl_.auxiliary_streams_[index]));
+    const auto record_status = cuda_api.record_event_(
+        impl_.join_events_[index].GetNative(), StreamAccess::GetNative(impl_.auxiliary_lanes_[index].GetStream()));
     failure.Observe(record_status, "cudaEventRecord (parallel join)");
     if (record_status != cudaSuccess) {
       continue;

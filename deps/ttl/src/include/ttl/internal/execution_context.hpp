@@ -7,12 +7,13 @@
 #include <source_location>
 #include <vector>
 
-#include <cuda_runtime_api.h>
+#include <driver_types.h>
 
 #include "ttl/error_sink.hpp"
 #include "ttl/execution_context.hpp"
 #include "ttl/internal/device_allocator.hpp"
 #include "ttl/internal/event_pool.hpp"
+#include "ttl/internal/execution_lane.hpp"
 #include "ttl/stream.hpp"
 
 namespace ttl {
@@ -39,8 +40,8 @@ enum class ContextUseMode : uint8_t {
 class ExecutionContextImpl final {
  public:
   ExecutionContextImpl(std::shared_ptr<RuntimeState> runtime_state, std::shared_ptr<DeviceContext> device_context,
-                       Stream stream, std::vector<Stream> auxiliary_streams, std::optional<PooledEvent> fork_event,
-                       std::vector<PooledEvent> join_events) noexcept;
+                       ExecutionLane primary_lane, std::vector<ExecutionLane> auxiliary_lanes,
+                       std::optional<PooledEvent> fork_event, std::vector<PooledEvent> join_events) noexcept;
 
   ExecutionContextImpl(const ExecutionContextImpl &) = delete;
   auto operator=(const ExecutionContextImpl &) -> ExecutionContextImpl & = delete;
@@ -51,8 +52,8 @@ class ExecutionContextImpl final {
 
   std::shared_ptr<RuntimeState> runtime_state_;
   std::shared_ptr<DeviceContext> device_context_;
-  Stream stream_;
-  std::vector<Stream> auxiliary_streams_;
+  ExecutionLane primary_lane_;
+  std::vector<ExecutionLane> auxiliary_lanes_;
   std::optional<PooledEvent> fork_event_;
   std::vector<PooledEvent> join_events_;
   std::atomic_flag in_use_ = ATOMIC_FLAG_INIT;
@@ -93,6 +94,7 @@ class ContextAccess final {
       -> const std::shared_ptr<ErrorSink> &;
   [[nodiscard]] static auto GetStream(ExecutionContext &context, std::source_location location) -> const Stream &;
   [[nodiscard]] static auto GetNativeStream(ExecutionContext &context, std::source_location location) -> cudaStream_t;
+  [[nodiscard]] static auto GetPrimaryLane(ExecutionContext &context, std::source_location location) -> ExecutionLane &;
 };
 
 }  // namespace ttl::internal

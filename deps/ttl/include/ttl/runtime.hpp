@@ -9,7 +9,7 @@
 #include <span>
 #include <vector>
 
-#include <cuda_runtime_api.h>
+#include <driver_types.h>
 
 #include "ttl/device.hpp"
 #include "ttl/device_properties.hpp"
@@ -32,6 +32,7 @@ struct DeviceMemoryOptions final {
 struct RuntimeOptions final {
   std::vector<Device> devices_;
   DeviceMemoryOptions device_memory_;
+  size_t blas_workspace_bytes_{0};
   size_t event_pool_capacity_per_device_{256};
   size_t event_pool_reserve_per_device_{0};
   std::shared_ptr<ErrorSink> error_sink_;

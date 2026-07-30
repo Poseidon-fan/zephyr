@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -13,7 +14,7 @@
 #include <utility>
 #include <vector>
 
-#include <cuda_runtime_api.h>
+#include <driver_types.h>
 
 #include "ttl/device.hpp"
 #include "ttl/device_properties.hpp"
@@ -22,6 +23,7 @@
 #include "ttl/error_sink.hpp"
 #include "ttl/execution_context.hpp"
 #include "ttl/internal/allocation.hpp"
+#include "ttl/internal/blas_handle_pool.hpp"
 #include "ttl/internal/checked_math.hpp"
 #include "ttl/internal/cuda_api.hpp"
 #include "ttl/internal/cuda_check.hpp"
@@ -40,6 +42,10 @@
 namespace ttl::internal {
 namespace {
 
+constexpr size_t MINIMUM_BLAS_WORKSPACE_BYTES = 16U * 1024U;
+constexpr size_t DEFAULT_BLAS_WORKSPACE_BYTES = 4U * 1024U * 1024U;
+constexpr size_t HOPPER_BLAS_WORKSPACE_BYTES = 32U * 1024U * 1024U;
+
 void ValidateRuntimeOptions(const RuntimeOptions &options, std::source_location location) {
   if (options.error_sink_ == nullptr) {
     throw InvalidArgumentError("runtime error sink must not be null", location);
@@ -49,6 +55,9 @@ void ValidateRuntimeOptions(const RuntimeOptions &options, std::source_location 
   }
   if (options.event_pool_reserve_per_device_ > options.event_pool_capacity_per_device_) {
     throw InvalidArgumentError("runtime event pool reserve cannot exceed its cache capacity", location);
+  }
+  if (options.blas_workspace_bytes_ != 0 && options.blas_workspace_bytes_ < MINIMUM_BLAS_WORKSPACE_BYTES) {
+    throw InvalidArgumentError("runtime cuBLAS workspace must be zero or contain at least 16 KiB", location);
   }
   if (options.device_memory_.max_live_bytes_ != 0 && options.device_memory_.max_reserved_bytes_ != 0 &&
       options.device_memory_.max_live_bytes_ > options.device_memory_.max_reserved_bytes_) {
@@ -61,6 +70,14 @@ void ValidateRuntimeOptions(const RuntimeOptions &options, std::source_location 
       throw InvalidArgumentError("runtime device ordinals must be unique", location);
     }
   }
+}
+
+[[nodiscard]] auto ResolveBlasWorkspaceBytes(const RuntimeOptions &options, const DeviceProperties &properties) noexcept
+    -> size_t {
+  if (options.blas_workspace_bytes_ != 0) {
+    return options.blas_workspace_bytes_;
+  }
+  return properties.compute_capability_.major_ >= 9 ? HOPPER_BLAS_WORKSPACE_BYTES : DEFAULT_BLAS_WORKSPACE_BYTES;
 }
 
 [[nodiscard]] auto ToAllocatorOptions(const DeviceMemoryOptions &options) noexcept -> DeviceAllocatorOptions {
@@ -106,8 +123,12 @@ void ReportAbandonedRuntime(ErrorSink &error_sink, std::source_location location
 }  // namespace
 
 DeviceContext::DeviceContext(DeviceProperties properties, std::shared_ptr<EventPool> event_pool,
-                             std::shared_ptr<DeviceAllocator> allocator) noexcept
-    : properties_(std::move(properties)), event_pool_(std::move(event_pool)), allocator_(std::move(allocator)) {}
+                             std::shared_ptr<DeviceAllocator> allocator,
+                             std::shared_ptr<BlasHandlePool> blas_handle_pool) noexcept
+    : properties_(std::move(properties)),
+      event_pool_(std::move(event_pool)),
+      allocator_(std::move(allocator)),
+      blas_handle_pool_(std::move(blas_handle_pool)) {}
 
 auto DeviceContext::GetDevice() const noexcept -> Device { return properties_.device_; }
 
@@ -116,6 +137,10 @@ auto DeviceContext::GetProperties() const noexcept -> const DeviceProperties & {
 auto DeviceContext::GetEventPool() const noexcept -> const std::shared_ptr<EventPool> & { return event_pool_; }
 
 auto DeviceContext::GetAllocator() const noexcept -> const std::shared_ptr<DeviceAllocator> & { return allocator_; }
+
+auto DeviceContext::GetBlasHandlePool() const noexcept -> const std::shared_ptr<BlasHandlePool> & {
+  return blas_handle_pool_;
+}
 
 RuntimeState::RuntimeState(RuntimeOptions options, std::source_location location) : location_(location) {
   ValidateRuntimeOptions(options, location);
@@ -130,8 +155,10 @@ RuntimeState::RuntimeState(RuntimeOptions options, std::source_location location
     event_pool->Reserve(options.event_pool_reserve_per_device_, location);
     auto allocator =
         DeviceAllocator::Create(device, error_sink_, event_pool, ToAllocatorOptions(options.device_memory_), location);
-    device_contexts_.push_back(
-        std::make_shared<DeviceContext>(std::move(properties), std::move(event_pool), std::move(allocator)));
+    auto blas_handle_pool = std::make_shared<BlasHandlePool>(device, ResolveBlasWorkspaceBytes(options, properties),
+                                                             error_sink_, event_pool, allocator, location);
+    device_contexts_.push_back(std::make_shared<DeviceContext>(std::move(properties), std::move(event_pool),
+                                                               std::move(allocator), std::move(blas_handle_pool)));
   }
 
   const auto peer_entry_count =
@@ -212,6 +239,7 @@ void RuntimeState::TrimMemory(Device device, size_t target_reserved_bytes, std::
 
 void RuntimeState::Poll() noexcept {
   for (const auto &device_context : device_contexts_) {
+    device_context->GetBlasHandlePool()->Poll();
     device_context->GetAllocator()->Poll();
   }
 }
@@ -228,6 +256,9 @@ void RuntimeState::Shutdown(std::source_location location) {
     throw InvalidArgumentError(FormatOutstandingContexts(context_count), location);
   }
 
+  for (const auto &device_context : device_contexts_) {
+    device_context->GetBlasHandlePool()->Shutdown(location);
+  }
   for (const auto &device_context : device_contexts_) {
     device_context->GetAllocator()->Shutdown(location);
   }
