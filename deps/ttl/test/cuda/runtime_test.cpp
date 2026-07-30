@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -37,10 +38,15 @@ namespace {
 
 constexpr size_t FAKE_RESOURCE_COUNT = 128;
 constexpr size_t FAKE_ALLOCATION_BYTES = 16U * 1024U;
+constexpr size_t FAKE_HOST_ALLOCATION_BYTES = 256;
 constexpr int FAKE_DEVICE_COUNT = 2;
 
 struct alignas(256) FakeAllocation final {
   std::array<std::byte, FAKE_ALLOCATION_BYTES> bytes_;
+};
+
+struct alignas(16) FakeHostAllocation final {
+  std::array<std::byte, FAKE_HOST_ALLOCATION_BYTES> bytes_;
 };
 
 struct FakeCublasHandle final {
@@ -51,11 +57,14 @@ struct FakeCublasHandle final {
 };
 
 std::array<FakeAllocation, FAKE_RESOURCE_COUNT> fake_allocations;
+std::array<FakeHostAllocation, FAKE_RESOURCE_COUNT> fake_host_allocations;
 std::array<FakeCublasHandle, FAKE_RESOURCE_COUNT> fake_cublas_handles;
 std::array<int, FAKE_RESOURCE_COUNT> fake_streams;
 std::array<int, FAKE_RESOURCE_COUNT> fake_events;
 std::array<int, FAKE_DEVICE_COUNT> fake_pools;
 size_t fake_allocation_index = 0;
+size_t fake_host_allocation_index = 0;
+size_t fake_free_host_count = 0;
 size_t fake_stream_index = 0;
 size_t fake_event_index = 0;
 size_t fake_create_stream_count = 0;
@@ -77,9 +86,14 @@ std::optional<size_t> fake_cublas_workspace_failure_call;
 int fake_current_device = 0;
 cudaError_t fake_peek_status = cudaSuccess;
 cudaError_t fake_query_event_status = cudaSuccess;
+cudaError_t fake_host_alloc_status = cudaSuccess;
+cudaError_t fake_free_host_status = cudaSuccess;
+cudaError_t fake_memset_status = cudaSuccess;
 
 void ResetFakeCuda() {
   fake_allocation_index = 0;
+  fake_host_allocation_index = 0;
+  fake_free_host_count = 0;
   fake_stream_index = 0;
   fake_event_index = 0;
   fake_create_stream_count = 0;
@@ -101,6 +115,9 @@ void ResetFakeCuda() {
   fake_current_device = 0;
   fake_peek_status = cudaSuccess;
   fake_query_event_status = cudaSuccess;
+  fake_host_alloc_status = cudaSuccess;
+  fake_free_host_status = cudaSuccess;
+  fake_memset_status = cudaSuccess;
 }
 
 auto FakeGetDeviceCount(int *count) -> cudaError_t {
@@ -257,6 +274,38 @@ auto FakeMallocFromPool(void **pointer, size_t bytes, cudaMemPool_t /*pool*/, cu
 
 auto FakeFreeAsync(void * /*pointer*/, cudaStream_t /*stream*/) -> cudaError_t { return cudaSuccess; }
 
+auto FakeMemsetAsync(void *pointer, int value, size_t bytes, cudaStream_t /*stream*/) -> cudaError_t {
+  if (fake_memset_status != cudaSuccess) {
+    return fake_memset_status;
+  }
+  std::memset(pointer, value, bytes);
+  return cudaSuccess;
+}
+
+auto FakeMemcpyAsync(void *destination, const void *source, size_t bytes, cudaMemcpyKind /*kind*/,
+                     cudaStream_t /*stream*/) -> cudaError_t {
+  std::memcpy(destination, source, bytes);
+  return cudaSuccess;
+}
+
+auto FakeHostAlloc(void **pointer, size_t bytes, unsigned int flags) -> cudaError_t {
+  if (fake_host_alloc_status != cudaSuccess) {
+    return fake_host_alloc_status;
+  }
+  if (bytes > FAKE_HOST_ALLOCATION_BYTES || flags != cudaHostAllocPortable ||
+      fake_host_allocation_index == fake_host_allocations.size()) {
+    return cudaErrorMemoryAllocation;
+  }
+  *pointer = fake_host_allocations[fake_host_allocation_index].bytes_.data();
+  fake_host_allocation_index++;
+  return cudaSuccess;
+}
+
+auto FakeFreeHost(void * /*pointer*/) -> cudaError_t {
+  fake_free_host_count++;
+  return fake_free_host_status;
+}
+
 auto FakeGetMemoryInfo(size_t *free_bytes, size_t *total_bytes) -> cudaError_t {
   *free_bytes = 1U << 20U;
   *total_bytes = 2U << 20U;
@@ -350,6 +399,10 @@ auto FakeCublasSetWorkspace(cublasHandle_t handle, void *workspace, size_t works
   cuda_api.trim_memory_pool_ = FakeTrimPool;
   cuda_api.malloc_from_pool_async_ = FakeMallocFromPool;
   cuda_api.free_async_ = FakeFreeAsync;
+  cuda_api.memset_async_ = FakeMemsetAsync;
+  cuda_api.memcpy_async_ = FakeMemcpyAsync;
+  cuda_api.host_alloc_ = FakeHostAlloc;
+  cuda_api.free_host_ = FakeFreeHost;
   cuda_api.get_memory_info_ = FakeGetMemoryInfo;
   cuda_api.get_pointer_attributes_ = FakeGetPointerAttributes;
   cuda_api.can_access_peer_ = FakeCanAccessPeer;
@@ -490,6 +543,8 @@ TEST_F(RuntimeTest, WrapsExternalStreamsWithoutTakingNativeOwnership) {
     EXPECT_EQ(owner_release_count->load(std::memory_order_relaxed), 0);
   }
 
+  EXPECT_EQ(owner_release_count->load(std::memory_order_relaxed), 0);
+  runtime.Poll();
   EXPECT_EQ(owner_release_count->load(std::memory_order_relaxed), 1);
   EXPECT_EQ(fake_destroyed_stream_count, 0);
   EXPECT_THROW([[maybe_unused]] auto context = runtime.WrapExternalStream(Device{0}, cudaStreamLegacy),
@@ -499,6 +554,35 @@ TEST_F(RuntimeTest, WrapsExternalStreamsWithoutTakingNativeOwnership) {
   runtime.Shutdown();
   EXPECT_EQ(fake_destroyed_stream_count, 1);
   EXPECT_TRUE(error_sink->GetRecords().empty());
+}
+
+TEST_F(RuntimeTest, ChecksAndReportsDeviceErrorResourceFailures) {
+  auto error_sink = std::make_shared<RecordingErrorSink>();
+  Runtime runtime{MakeRuntimeOptions(error_sink, {Device{0}})};
+
+  fake_host_alloc_status = cudaErrorMemoryAllocation;
+  EXPECT_THROW([[maybe_unused]] auto context = runtime.CreateExecutionContext(Device{0}), CudaError);
+  EXPECT_EQ(fake_free_host_count, 0);
+
+  fake_host_alloc_status = cudaSuccess;
+  fake_memset_status = cudaErrorInvalidValue;
+  EXPECT_THROW([[maybe_unused]] auto context = runtime.CreateExecutionContext(Device{0}), CudaError);
+  EXPECT_EQ(fake_free_host_count, 1);
+
+  fake_memset_status = cudaSuccess;
+  {
+    auto context = runtime.CreateExecutionContext(Device{0});
+    fake_free_host_status = cudaErrorInvalidValue;
+  }
+  fake_free_host_status = cudaSuccess;
+
+  const auto records = error_sink->GetRecords();
+  ASSERT_EQ(records.size(), 1);
+  EXPECT_EQ(records[0].code_, ErrorCode::CUDA);
+  EXPECT_NE(records[0].message_.find("cudaFreeHost"), std::string::npos);
+
+  runtime.Poll();
+  runtime.Shutdown();
 }
 
 TEST_F(RuntimeTest, CreatesValidatedContiguousAndDenseTensors) {
@@ -856,7 +940,7 @@ TEST_F(RuntimeTest, FailedParallelForkPoisonsContextWithoutPublishingScope) {
     EXPECT_THROW([[maybe_unused]] const auto event = context.RecordEvent(), InvalidArgumentError);
     const auto synchronize_count = fake_stream_synchronize_count;
     EXPECT_NO_THROW(context.Synchronize());
-    EXPECT_EQ(fake_stream_synchronize_count - synchronize_count, 2);
+    EXPECT_EQ(fake_stream_synchronize_count - synchronize_count, 3);
   }
 
   runtime.Shutdown();
@@ -879,7 +963,7 @@ TEST_F(RuntimeTest, FailedParallelJoinPoisonsContextAndSynchronizesEveryStream) 
     EXPECT_THROW([[maybe_unused]] const auto event = context.RecordEvent(), InvalidArgumentError);
     const auto synchronize_count = fake_stream_synchronize_count;
     EXPECT_NO_THROW(context.Synchronize());
-    EXPECT_EQ(fake_stream_synchronize_count - synchronize_count, 3);
+    EXPECT_EQ(fake_stream_synchronize_count - synchronize_count, 4);
   }
 
   runtime.Shutdown();

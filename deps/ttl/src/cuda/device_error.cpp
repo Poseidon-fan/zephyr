@@ -1,0 +1,194 @@
+#include "ttl/internal/device_error.hpp"
+
+#include <bit>
+#include <cstdint>
+#include <limits>
+#include <memory>
+#include <optional>
+#include <source_location>
+#include <string>
+#include <utility>
+
+#include <cuda_runtime_api.h>
+
+#include "ttl/device.hpp"
+#include "ttl/dtype.hpp"
+#include "ttl/error.hpp"
+#include "ttl/error_sink.hpp"
+#include "ttl/internal/cuda_api.hpp"
+#include "ttl/internal/cuda_check.hpp"
+#include "ttl/internal/device_allocator.hpp"
+#include "ttl/internal/device_guard.hpp"
+#include "ttl/internal/storage.hpp"
+#include "ttl/internal/stream.hpp"
+#include "ttl/stream.hpp"
+
+namespace ttl::internal {
+namespace {
+
+[[nodiscard]] auto DecodeOffendingValue(DType dtype, uint64_t bits) -> std::string {
+  switch (dtype) {
+    case DType::BOOL:
+      return bits == 0 ? "false" : "true";
+    case DType::UINT8:
+      return std::to_string(static_cast<uint8_t>(bits));
+    case DType::INT32:
+      return std::to_string(std::bit_cast<int32_t>(static_cast<uint32_t>(bits)));
+    case DType::INT64:
+      return std::to_string(std::bit_cast<int64_t>(bits));
+    case DType::FLOAT16:
+      return std::to_string(Float16ToFloat(Float16{.bits_ = static_cast<uint16_t>(bits)}));
+    case DType::BFLOAT16:
+      return std::to_string(BFloat16ToFloat(BFloat16{.bits_ = static_cast<uint16_t>(bits)}));
+    case DType::FLOAT32:
+      return std::to_string(std::bit_cast<float>(static_cast<uint32_t>(bits)));
+  }
+  return "<invalid dtype>";
+}
+
+[[nodiscard]] auto FormatCastError(const DeviceErrorRecord &record, DType source_dtype, DType target_dtype)
+    -> std::string {
+  std::string message{"CastOut operation "};
+  message.append(std::to_string(record.operation_sequence_));
+  message.append(" cannot convert ");
+  message.append(DecodeOffendingValue(source_dtype, record.offending_value_bits_));
+  message.append(" from ");
+  message.append(GetDTypeName(source_dtype));
+  message.append(" to ");
+  message.append(GetDTypeName(target_dtype));
+  message.append(" at iterator index ");
+  message.append(std::to_string(record.linear_index_));
+  return message;
+}
+
+}  // namespace
+
+class PinnedDeviceErrorRecord final {
+ public:
+  PinnedDeviceErrorRecord(Device device, std::shared_ptr<ErrorSink> error_sink, std::source_location location)
+      : device_(device), error_sink_(std::move(error_sink)), location_(location) {
+    void *pointer = nullptr;
+    CheckCuda(GetCudaApi().host_alloc_(&pointer, sizeof(DeviceErrorRecord), cudaHostAllocPortable),
+              "cudaHostAlloc (device error mirror)", location_);
+    if (pointer == nullptr) {
+      throw InternalError("cudaHostAlloc returned a null device error mirror", location_);
+    }
+    record_ = static_cast<DeviceErrorRecord *>(pointer);
+  }
+
+  PinnedDeviceErrorRecord(const PinnedDeviceErrorRecord &) = delete;
+  auto operator=(const PinnedDeviceErrorRecord &) -> PinnedDeviceErrorRecord & = delete;
+
+  ~PinnedDeviceErrorRecord() noexcept {
+    if (record_ == nullptr) {
+      return;
+    }
+    TryCuda(GetCudaApi().free_host_(record_), "cudaFreeHost (device error mirror)", *error_sink_,
+            ErrorReportContext{
+                .location_ = location_,
+                .device_ = device_,
+                .stream_id_ = std::nullopt,
+            });
+  }
+
+  [[nodiscard]] auto Get() noexcept -> DeviceErrorRecord * { return record_; }
+  [[nodiscard]] auto Get() const noexcept -> const DeviceErrorRecord * { return record_; }
+
+ private:
+  Device device_;
+  std::shared_ptr<ErrorSink> error_sink_;
+  std::source_location location_;
+  DeviceErrorRecord *record_{nullptr};
+};
+
+auto DeviceErrorState::Create(const std::shared_ptr<DeviceAllocator> &allocator, const Stream &stream,
+                              std::shared_ptr<ErrorSink> error_sink, std::source_location location)
+    -> std::unique_ptr<DeviceErrorState> {
+  if (allocator == nullptr || error_sink == nullptr) {
+    throw InvalidArgumentError("device error state requires an allocator and error sink", location);
+  }
+  if (allocator->GetDevice() != stream.GetDevice()) {
+    throw InvalidArgumentError("device error state stream and allocator devices must match", location);
+  }
+
+  DeviceGuard device_guard{allocator->GetDevice(), *error_sink, location};
+  auto host_record = std::make_unique<PinnedDeviceErrorRecord>(allocator->GetDevice(), std::move(error_sink), location);
+  auto storage = allocator->Allocate(stream, sizeof(DeviceErrorRecord), alignof(DeviceErrorRecord),
+                                     AllocationContext{
+                                         .operation_ = "ExecutionContext device error record",
+                                         .output_shape_ = std::nullopt,
+                                         .dtype_ = std::nullopt,
+                                         .location_ = location,
+                                     });
+  CheckCuda(GetCudaApi().memset_async_(storage->GetBasePointer(), 0, sizeof(DeviceErrorRecord),
+                                       StreamAccess::GetNative(stream)),
+            "cudaMemsetAsync (initialize device error record)", location);
+  return std::unique_ptr<DeviceErrorState>{new DeviceErrorState{std::move(storage), std::move(host_record)}};
+}
+
+DeviceErrorState::DeviceErrorState(std::shared_ptr<Storage> storage,
+                                   std::unique_ptr<PinnedDeviceErrorRecord> host_record) noexcept
+    : storage_(std::move(storage)), host_record_(std::move(host_record)) {}
+
+DeviceErrorState::~DeviceErrorState() noexcept = default;
+
+auto DeviceErrorState::Register(const Stream &stream, DType source_dtype, DType target_dtype,
+                                std::source_location location) -> DeviceErrorLaunchContext {
+  if (!IsValidDType(source_dtype) || !IsValidDType(target_dtype)) {
+    throw InternalError("device error registration received an invalid dtype", location);
+  }
+  if (stream.GetDevice() != storage_->GetDevice()) {
+    throw InternalError("device error registration used a stream on the wrong device", location);
+  }
+  if (next_operation_sequence_ == std::numeric_limits<uint64_t>::max()) {
+    throw OverflowError("device error operation sequence exhausted", location);
+  }
+
+  storage_->RecordUsage(stream);
+  const auto sequence = next_operation_sequence_;
+  next_operation_sequence_++;
+  return DeviceErrorLaunchContext{
+      .record_ = static_cast<DeviceErrorRecord *>(storage_->GetBasePointer()),
+      .operation_sequence_ = sequence,
+      .source_dtype_ = source_dtype,
+      .target_dtype_ = target_dtype,
+  };
+}
+
+void DeviceErrorState::EnqueueRead(cudaStream_t stream, std::source_location location) {
+  if (stream == nullptr) {
+    throw InternalError("device error read requires a non-null stream", location);
+  }
+  CheckCuda(GetCudaApi().memcpy_async_(host_record_->Get(), storage_->GetBasePointer(), sizeof(DeviceErrorRecord),
+                                       cudaMemcpyDeviceToHost, stream),
+            "cudaMemcpyAsync (read device error record)", location);
+}
+
+void DeviceErrorState::ConsumeAndReset(cudaStream_t stream, std::source_location location) {
+  const auto record = *host_record_->Get();
+  CheckCuda(GetCudaApi().memset_async_(storage_->GetBasePointer(), 0, sizeof(DeviceErrorRecord), stream),
+            "cudaMemsetAsync (reset device error record)", location);
+  if (record.code_ == static_cast<uint32_t>(DeviceErrorCode::NONE)) {
+    return;
+  }
+
+  const auto source_dtype = static_cast<DType>(record.source_dtype_);
+  const auto target_dtype = static_cast<DType>(record.target_dtype_);
+  if (!IsValidDType(source_dtype) || !IsValidDType(target_dtype)) {
+    throw InternalError("device error record contains an invalid dtype", location);
+  }
+
+  switch (static_cast<DeviceErrorCode>(record.code_)) {
+    case DeviceErrorCode::CAST_OUT_OF_RANGE:
+      throw DeviceError(FormatCastError(record, source_dtype, target_dtype), location);
+    case DeviceErrorCode::INDEX_OUT_OF_BOUNDS:
+    case DeviceErrorCode::INTEGER_DIVIDE_BY_ZERO:
+    case DeviceErrorCode::RNG_COUNTER_OVERFLOW:
+      throw DeviceError("device kernel reported an unsupported asynchronous error code", location);
+    case DeviceErrorCode::NONE:
+      break;
+  }
+  throw InternalError("device error record contains an invalid error code", location);
+}
+
+}  // namespace ttl::internal

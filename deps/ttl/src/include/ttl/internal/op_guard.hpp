@@ -9,6 +9,7 @@
 #include <driver_types.h>
 
 #include "ttl/execution_context.hpp"
+#include "ttl/internal/device_error.hpp"
 #include "ttl/internal/device_guard.hpp"
 #include "ttl/internal/execution_context.hpp"
 #include "ttl/tensor.hpp"
@@ -31,6 +32,7 @@ class OpGuard final {
   void ValidateTensor(const Tensor &tensor) const;
   void RecordTensor(const Tensor &tensor);
   void CheckLaunch() const;
+  [[nodiscard]] auto RegisterDeviceError(DType source_dtype, DType target_dtype) -> DeviceErrorLaunchContext;
 
   [[nodiscard]] auto GetStream() const noexcept -> const Stream &;
   [[nodiscard]] auto GetNativeStream() const noexcept -> cudaStream_t;

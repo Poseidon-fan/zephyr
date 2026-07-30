@@ -17,6 +17,7 @@
 #include "ttl/internal/blas_handle_pool.hpp"
 #include "ttl/internal/cuda_api.hpp"
 #include "ttl/internal/cuda_check.hpp"
+#include "ttl/internal/device_error.hpp"
 #include "ttl/internal/device_guard.hpp"
 #include "ttl/internal/event.hpp"
 #include "ttl/internal/event_pool.hpp"
@@ -32,14 +33,15 @@ namespace ttl::internal {
 ExecutionContextImpl::ExecutionContextImpl(std::shared_ptr<RuntimeState> runtime_state,
                                            std::shared_ptr<DeviceContext> device_context, ExecutionLane primary_lane,
                                            std::vector<ExecutionLane> auxiliary_lanes,
-                                           std::optional<PooledEvent> fork_event,
-                                           std::vector<PooledEvent> join_events) noexcept
+                                           std::optional<PooledEvent> fork_event, std::vector<PooledEvent> join_events,
+                                           std::unique_ptr<DeviceErrorState> device_error_state) noexcept
     : runtime_state_(std::move(runtime_state)),
       device_context_(std::move(device_context)),
       primary_lane_(std::move(primary_lane)),
       auxiliary_lanes_(std::move(auxiliary_lanes)),
       fork_event_(std::move(fork_event)),
-      join_events_(std::move(join_events)) {}
+      join_events_(std::move(join_events)),
+      device_error_state_(std::move(device_error_state)) {}
 
 ExecutionContextImpl::~ExecutionContextImpl() noexcept { runtime_state_->UnregisterExecutionContext(); }
 
@@ -92,11 +94,13 @@ auto ContextAccess::Create(const std::shared_ptr<RuntimeState> &runtime_state,
     }
   }
 
+  auto device_error_state = DeviceErrorState::Create(device_context->GetAllocator(), primary_lane.GetStream(),
+                                                     runtime_state->GetErrorSink(), location);
   runtime_state->RegisterExecutionContext(location);
   try {
-    return ExecutionContext{std::make_unique<ExecutionContextImpl>(runtime_state, std::move(device_context),
-                                                                   std::move(primary_lane), std::move(auxiliary_lanes),
-                                                                   std::move(fork_event), std::move(join_events))};
+    return ExecutionContext{std::make_unique<ExecutionContextImpl>(
+        runtime_state, std::move(device_context), std::move(primary_lane), std::move(auxiliary_lanes),
+        std::move(fork_event), std::move(join_events), std::move(device_error_state))};
   } catch (...) {
     runtime_state->UnregisterExecutionContext();
     throw;
@@ -142,9 +146,39 @@ auto ContextAccess::GetPrimaryLane(ExecutionContext &context, std::source_locati
   return GetImpl(context, location).primary_lane_;
 }
 
+auto ContextAccess::GetDeviceErrorState(ExecutionContext &context, std::source_location location)
+    -> DeviceErrorState & {
+  return *GetImpl(context, location).device_error_state_;
+}
+
 }  // namespace ttl::internal
 
 namespace ttl {
+namespace {
+
+void SynchronizeAndCheckDeviceErrors(internal::ExecutionContextImpl &impl, std::source_location location) {
+  const auto &cuda_api = internal::GetCudaApi();
+  const auto primary_stream = internal::StreamAccess::GetNative(impl.primary_lane_.GetStream());
+  const auto failed = impl.status_.load(std::memory_order_acquire) == internal::ExecutionContextStatus::FAILED;
+
+  auto first_status = cudaSuccess;
+  if (failed) {
+    first_status = cuda_api.synchronize_stream_(primary_stream);
+    for (const auto &lane : impl.auxiliary_lanes_) {
+      const auto status = cuda_api.synchronize_stream_(internal::StreamAccess::GetNative(lane.GetStream()));
+      if (first_status == cudaSuccess && status != cudaSuccess) {
+        first_status = status;
+      }
+    }
+    internal::CheckCuda(first_status, "cudaStreamSynchronize", location);
+  }
+
+  impl.device_error_state_->EnqueueRead(primary_stream, location);
+  internal::CheckCuda(cuda_api.synchronize_stream_(primary_stream), "cudaStreamSynchronize", location);
+  impl.device_error_state_->ConsumeAndReset(primary_stream, location);
+}
+
+}  // namespace
 
 ExecutionContext::ExecutionContext(std::unique_ptr<internal::ExecutionContextImpl> impl) noexcept
     : impl_(std::move(impl)) {}
@@ -175,20 +209,16 @@ void ExecutionContext::Wait(const Event &event, std::source_location location) {
   internal::EventAccess::Wait(impl_->primary_lane_.GetStream(), event, location);
 }
 
+void ExecutionContext::CheckAsyncErrors(std::source_location location) {
+  internal::ContextUseGuard use_guard{*this, internal::ContextUseMode::CLEANUP, location};
+  internal::DeviceGuard device_guard{GetDevice(), *impl_->runtime_state_->GetErrorSink(), location};
+  SynchronizeAndCheckDeviceErrors(*impl_, location);
+}
+
 void ExecutionContext::Synchronize(std::source_location location) {
   internal::ContextUseGuard use_guard{*this, internal::ContextUseMode::CLEANUP, location};
   internal::DeviceGuard device_guard{GetDevice(), *impl_->runtime_state_->GetErrorSink(), location};
-  const auto &cuda_api = internal::GetCudaApi();
-  auto first_status = cuda_api.synchronize_stream_(internal::StreamAccess::GetNative(impl_->primary_lane_.GetStream()));
-  if (impl_->status_.load(std::memory_order_acquire) == internal::ExecutionContextStatus::FAILED) {
-    for (const auto &lane : impl_->auxiliary_lanes_) {
-      const auto status = cuda_api.synchronize_stream_(internal::StreamAccess::GetNative(lane.GetStream()));
-      if (first_status == cudaSuccess && status != cudaSuccess) {
-        first_status = status;
-      }
-    }
-  }
-  internal::CheckCuda(first_status, "cudaStreamSynchronize", location);
+  SynchronizeAndCheckDeviceErrors(*impl_, location);
   impl_->device_context_->GetBlasHandlePool()->Poll();
   impl_->device_context_->GetAllocator()->Poll();
 }

@@ -5,6 +5,7 @@
 #include <driver_types.h>
 
 #include "ttl/dtype.hpp"
+#include "ttl/internal/device_error.hpp"
 #include "ttl/internal/elementwise_iterator.hpp"
 #include "ttl/scalar.hpp"
 
@@ -16,6 +17,11 @@ void LaunchFill(cudaStream_t stream, DType dtype, const ElementwiseIterator &ite
 
 /** Launch a typed identity copy using an already validated two-operand iteration plan. */
 void LaunchCopy(cudaStream_t stream, DType dtype, const ElementwiseIterator &iterator,
+                std::source_location location = std::source_location::current());
+
+/** Launch a checked dtype conversion using an already validated two-operand iteration plan. */
+void LaunchCast(cudaStream_t stream, DType source_dtype, DType target_dtype, const ElementwiseIterator &iterator,
+                const DeviceErrorLaunchContext &error_context,
                 std::source_location location = std::source_location::current());
 
 }  // namespace ttl::internal

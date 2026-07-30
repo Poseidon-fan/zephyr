@@ -65,6 +65,11 @@ void OpGuard::RecordTensor(const Tensor &tensor) { RecordTensorOnStream(tensor, 
 
 void OpGuard::CheckLaunch() const { CheckCuda(GetCudaApi().peek_at_last_error_(), operation_, location_); }
 
+auto OpGuard::RegisterDeviceError(DType source_dtype, DType target_dtype) -> DeviceErrorLaunchContext {
+  return ContextAccess::GetDeviceErrorState(context_, location_)
+      .Register(context_.GetStream(), source_dtype, target_dtype, location_);
+}
+
 auto OpGuard::GetStream() const noexcept -> const Stream & { return context_.GetStream(); }
 
 auto OpGuard::GetNativeStream() const noexcept -> cudaStream_t { return StreamAccess::GetNative(context_.GetStream()); }

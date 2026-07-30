@@ -140,6 +140,28 @@ TEST_F(FoundationOpsTest, FillsEverySupportedDType) {
   EXPECT_EQ(CopyToHost<float>(GetContext(), floating), std::vector<float>(5, 3.5F));
 }
 
+TEST_F(FoundationOpsTest, BuildsFunctionalCreationResultsWithCanonicalLayout) {
+  const auto full = Full(GetContext(), Shape{2, 3}, Scalar{int64_t{-7}}, DType::INT32);
+  const auto zeros = Zeros(GetContext(), Shape{5}, DType::FLOAT16);
+  const auto ones = Ones(GetContext(), Shape{5}, DType::BFLOAT16);
+  EXPECT_EQ(CopyToHost<int32_t>(GetContext(), full), std::vector<int32_t>(6, -7));
+  for (const auto value : CopyToHost<Float16>(GetContext(), zeros)) {
+    EXPECT_FLOAT_EQ(Float16ToFloat(value), 0.0F);
+  }
+  for (const auto value : CopyToHost<BFloat16>(GetContext(), ones)) {
+    EXPECT_FLOAT_EQ(BFloat16ToFloat(value), 1.0F);
+  }
+
+  auto strided = EmptyStrided(GetContext(), Shape{3, 2}, Strides{1, 3}, DType::INT64);
+  const auto empty_like = EmptyLike(GetContext(), strided);
+  EXPECT_EQ(empty_like.GetShape(), strided.GetShape());
+  EXPECT_EQ(empty_like.GetDType(), strided.GetDType());
+  EXPECT_TRUE(empty_like.IsContiguous());
+
+  EXPECT_THROW([[maybe_unused]] const auto invalid = Full(GetContext(), Shape{1}, Scalar{int64_t{256}}, DType::UINT8),
+               OverflowError);
+}
+
 TEST_F(FoundationOpsTest, FillsDenseStridedOutputsAndValidatesScalarBeforeEmptyReturn) {
   auto transposed_storage = EmptyStrided(GetContext(), Shape{3, 2}, Strides{1, 3}, DType::INT32);
   FillOut(GetContext(), transposed_storage, Scalar{int64_t{9}});

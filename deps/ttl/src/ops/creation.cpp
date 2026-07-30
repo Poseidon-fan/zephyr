@@ -43,6 +43,30 @@ namespace {
 
 }  // namespace
 
+auto EmptyLike(ExecutionContext &context, const Tensor &input, std::source_location location) -> Tensor {
+  const auto &input_impl = internal::TensorAccess::GetImpl(input, location);
+  {
+    internal::OpGuard guard{context, "EmptyLike", location};
+    guard.ValidateTensor(input);
+  }
+  return Empty(context, input_impl.GetShape(), input_impl.GetDType(), location);
+}
+
+auto Full(ExecutionContext &context, const Shape &shape, Scalar value, DType dtype, std::source_location location)
+    -> Tensor {
+  auto output = Empty(context, shape, dtype, location);
+  FillOut(context, output, value, location);
+  return output;
+}
+
+auto Zeros(ExecutionContext &context, const Shape &shape, DType dtype, std::source_location location) -> Tensor {
+  return Full(context, shape, Scalar{int64_t{0}}, dtype, location);
+}
+
+auto Ones(ExecutionContext &context, const Shape &shape, DType dtype, std::source_location location) -> Tensor {
+  return Full(context, shape, Scalar{int64_t{1}}, dtype, location);
+}
+
 void FillOut(ExecutionContext &context, Tensor &output, Scalar value, std::source_location location) {
   internal::OpGuard guard{context, "FillOut", location};
   guard.ValidateTensor(output);

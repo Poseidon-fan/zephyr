@@ -13,6 +13,7 @@ namespace ttl::internal {
  */
 struct CudaApi final {
   using MallocFromPoolAsync = cudaError_t (*)(void **, size_t, cudaMemPool_t, cudaStream_t);
+  using HostAlloc = cudaError_t (*)(void **, size_t, unsigned int);
 
   decltype(&cudaGetDeviceCount) get_device_count_;
   decltype(&cudaGetDeviceProperties) get_device_properties_;
@@ -40,6 +41,8 @@ struct CudaApi final {
   decltype(&cudaFreeAsync) free_async_;
   decltype(&cudaMemsetAsync) memset_async_;
   decltype(&cudaMemcpyAsync) memcpy_async_;
+  HostAlloc host_alloc_;
+  decltype(&cudaFreeHost) free_host_;
   decltype(&cudaMemGetInfo) get_memory_info_;
   decltype(&cudaPointerGetAttributes) get_pointer_attributes_;
   decltype(&cudaDeviceCanAccessPeer) can_access_peer_;

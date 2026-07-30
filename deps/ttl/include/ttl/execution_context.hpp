@@ -47,6 +47,9 @@ class ExecutionContext final {
 
   [[nodiscard]] auto RecordEvent(std::source_location location = std::source_location::current()) -> Event;
   void Wait(const Event &event, std::source_location location = std::source_location::current());
+
+  /** Synchronize submitted work and surface the first pending device-side semantic error. */
+  void CheckAsyncErrors(std::source_location location = std::source_location::current());
   void Synchronize(std::source_location location = std::source_location::current());
   void Poll(std::source_location location = std::source_location::current());
 

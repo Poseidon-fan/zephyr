@@ -25,6 +25,7 @@ class Runtime;
 namespace ttl::internal {
 
 class DeviceContext;
+class DeviceErrorState;
 class RuntimeState;
 
 enum class ExecutionContextStatus : uint8_t {
@@ -41,7 +42,8 @@ class ExecutionContextImpl final {
  public:
   ExecutionContextImpl(std::shared_ptr<RuntimeState> runtime_state, std::shared_ptr<DeviceContext> device_context,
                        ExecutionLane primary_lane, std::vector<ExecutionLane> auxiliary_lanes,
-                       std::optional<PooledEvent> fork_event, std::vector<PooledEvent> join_events) noexcept;
+                       std::optional<PooledEvent> fork_event, std::vector<PooledEvent> join_events,
+                       std::unique_ptr<DeviceErrorState> device_error_state) noexcept;
 
   ExecutionContextImpl(const ExecutionContextImpl &) = delete;
   auto operator=(const ExecutionContextImpl &) -> ExecutionContextImpl & = delete;
@@ -56,6 +58,7 @@ class ExecutionContextImpl final {
   std::vector<ExecutionLane> auxiliary_lanes_;
   std::optional<PooledEvent> fork_event_;
   std::vector<PooledEvent> join_events_;
+  std::unique_ptr<DeviceErrorState> device_error_state_;
   std::atomic_flag in_use_ = ATOMIC_FLAG_INIT;
   std::atomic<ExecutionContextStatus> status_{ExecutionContextStatus::READY};
 };
@@ -95,6 +98,8 @@ class ContextAccess final {
   [[nodiscard]] static auto GetStream(ExecutionContext &context, std::source_location location) -> const Stream &;
   [[nodiscard]] static auto GetNativeStream(ExecutionContext &context, std::source_location location) -> cudaStream_t;
   [[nodiscard]] static auto GetPrimaryLane(ExecutionContext &context, std::source_location location) -> ExecutionLane &;
+  [[nodiscard]] static auto GetDeviceErrorState(ExecutionContext &context, std::source_location location)
+      -> DeviceErrorState &;
 };
 
 }  // namespace ttl::internal
