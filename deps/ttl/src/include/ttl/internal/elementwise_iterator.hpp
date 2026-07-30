@@ -9,6 +9,7 @@
 #include <string_view>
 #include <type_traits>
 
+#include "ttl/internal/index_width.hpp"
 #include "ttl/shape.hpp"
 #include "ttl/tensor.hpp"
 
@@ -23,11 +24,6 @@ enum class AliasPolicy : uint8_t {
   EXACT_ONE_BINARY_INPUT,
   EXACT_ONE_WHERE_VALUE,
   COPY,
-};
-
-enum class IndexWidth : uint8_t {
-  UINT32,
-  UINT64,
 };
 
 enum class IteratorPath : uint8_t {
