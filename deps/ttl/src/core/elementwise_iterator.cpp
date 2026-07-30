@@ -280,6 +280,11 @@ void ValidateAlias(AliasPolicy policy, const Tensor &output, std::span<const Ten
         ThrowIteratorError(operation, "selected alias policy requires exactly two inputs", location);
       }
       break;
+    case AliasPolicy::EXACT_ONE_WHERE_VALUE:
+      if (inputs.size() != 3) {
+        ThrowIteratorError(operation, "selected alias policy requires condition and two value inputs", location);
+      }
+      break;
     case AliasPolicy::NO_ALIAS:
       break;
   }
@@ -307,6 +312,14 @@ void ValidateAlias(AliasPolicy policy, const Tensor &output, std::span<const Ten
       case AliasPolicy::EXACT_ONE_BINARY_INPUT:
         if (exact_alias_count > 1) {
           ThrowIteratorError(operation, "output may exactly alias at most one input", location);
+        }
+        break;
+      case AliasPolicy::EXACT_ONE_WHERE_VALUE:
+        if (input == inputs.front()) {
+          ThrowIteratorError(operation, "output must not alias the condition", location);
+        }
+        if (exact_alias_count > 1) {
+          ThrowIteratorError(operation, "output may exactly alias at most one value input", location);
         }
         break;
     }

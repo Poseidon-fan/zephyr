@@ -61,6 +61,16 @@ namespace {
   return message;
 }
 
+[[nodiscard]] auto FormatIntegerDivisionError(const DeviceErrorRecord &record, DType dtype) -> std::string {
+  std::string message{"DivideOut operation "};
+  message.append(std::to_string(record.operation_sequence_));
+  message.append(" encountered integer division by zero for ");
+  message.append(GetDTypeName(dtype));
+  message.append(" at iterator index ");
+  message.append(std::to_string(record.linear_index_));
+  return message;
+}
+
 }  // namespace
 
 class PinnedDeviceErrorRecord final {
@@ -181,8 +191,9 @@ void DeviceErrorState::ConsumeAndReset(cudaStream_t stream, std::source_location
   switch (static_cast<DeviceErrorCode>(record.code_)) {
     case DeviceErrorCode::CAST_OUT_OF_RANGE:
       throw DeviceError(FormatCastError(record, source_dtype, target_dtype), location);
-    case DeviceErrorCode::INDEX_OUT_OF_BOUNDS:
     case DeviceErrorCode::INTEGER_DIVIDE_BY_ZERO:
+      throw DeviceError(FormatIntegerDivisionError(record, source_dtype), location);
+    case DeviceErrorCode::INDEX_OUT_OF_BOUNDS:
     case DeviceErrorCode::RNG_COUNTER_OVERFLOW:
       throw DeviceError("device kernel reported an unsupported asynchronous error code", location);
     case DeviceErrorCode::NONE:

@@ -21,6 +21,7 @@ enum class AliasPolicy : uint8_t {
   NO_ALIAS,
   EXACT_UNARY,
   EXACT_ONE_BINARY_INPUT,
+  EXACT_ONE_WHERE_VALUE,
   COPY,
 };
 
