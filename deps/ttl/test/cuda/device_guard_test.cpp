@@ -46,22 +46,14 @@ auto FakeSetDevice(int device) -> cudaError_t {
   return fake_cuda_state.set_status_;
 }
 
-const CudaApi FAKE_CUDA_API{
-    .get_device_count_ = cudaGetDeviceCount,
-    .get_device_properties_ = cudaGetDeviceProperties,
-    .get_device_ = FakeGetDevice,
-    .set_device_ = FakeSetDevice,
-    .get_last_error_ = cudaGetLastError,
-    .get_stream_priority_range_ = cudaDeviceGetStreamPriorityRange,
-    .create_stream_with_priority_ = cudaStreamCreateWithPriority,
-    .destroy_stream_ = cudaStreamDestroy,
-    .create_event_with_flags_ = cudaEventCreateWithFlags,
-    .record_event_ = cudaEventRecord,
-    .query_event_ = cudaEventQuery,
-    .synchronize_event_ = cudaEventSynchronize,
-    .destroy_event_ = cudaEventDestroy,
-    .stream_wait_event_ = cudaStreamWaitEvent,
-};
+[[nodiscard]] auto MakeFakeCudaApi() -> CudaApi {
+  auto cuda_api = GetCudaApi();
+  cuda_api.get_device_ = FakeGetDevice;
+  cuda_api.set_device_ = FakeSetDevice;
+  return cuda_api;
+}
+
+const CudaApi FAKE_CUDA_API = MakeFakeCudaApi();
 
 class RecordingErrorSink final : public ErrorSink {
  public:

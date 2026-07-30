@@ -1,5 +1,7 @@
 #include "ttl/error.hpp"
 
+#include <bit>
+#include <cstdint>
 #include <string>
 #include <string_view>
 
@@ -21,7 +23,7 @@ TEST(ErrorCodeTest, ConvertsEveryCodeToString) {
   EXPECT_EQ(ErrorCodeToString(ErrorCode::CAPTURE), "CAPTURE");
   EXPECT_EQ(ErrorCodeToString(ErrorCode::ASYNC_EXECUTION), "ASYNC_EXECUTION");
   EXPECT_EQ(ErrorCodeToString(ErrorCode::INTERNAL), "INTERNAL");
-  EXPECT_EQ(ErrorCodeToString(static_cast<ErrorCode>(255)), "UNKNOWN");
+  EXPECT_EQ(ErrorCodeToString(std::bit_cast<ErrorCode>(uint8_t{255})), "UNKNOWN");
 }
 
 TEST(ErrorTest, PreservesStructuredFieldsAndFormatsWhat) {

@@ -23,6 +23,18 @@ constinit const CudaApi CUDA_API{
     .synchronize_event_ = cudaEventSynchronize,
     .destroy_event_ = cudaEventDestroy,
     .stream_wait_event_ = cudaStreamWaitEvent,
+    .synchronize_stream_ = cudaStreamSynchronize,
+    .create_memory_pool_ = cudaMemPoolCreate,
+    .destroy_memory_pool_ = cudaMemPoolDestroy,
+    .set_memory_pool_attribute_ = cudaMemPoolSetAttribute,
+    .get_memory_pool_attribute_ = cudaMemPoolGetAttribute,
+    .set_memory_pool_access_ = cudaMemPoolSetAccess,
+    .trim_memory_pool_ = cudaMemPoolTrimTo,
+    .malloc_from_pool_async_ = static_cast<CudaApi::MallocFromPoolAsync>(cudaMallocFromPoolAsync),
+    .free_async_ = cudaFreeAsync,
+    .get_memory_info_ = cudaMemGetInfo,
+    .get_pointer_attributes_ = cudaPointerGetAttributes,
+    .can_access_peer_ = cudaDeviceCanAccessPeer,
 };
 
 constinit std::atomic<const CudaApi *> active_cuda_api{&CUDA_API};

@@ -118,22 +118,16 @@ auto FakeDestroyEvent(cudaEvent_t /* event */) -> cudaError_t {
   return fake_cuda_state.destroy_event_status_.load();
 }
 
-const CudaApi FAKE_CUDA_API{
-    .get_device_count_ = cudaGetDeviceCount,
-    .get_device_properties_ = cudaGetDeviceProperties,
-    .get_device_ = FakeGetDevice,
-    .set_device_ = FakeSetDevice,
-    .get_last_error_ = cudaGetLastError,
-    .get_stream_priority_range_ = cudaDeviceGetStreamPriorityRange,
-    .create_stream_with_priority_ = cudaStreamCreateWithPriority,
-    .destroy_stream_ = cudaStreamDestroy,
-    .create_event_with_flags_ = FakeCreateEventWithFlags,
-    .record_event_ = cudaEventRecord,
-    .query_event_ = cudaEventQuery,
-    .synchronize_event_ = cudaEventSynchronize,
-    .destroy_event_ = FakeDestroyEvent,
-    .stream_wait_event_ = cudaStreamWaitEvent,
-};
+[[nodiscard]] auto MakeFakeCudaApi() -> CudaApi {
+  auto cuda_api = GetCudaApi();
+  cuda_api.get_device_ = FakeGetDevice;
+  cuda_api.set_device_ = FakeSetDevice;
+  cuda_api.create_event_with_flags_ = FakeCreateEventWithFlags;
+  cuda_api.destroy_event_ = FakeDestroyEvent;
+  return cuda_api;
+}
+
+const CudaApi FAKE_CUDA_API = MakeFakeCudaApi();
 
 class RecordingErrorSink final : public ErrorSink {
  public:
@@ -248,7 +242,7 @@ TEST_F(EventPoolTest, MoveAssignmentReturnsTheReplacedLeaseAndTransfersOwnership
 
     first = std::move(second);
 
-    EXPECT_FALSE(second);
+    EXPECT_FALSE(second);  // NOLINT(bugprone-use-after-move)
     EXPECT_EQ(first.GetNative(), second_native);
     EXPECT_EQ(pool.GetStats().cached_event_count_, 1);
     EXPECT_EQ(pool.GetStats().outstanding_event_count_, 1);
@@ -379,20 +373,20 @@ TEST_F(EventPoolTest, ReportsDestroyFailuresWithoutThrowingFromLeaseDestruction)
 }
 
 TEST_F(EventPoolTest, SupportsConcurrentAcquireAndReleaseFromTheWarmCache) {
-  constexpr size_t THREAD_COUNT = 8;
-  constexpr size_t ITERATION_COUNT = 500;
+  constexpr size_t thread_count = 8;
+  constexpr size_t iteration_count = 500;
   const auto error_sink = std::make_shared<RecordingErrorSink>();
-  EventPool pool{Device{0}, error_sink, THREAD_COUNT};
-  pool.Reserve(THREAD_COUNT);
-  std::barrier start_barrier{static_cast<ptrdiff_t>(THREAD_COUNT)};
+  EventPool pool{Device{0}, error_sink, thread_count};
+  pool.Reserve(thread_count);
+  std::barrier start_barrier{static_cast<ptrdiff_t>(thread_count)};
   std::atomic<bool> saw_invalid_event{false};
 
   std::vector<std::jthread> threads;
-  threads.reserve(THREAD_COUNT);
-  for (size_t thread_index = 0; thread_index < THREAD_COUNT; thread_index++) {
+  threads.reserve(thread_count);
+  for (size_t thread_index = 0; thread_index < thread_count; thread_index++) {
     threads.emplace_back([&] {
       start_barrier.arrive_and_wait();
-      for (size_t iteration = 0; iteration < ITERATION_COUNT; iteration++) {
+      for (size_t iteration = 0; iteration < iteration_count; iteration++) {
         auto event = pool.Acquire();
         if (!event) {
           saw_invalid_event.store(true);
@@ -404,23 +398,23 @@ TEST_F(EventPoolTest, SupportsConcurrentAcquireAndReleaseFromTheWarmCache) {
 
   const auto stats = pool.GetStats();
   EXPECT_FALSE(saw_invalid_event.load());
-  EXPECT_EQ(stats.cached_event_count_, THREAD_COUNT);
+  EXPECT_EQ(stats.cached_event_count_, thread_count);
   EXPECT_EQ(stats.outstanding_event_count_, 0);
-  EXPECT_EQ(fake_cuda_state.create_event_call_count_.load(), THREAD_COUNT);
+  EXPECT_EQ(fake_cuda_state.create_event_call_count_.load(), thread_count);
   EXPECT_EQ(error_sink->GetReportCount(), 0);
 }
 
 TEST_F(EventPoolTest, SupportsConcurrentColdAcquireAndReturnsEveryEventToTheCache) {
-  constexpr size_t THREAD_COUNT = 8;
+  constexpr size_t thread_count = 8;
   const auto error_sink = std::make_shared<RecordingErrorSink>();
-  EventPool pool{Device{0}, error_sink, THREAD_COUNT};
-  std::barrier start_barrier{static_cast<ptrdiff_t>(THREAD_COUNT)};
-  std::barrier acquired_barrier{static_cast<ptrdiff_t>(THREAD_COUNT)};
+  EventPool pool{Device{0}, error_sink, thread_count};
+  std::barrier start_barrier{static_cast<ptrdiff_t>(thread_count)};
+  std::barrier acquired_barrier{static_cast<ptrdiff_t>(thread_count)};
   std::atomic<bool> saw_invalid_event{false};
 
   std::vector<std::jthread> threads;
-  threads.reserve(THREAD_COUNT);
-  for (size_t thread_index = 0; thread_index < THREAD_COUNT; thread_index++) {
+  threads.reserve(thread_count);
+  for (size_t thread_index = 0; thread_index < thread_count; thread_index++) {
     threads.emplace_back([&] {
       start_barrier.arrive_and_wait();
       auto event = pool.Acquire();
@@ -434,9 +428,9 @@ TEST_F(EventPoolTest, SupportsConcurrentColdAcquireAndReturnsEveryEventToTheCach
 
   const auto stats = pool.GetStats();
   EXPECT_FALSE(saw_invalid_event.load());
-  EXPECT_EQ(stats.cached_event_count_, THREAD_COUNT);
+  EXPECT_EQ(stats.cached_event_count_, thread_count);
   EXPECT_EQ(stats.outstanding_event_count_, 0);
-  EXPECT_EQ(fake_cuda_state.create_event_call_count_.load(), THREAD_COUNT);
+  EXPECT_EQ(fake_cuda_state.create_event_call_count_.load(), thread_count);
   EXPECT_EQ(error_sink->GetReportCount(), 0);
 }
 

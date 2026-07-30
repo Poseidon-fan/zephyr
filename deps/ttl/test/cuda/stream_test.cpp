@@ -92,22 +92,17 @@ auto FakeDestroyStream(cudaStream_t stream) -> cudaError_t {
   return fake_cuda_state.destroy_stream_status_;
 }
 
-const CudaApi FAKE_CUDA_API{
-    .get_device_count_ = cudaGetDeviceCount,
-    .get_device_properties_ = cudaGetDeviceProperties,
-    .get_device_ = FakeGetDevice,
-    .set_device_ = FakeSetDevice,
-    .get_last_error_ = cudaGetLastError,
-    .get_stream_priority_range_ = FakeGetStreamPriorityRange,
-    .create_stream_with_priority_ = FakeCreateStreamWithPriority,
-    .destroy_stream_ = FakeDestroyStream,
-    .create_event_with_flags_ = cudaEventCreateWithFlags,
-    .record_event_ = cudaEventRecord,
-    .query_event_ = cudaEventQuery,
-    .synchronize_event_ = cudaEventSynchronize,
-    .destroy_event_ = cudaEventDestroy,
-    .stream_wait_event_ = cudaStreamWaitEvent,
-};
+[[nodiscard]] auto MakeFakeCudaApi() -> CudaApi {
+  auto cuda_api = GetCudaApi();
+  cuda_api.get_device_ = FakeGetDevice;
+  cuda_api.set_device_ = FakeSetDevice;
+  cuda_api.get_stream_priority_range_ = FakeGetStreamPriorityRange;
+  cuda_api.create_stream_with_priority_ = FakeCreateStreamWithPriority;
+  cuda_api.destroy_stream_ = FakeDestroyStream;
+  return cuda_api;
+}
+
+const CudaApi FAKE_CUDA_API = MakeFakeCudaApi();
 
 class RecordingErrorSink final : public ErrorSink {
  public:
@@ -142,7 +137,7 @@ TEST_F(StreamTest, CreatesNonBlockingOwnedStreamAndSharesItsIdentity) {
 
   {
     const auto stream = StreamAccess::CreateOwned(Device{2}, -2, error_sink);
-    const auto stream_copy = stream;
+    const auto stream_copy = stream;  // NOLINT(performance-unnecessary-copy-initialization)
     stream_id = stream.GetId();
 
     EXPECT_EQ(stream.GetDevice(), Device{2});

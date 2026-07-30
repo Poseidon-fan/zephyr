@@ -44,7 +44,7 @@ class StreamGate final {
 
   ~StreamGate() noexcept {
     Release();
-    cudaStreamSynchronize(stream_);
+    EXPECT_EQ(cudaStreamSynchronize(stream_), cudaSuccess);
   }
 
   [[nodiscard]] auto GetFlag() noexcept -> std::atomic<bool> * { return &gate_; }
@@ -171,22 +171,24 @@ auto FakeStreamWaitEvent(cudaStream_t stream, cudaEvent_t event, unsigned int fl
   return fake_cuda_state.wait_event_status_;
 }
 
-const CudaApi FAKE_CUDA_API{
-    .get_device_count_ = cudaGetDeviceCount,
-    .get_device_properties_ = cudaGetDeviceProperties,
-    .get_device_ = FakeGetDevice,
-    .set_device_ = FakeSetDevice,
-    .get_last_error_ = FakeGetLastError,
-    .get_stream_priority_range_ = FakeGetStreamPriorityRange,
-    .create_stream_with_priority_ = FakeCreateStreamWithPriority,
-    .destroy_stream_ = FakeDestroyStream,
-    .create_event_with_flags_ = FakeCreateEventWithFlags,
-    .record_event_ = FakeRecordEvent,
-    .query_event_ = FakeQueryEvent,
-    .synchronize_event_ = FakeSynchronizeEvent,
-    .destroy_event_ = FakeDestroyEvent,
-    .stream_wait_event_ = FakeStreamWaitEvent,
-};
+[[nodiscard]] auto MakeFakeCudaApi() -> CudaApi {
+  auto cuda_api = GetCudaApi();
+  cuda_api.get_device_ = FakeGetDevice;
+  cuda_api.set_device_ = FakeSetDevice;
+  cuda_api.get_last_error_ = FakeGetLastError;
+  cuda_api.get_stream_priority_range_ = FakeGetStreamPriorityRange;
+  cuda_api.create_stream_with_priority_ = FakeCreateStreamWithPriority;
+  cuda_api.destroy_stream_ = FakeDestroyStream;
+  cuda_api.create_event_with_flags_ = FakeCreateEventWithFlags;
+  cuda_api.record_event_ = FakeRecordEvent;
+  cuda_api.query_event_ = FakeQueryEvent;
+  cuda_api.synchronize_event_ = FakeSynchronizeEvent;
+  cuda_api.destroy_event_ = FakeDestroyEvent;
+  cuda_api.stream_wait_event_ = FakeStreamWaitEvent;
+  return cuda_api;
+}
+
+const CudaApi FAKE_CUDA_API = MakeFakeCudaApi();
 
 class RecordingErrorSink final : public ErrorSink {
  public:
@@ -228,7 +230,7 @@ TEST_F(EventTest, RecordsTimingDisabledEventAndSharesItsLifetime) {
 
   {
     const auto event = EventAccess::Record(stream);
-    const auto event_copy = event;
+    const auto event_copy = event;  // NOLINT(performance-unnecessary-copy-initialization)
 
     EXPECT_EQ(event.GetDevice(), Device{2});
     EXPECT_EQ(event_copy.GetDevice(), Device{2});

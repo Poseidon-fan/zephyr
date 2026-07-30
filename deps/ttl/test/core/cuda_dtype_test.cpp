@@ -1,6 +1,7 @@
 #include "ttl/internal/cuda_dtype.hpp"
 
 #include <array>
+#include <bit>
 #include <concepts>
 #include <cstdint>
 #include <string_view>
@@ -69,7 +70,7 @@ TEST(CudaDTypeDispatchTest, RejectsUnsupportedCategories) {
 }
 
 TEST(CudaDTypeDispatchTest, RejectsInvalidEnumValues) {
-  constexpr auto invalid = static_cast<DType>(0xFF);
+  constexpr auto invalid = std::bit_cast<DType>(uint8_t{0xFF});
   EXPECT_THROW(static_cast<void>(DispatchCudaDType(invalid, "copy", DTYPE_VISITOR)), InvalidArgumentError);
   EXPECT_THROW(static_cast<void>(DispatchCudaIntegralDType(invalid, "index", DTYPE_VISITOR)), InvalidArgumentError);
 }

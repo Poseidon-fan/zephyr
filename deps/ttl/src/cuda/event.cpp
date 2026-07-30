@@ -32,7 +32,6 @@ EventState::EventState(Device device, uint64_t recording_stream_id, std::shared_
                        std::source_location location)
     : device_(device),
       recording_stream_id_(recording_stream_id),
-      event_(nullptr),
       error_sink_(std::move(error_sink)),
       location_(location) {
   ValidateErrorSink(error_sink_, location_);
@@ -84,7 +83,10 @@ auto EventState::Query(std::source_location location) const -> bool {
     return true;
   }
   if (status == cudaErrorNotReady) {
-    cuda_api.get_last_error_();
+    const auto last_error = cuda_api.get_last_error_();
+    if (last_error != cudaSuccess && last_error != cudaErrorNotReady) {
+      CheckCuda(last_error, "cudaGetLastError after cudaEventQuery", location);
+    }
     return false;
   }
   CheckCuda(status, "cudaEventQuery", location);

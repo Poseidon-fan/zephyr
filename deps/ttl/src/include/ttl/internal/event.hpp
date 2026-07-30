@@ -39,7 +39,7 @@ class EventState final {
 
   Device device_;
   uint64_t recording_stream_id_;
-  cudaEvent_t event_;
+  cudaEvent_t event_{nullptr};
   std::shared_ptr<ErrorSink> error_sink_;
   std::source_location location_;
 };

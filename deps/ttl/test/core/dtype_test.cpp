@@ -1,6 +1,7 @@
 #include "ttl/dtype.hpp"
 
 #include <array>
+#include <bit>
 #include <cmath>
 #include <concepts>
 #include <cstdint>
@@ -112,7 +113,7 @@ TEST(DTypeInfoTest, ClassifiesBooleanIntegralAndFloatingSeparately) {
 }
 
 TEST(DTypeInfoTest, RejectsInvalidEnumValues) {
-  constexpr auto invalid = static_cast<DType>(0xFF);
+  constexpr auto invalid = std::bit_cast<DType>(uint8_t{0xFF});
   EXPECT_FALSE(IsValidDType(invalid));
   EXPECT_THROW(static_cast<void>(GetDTypeInfo(invalid)), InvalidArgumentError);
   EXPECT_THROW(static_cast<void>(IsFloating(invalid)), InvalidArgumentError);

@@ -64,27 +64,21 @@ auto FakeSetDevice(int /* device */) -> cudaError_t {
   return cudaSuccess;
 }
 
-const CudaApi FAKE_CUDA_API{
-    .get_device_count_ = FakeGetDeviceCount,
-    .get_device_properties_ = FakeGetDeviceProperties,
-    .get_device_ = FakeGetDevice,
-    .set_device_ = FakeSetDevice,
-    .get_last_error_ = cudaGetLastError,
-    .get_stream_priority_range_ = cudaDeviceGetStreamPriorityRange,
-    .create_stream_with_priority_ = cudaStreamCreateWithPriority,
-    .destroy_stream_ = cudaStreamDestroy,
-    .create_event_with_flags_ = cudaEventCreateWithFlags,
-    .record_event_ = cudaEventRecord,
-    .query_event_ = cudaEventQuery,
-    .synchronize_event_ = cudaEventSynchronize,
-    .destroy_event_ = cudaEventDestroy,
-    .stream_wait_event_ = cudaStreamWaitEvent,
-};
+[[nodiscard]] auto MakeFakeCudaApi() -> CudaApi {
+  auto cuda_api = GetCudaApi();
+  cuda_api.get_device_count_ = FakeGetDeviceCount;
+  cuda_api.get_device_properties_ = FakeGetDeviceProperties;
+  cuda_api.get_device_ = FakeGetDevice;
+  cuda_api.set_device_ = FakeSetDevice;
+  return cuda_api;
+}
+
+const CudaApi FAKE_CUDA_API = MakeFakeCudaApi();
 
 [[nodiscard]] auto MakeSupportedProperties() -> cudaDeviceProp {
   cudaDeviceProp properties{};
-  constexpr std::string_view DEVICE_NAME{"NVIDIA Test GPU"};
-  std::copy(DEVICE_NAME.begin(), DEVICE_NAME.end(), properties.name);
+  constexpr std::string_view device_name{"NVIDIA Test GPU"};
+  std::ranges::copy(device_name, properties.name);
   properties.warpSize = 32;
   properties.major = 8;
   properties.minor = 0;
@@ -140,7 +134,7 @@ TEST_F(DevicePropertiesTest, QueriesAndMapsValidatedPropertiesWithoutChangingCur
 }
 
 TEST_F(DevicePropertiesTest, AcceptsNonNullTerminatedCudaDeviceName) {
-  std::fill(std::begin(fake_cuda_state.properties_.name), std::end(fake_cuda_state.properties_.name), 'x');
+  std::ranges::fill(fake_cuda_state.properties_.name, 'x');
 
   const auto properties = QueryDeviceProperties(Device{0});
 
