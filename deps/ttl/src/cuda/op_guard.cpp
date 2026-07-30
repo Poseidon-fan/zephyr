@@ -16,6 +16,7 @@
 #include "ttl/internal/cuda_check.hpp"
 #include "ttl/internal/execution_context.hpp"
 #include "ttl/internal/execution_lane.hpp"
+#include "ttl/internal/scratch_arena.hpp"
 #include "ttl/internal/storage.hpp"
 #include "ttl/internal/stream.hpp"
 #include "ttl/internal/tensor_impl.hpp"
@@ -88,6 +89,22 @@ auto OpGuard::GetBlasWorkspace() const -> void * {
 
 auto OpGuard::GetBlasWorkspaceBytes() const -> size_t {
   return ContextAccess::GetPrimaryLane(context_, location_).GetBlasWorkspace(location_).GetCapacityBytes();
+}
+
+auto OpGuard::MakeScratchScope() -> ScratchArena::Scope {
+  return ContextAccess::GetPrimaryLane(context_, location_).MakeScratchScope(ScratchGrowthPolicy::GROWABLE, location_);
+}
+
+void OpGuard::ReserveScratch(size_t capacity_bytes) {
+  ContextAccess::GetPrimaryLane(context_, location_).ReserveScratch(capacity_bytes, location_);
+}
+
+auto OpGuard::GetScratchCapacityBytes() const -> size_t {
+  return ContextAccess::GetPrimaryLane(context_, location_).GetScratchCapacityBytes();
+}
+
+auto OpGuard::GetScratchHighWaterBytes() const -> size_t {
+  return ContextAccess::GetPrimaryLane(context_, location_).GetScratchHighWaterBytes();
 }
 
 }  // namespace ttl::internal

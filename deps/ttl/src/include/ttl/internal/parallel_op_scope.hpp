@@ -10,6 +10,7 @@
 #include <driver_types.h>
 
 #include "ttl/internal/op_guard.hpp"
+#include "ttl/internal/scratch_arena.hpp"
 #include "ttl/stream.hpp"
 #include "ttl/tensor.hpp"
 
@@ -44,6 +45,10 @@ class ParallelOpScope final {
   [[nodiscard]] auto GetAuxiliaryCublasLtHandle(size_t index) const -> cublasLtHandle_t;
   [[nodiscard]] auto GetAuxiliaryBlasWorkspace(size_t index) const -> void *;
   [[nodiscard]] auto GetAuxiliaryBlasWorkspaceBytes(size_t index) const -> size_t;
+  [[nodiscard]] auto MakeAuxiliaryScratchScope(size_t index) const -> ScratchArena::Scope;
+  void ReserveAuxiliaryScratch(size_t index, size_t capacity_bytes) const;
+  [[nodiscard]] auto GetAuxiliaryScratchCapacityBytes(size_t index) const -> size_t;
+  [[nodiscard]] auto GetAuxiliaryScratchHighWaterBytes(size_t index) const -> size_t;
 
   void RecordTensor(const Tensor &tensor, size_t auxiliary_stream_index);
   void CheckLaunch() const;

@@ -8,13 +8,18 @@
 #include <cublas_v2.h>
 
 #include "ttl/internal/blas_handle_pool.hpp"
+#include "ttl/internal/device_allocator.hpp"
+#include "ttl/internal/scratch_arena.hpp"
 #include "ttl/internal/storage.hpp"
 #include "ttl/stream.hpp"
 
 namespace ttl::internal {
 
-ExecutionLane::ExecutionLane(Stream stream, std::shared_ptr<BlasHandlePool> blas_handle_pool) noexcept
-    : stream_(std::move(stream)), blas_handle_pool_(std::move(blas_handle_pool)) {}
+ExecutionLane::ExecutionLane(Stream stream, std::shared_ptr<BlasHandlePool> blas_handle_pool,
+                             std::shared_ptr<DeviceAllocator> allocator)
+    : stream_(std::move(stream)),
+      blas_handle_pool_(std::move(blas_handle_pool)),
+      scratch_arena_(std::make_unique<ScratchArena>(stream_, std::move(allocator))) {}
 
 auto ExecutionLane::GetStream() const noexcept -> const Stream & { return stream_; }
 
@@ -29,6 +34,19 @@ auto ExecutionLane::GetCublasLtHandle(std::source_location location) -> cublasLt
 auto ExecutionLane::GetBlasWorkspace(std::source_location location) -> Storage & {
   return GetBlas(location).GetWorkspace();
 }
+
+auto ExecutionLane::MakeScratchScope(ScratchGrowthPolicy growth_policy, std::source_location location)
+    -> ScratchArena::Scope {
+  return scratch_arena_->MakeScope(growth_policy, location);
+}
+
+void ExecutionLane::ReserveScratch(size_t capacity_bytes, std::source_location location) {
+  scratch_arena_->Reserve(capacity_bytes, location);
+}
+
+auto ExecutionLane::GetScratchCapacityBytes() const noexcept -> size_t { return scratch_arena_->GetCapacityBytes(); }
+
+auto ExecutionLane::GetScratchHighWaterBytes() const noexcept -> size_t { return scratch_arena_->GetHighWaterBytes(); }
 
 auto ExecutionLane::GetBlas(std::source_location location) -> BlasHandleLease & {
   if (!blas_.has_value()) {

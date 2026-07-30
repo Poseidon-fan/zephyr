@@ -67,7 +67,7 @@ ContextUseGuard::~ContextUseGuard() noexcept { impl_.in_use_.clear(std::memory_o
 auto ContextAccess::Create(const std::shared_ptr<RuntimeState> &runtime_state,
                            std::shared_ptr<DeviceContext> device_context, Stream stream,
                            const ExecutionContextOptions &options, std::source_location location) -> ExecutionContext {
-  ExecutionLane primary_lane{std::move(stream), device_context->GetBlasHandlePool()};
+  ExecutionLane primary_lane{std::move(stream), device_context->GetBlasHandlePool(), device_context->GetAllocator()};
 
   std::vector<ExecutionLane> auxiliary_lanes;
   if (options.max_auxiliary_stream_count_ > auxiliary_lanes.max_size()) {
@@ -77,7 +77,8 @@ auto ContextAccess::Create(const std::shared_ptr<RuntimeState> &runtime_state,
   for (size_t index = 0; index < options.max_auxiliary_stream_count_; index++) {
     auto auxiliary_stream = StreamAccess::CreateOwned(primary_lane.GetStream().GetDevice(), options.stream_priority_,
                                                       runtime_state->GetErrorSink(), location);
-    auxiliary_lanes.emplace_back(std::move(auxiliary_stream), device_context->GetBlasHandlePool());
+    auxiliary_lanes.emplace_back(std::move(auxiliary_stream), device_context->GetBlasHandlePool(),
+                                 device_context->GetAllocator());
   }
 
   std::optional<PooledEvent> fork_event;

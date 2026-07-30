@@ -23,6 +23,7 @@
 #include "ttl/internal/execution_lane.hpp"
 #include "ttl/internal/op_guard.hpp"
 #include "ttl/internal/runtime.hpp"
+#include "ttl/internal/scratch_arena.hpp"
 #include "ttl/internal/stream.hpp"
 #include "ttl/stream.hpp"
 #include "ttl/tensor.hpp"
@@ -155,6 +156,22 @@ auto ParallelOpScope::GetAuxiliaryBlasWorkspaceBytes(size_t index) const -> size
   return GetAuxiliaryLane(index).GetBlasWorkspace(location_).GetCapacityBytes();
 }
 
+auto ParallelOpScope::MakeAuxiliaryScratchScope(size_t index) const -> ScratchArena::Scope {
+  return GetAuxiliaryLane(index).MakeScratchScope(ScratchGrowthPolicy::GROWABLE, location_);
+}
+
+void ParallelOpScope::ReserveAuxiliaryScratch(size_t index, size_t capacity_bytes) const {
+  GetAuxiliaryLane(index).ReserveScratch(capacity_bytes, location_);
+}
+
+auto ParallelOpScope::GetAuxiliaryScratchCapacityBytes(size_t index) const -> size_t {
+  return GetAuxiliaryLane(index).GetScratchCapacityBytes();
+}
+
+auto ParallelOpScope::GetAuxiliaryScratchHighWaterBytes(size_t index) const -> size_t {
+  return GetAuxiliaryLane(index).GetScratchHighWaterBytes();
+}
+
 void ParallelOpScope::RecordTensor(const Tensor &tensor, size_t auxiliary_stream_index) {
   guard_.RecordTensorOnStream(tensor, GetAuxiliaryStream(auxiliary_stream_index));
 }
@@ -195,13 +212,11 @@ auto ParallelOpScope::EnqueueJoin() noexcept -> JoinResult {
     const auto record_status = cuda_api.record_event_(
         impl_.join_events_[index].GetNative(), StreamAccess::GetNative(impl_.auxiliary_lanes_[index].GetStream()));
     failure.Observe(record_status, "cudaEventRecord (parallel join)");
-    if (record_status != cudaSuccess) {
-      continue;
+    if (record_status == cudaSuccess) {
+      const auto wait_status =
+          cuda_api.stream_wait_event_(primary_stream, impl_.join_events_[index].GetNative(), cudaEventWaitDefault);
+      failure.Observe(wait_status, "cudaStreamWaitEvent (parallel join)");
     }
-
-    const auto wait_status =
-        cuda_api.stream_wait_event_(primary_stream, impl_.join_events_[index].GetNative(), cudaEventWaitDefault);
-    failure.Observe(wait_status, "cudaStreamWaitEvent (parallel join)");
   }
 
   return JoinResult{
