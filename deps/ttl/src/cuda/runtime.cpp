@@ -32,6 +32,7 @@
 #include "ttl/internal/event_pool.hpp"
 #include "ttl/internal/execution_context.hpp"
 #include "ttl/internal/matmul_plan.hpp"
+#include "ttl/internal/pinned_allocator.hpp"
 #include "ttl/internal/runtime.hpp"
 #include "ttl/internal/storage.hpp"
 #include "ttl/internal/stream.hpp"
@@ -164,6 +165,13 @@ RuntimeState::RuntimeState(RuntimeOptions options, std::source_location location
                                                                std::move(allocator), std::move(blas_handle_pool)));
   }
 
+  std::vector<std::shared_ptr<EventPool>> event_pools;
+  event_pools.reserve(device_contexts_.size());
+  for (const auto &device_context : device_contexts_) {
+    event_pools.push_back(device_context->GetEventPool());
+  }
+  pinned_allocator_ = PinnedAllocator::Create(error_sink_, event_pools, options.pinned_memory_, location);
+
   const auto peer_entry_count =
       CheckedMultiply(devices_.size(), devices_.size(), "runtime peer capability matrix size", location);
   peer_access_.assign(peer_entry_count, uint8_t{0});
@@ -214,6 +222,10 @@ auto RuntimeState::CanAccessPeer(Device device, Device peer_device, std::source_
 
 auto RuntimeState::GetErrorSink() const noexcept -> const std::shared_ptr<ErrorSink> & { return error_sink_; }
 
+auto RuntimeState::GetPinnedAllocator() const noexcept -> const std::shared_ptr<PinnedAllocator> & {
+  return pinned_allocator_;
+}
+
 auto RuntimeState::GetStatus() const noexcept -> RuntimeStatus { return status_.load(std::memory_order_acquire); }
 
 void RuntimeState::EnsureRunning(std::source_location location) const {
@@ -234,13 +246,26 @@ void RuntimeState::UnregisterExecutionContext() noexcept {
   }
 }
 
+auto RuntimeState::AllocatePinned(size_t bytes, std::source_location location) -> PinnedBuffer {
+  const std::scoped_lock lock{lifecycle_latch_};
+  EnsureRunning(location);
+  return pinned_allocator_->Allocate(bytes, location);
+}
+
 void RuntimeState::TrimMemory(Device device, size_t target_reserved_bytes, std::source_location location) {
   const std::scoped_lock lock{lifecycle_latch_};
   EnsureRunning(location);
   GetDeviceContext(device, location)->GetAllocator()->TrimTo(target_reserved_bytes, location);
 }
 
+void RuntimeState::TrimPinnedMemory(std::source_location location) {
+  const std::scoped_lock lock{lifecycle_latch_};
+  EnsureRunning(location);
+  pinned_allocator_->Trim(location);
+}
+
 void RuntimeState::Poll() noexcept {
+  pinned_allocator_->Poll();
   for (const auto &device_context : device_contexts_) {
     device_context->GetBlasHandlePool()->Poll();
     device_context->GetAllocator()->Poll();
@@ -265,6 +290,7 @@ void RuntimeState::Shutdown(std::source_location location) {
   for (const auto &device_context : device_contexts_) {
     device_context->GetAllocator()->Shutdown(location);
   }
+  pinned_allocator_->Shutdown(location);
   for (const auto &device_context : device_contexts_) {
     device_context->GetEventPool()->Close();
   }
@@ -350,9 +376,15 @@ auto Runtime::FromBlob(ExecutionContext &context, ExternalMemory memory, const S
   return internal::TensorFactory::Create(std::move(storage), dtype, shape, strides, storage_offset, location);
 }
 
+auto Runtime::AllocatePinned(size_t bytes, std::source_location location) -> PinnedBuffer {
+  return impl_->state_->AllocatePinned(bytes, location);
+}
+
 void Runtime::TrimMemory(Device device, size_t target_reserved_bytes, std::source_location location) {
   impl_->state_->TrimMemory(device, target_reserved_bytes, location);
 }
+
+void Runtime::TrimPinnedMemory(std::source_location location) { impl_->state_->TrimPinnedMemory(location); }
 
 void Runtime::Poll() noexcept { impl_->state_->Poll(); }
 

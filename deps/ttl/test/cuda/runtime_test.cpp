@@ -29,6 +29,7 @@
 #include "ttl/internal/execution_context.hpp"
 #include "ttl/internal/op_guard.hpp"
 #include "ttl/internal/parallel_op_scope.hpp"
+#include "ttl/internal/pinned_allocator.hpp"
 #include "ttl/internal/tensor_impl.hpp"
 #include "ttl/ops/copy.hpp"
 #include "ttl/shape.hpp"
@@ -39,7 +40,7 @@ namespace {
 
 constexpr size_t FAKE_RESOURCE_COUNT = 128;
 constexpr size_t FAKE_ALLOCATION_BYTES = 16U * 1024U;
-constexpr size_t FAKE_HOST_ALLOCATION_BYTES = 256;
+constexpr size_t FAKE_HOST_ALLOCATION_BYTES = 4U * 1024U;
 constexpr int FAKE_DEVICE_COUNT = 2;
 
 struct alignas(256) FakeAllocation final {
@@ -487,6 +488,7 @@ class RecordingErrorSink final : public ErrorSink {
       .event_pool_capacity_per_device_ = 8,
       .event_pool_reserve_per_device_ = 2,
       .error_sink_ = error_sink,
+      .pinned_memory_ = {},
   };
 }
 
@@ -591,6 +593,177 @@ TEST_F(RuntimeTest, CopiesAcrossDevicesWithAnExplicitProducerDependency) {
     const auto unsupported_ready = destination_context.RecordEvent();
     EXPECT_THROW(CopyPeerOut(source_context, unsupported_destination, unsupported_source, unsupported_ready),
                  NotSupportedError);
+  }
+
+  runtime.Shutdown();
+  EXPECT_TRUE(error_sink->GetRecords().empty());
+}
+
+TEST_F(RuntimeTest, CachesPinnedMemoryOnlyAfterEveryRecordedTransferCompletes) {
+  auto error_sink = std::make_shared<RecordingErrorSink>();
+  Runtime runtime{MakeRuntimeOptions(error_sink, {Device{0}})};
+
+  {
+    auto context = runtime.CreateExecutionContext(Device{0});
+    auto tensor = Empty(context, Shape{4}, DType::INT32);
+    constexpr std::array<int32_t, 4> values{2, 7, 1, 8};
+    const auto host_allocation_baseline = fake_host_allocation_index;
+
+    void *first_pointer = nullptr;
+    {
+      auto input = runtime.AllocatePinned(sizeof(values));
+      first_pointer = input.GetData();
+      std::memcpy(input.GetData(), values.data(), sizeof(values));
+      CopyFromPinnedAsync(context, tensor, input);
+    }
+
+    EXPECT_EQ(fake_host_allocation_index, host_allocation_baseline + 1);
+    fake_query_event_status = cudaErrorNotReady;
+    runtime.Poll();
+    EXPECT_EQ(ContextAccess::GetPinnedAllocator(context, std::source_location::current())
+                  ->GetStats()
+                  .pending_retirement_count_,
+              1);
+
+    {
+      auto output = runtime.AllocatePinned(sizeof(values));
+      EXPECT_NE(output.GetData(), first_pointer);
+      EXPECT_EQ(fake_host_allocation_index, host_allocation_baseline + 2);
+      CopyToPinnedAsync(context, output, tensor);
+      fake_query_event_status = cudaSuccess;
+      context.Synchronize();
+
+      std::array<int32_t, 4> result{};
+      std::memcpy(result.data(), output.GetData(), sizeof(result));
+      EXPECT_EQ(result, values);
+    }
+    runtime.Poll();
+
+    const auto host_allocation_count = fake_host_allocation_index;
+    {
+      [[maybe_unused]] auto reused = runtime.AllocatePinned(sizeof(values));
+      EXPECT_EQ(fake_host_allocation_index, host_allocation_count);
+    }
+    runtime.Poll();
+  }
+
+  const auto free_baseline = fake_free_host_count;
+  runtime.TrimPinnedMemory();
+  EXPECT_EQ(fake_free_host_count, free_baseline + 2);
+  runtime.Shutdown();
+  EXPECT_TRUE(error_sink->GetRecords().empty());
+}
+
+TEST_F(RuntimeTest, RejectsPinnedBudgetOverflowAndOutstandingShutdownOwners) {
+  auto error_sink = std::make_shared<RecordingErrorSink>();
+  auto options = MakeRuntimeOptions(error_sink, {Device{0}});
+  options.pinned_memory_.max_live_bytes_ = 4U * 1024U;
+  Runtime runtime{std::move(options)};
+
+  std::optional<PinnedBuffer> first{runtime.AllocatePinned(1)};
+  EXPECT_THROW([[maybe_unused]] auto second = runtime.AllocatePinned(1), OutOfMemoryError);
+  EXPECT_THROW(runtime.Shutdown(), InvalidArgumentError);
+  EXPECT_EQ(runtime.GetStatus(), RuntimeStatus::CLOSING);
+  EXPECT_THROW([[maybe_unused]] auto rejected = runtime.AllocatePinned(1), InvalidArgumentError);
+
+  first.reset();
+  runtime.Shutdown();
+  EXPECT_EQ(runtime.GetStatus(), RuntimeStatus::CLOSED);
+  EXPECT_TRUE(error_sink->GetRecords().empty());
+}
+
+TEST_F(RuntimeTest, RetiresOnePinnedBufferAcrossStreamsOnDifferentDevices) {
+  auto error_sink = std::make_shared<RecordingErrorSink>();
+  Runtime runtime{MakeRuntimeOptions(error_sink)};
+
+  {
+    auto first_context = runtime.CreateExecutionContext(Device{0});
+    auto second_context = runtime.CreateExecutionContext(Device{1});
+    auto first_tensor = Empty(first_context, Shape{4}, DType::INT32);
+    auto second_tensor = Empty(second_context, Shape{4}, DType::INT32);
+    const auto record_baseline = fake_record_event_count;
+
+    {
+      auto input = runtime.AllocatePinned(4 * sizeof(int32_t));
+      CopyFromPinnedAsync(first_context, first_tensor, input);
+      CopyFromPinnedAsync(second_context, second_tensor, input);
+    }
+
+    EXPECT_EQ(fake_record_event_count, record_baseline + 2);
+    const auto stats = ContextAccess::GetPinnedAllocator(first_context, std::source_location::current())->GetStats();
+    EXPECT_EQ(stats.pending_retirement_count_, 1);
+    EXPECT_EQ(stats.pending_bytes_, 4U * 1024U);
+    runtime.Poll();
+  }
+
+  runtime.Shutdown();
+  EXPECT_TRUE(error_sink->GetRecords().empty());
+}
+
+TEST_F(RuntimeTest, PoisonsPinnedRetirementWithoutThrowingFromBufferDestruction) {
+  auto error_sink = std::make_shared<RecordingErrorSink>();
+  Runtime runtime{MakeRuntimeOptions(error_sink, {Device{0}})};
+  const auto synchronize_baseline = fake_stream_synchronize_count;
+
+  {
+    auto context = runtime.CreateExecutionContext(Device{0});
+    auto tensor = Empty(context, Shape{4}, DType::INT32);
+    {
+      auto input = runtime.AllocatePinned(4 * sizeof(int32_t));
+      CopyFromPinnedAsync(context, tensor, input);
+      fake_record_event_failure_call = fake_record_event_count;
+    }
+    EXPECT_THROW([[maybe_unused]] auto rejected = runtime.AllocatePinned(16), InvalidArgumentError);
+  }
+
+  runtime.Shutdown();
+  EXPECT_GT(fake_stream_synchronize_count, synchronize_baseline);
+  const auto records = error_sink->GetRecords();
+  ASSERT_EQ(records.size(), 1);
+  EXPECT_EQ(records[0].code_, ErrorCode::CUDA);
+}
+
+TEST_F(RuntimeTest, RetainsPinnedAllocationWhenAsynchronousCleanupFails) {
+  auto error_sink = std::make_shared<RecordingErrorSink>();
+  auto options = MakeRuntimeOptions(error_sink, {Device{0}});
+  options.pinned_memory_.max_cached_bytes_ = 0;
+  Runtime runtime{std::move(options)};
+
+  fake_free_host_status = cudaErrorInvalidValue;
+  {
+    [[maybe_unused]] auto buffer = runtime.AllocatePinned(16);
+  }
+  EXPECT_EQ(fake_free_host_count, 1);
+  fake_free_host_status = cudaSuccess;
+
+  runtime.Shutdown();
+  EXPECT_EQ(fake_free_host_count, 2);
+  const auto records = error_sink->GetRecords();
+  ASSERT_EQ(records.size(), 1);
+  EXPECT_EQ(records[0].code_, ErrorCode::CUDA);
+}
+
+TEST_F(RuntimeTest, ValidatesPinnedTransferBuffersAndTensorLayoutsBeforeSubmission) {
+  auto error_sink = std::make_shared<RecordingErrorSink>();
+  Runtime runtime{MakeRuntimeOptions(error_sink, {Device{0}})};
+
+  {
+    auto context = runtime.CreateExecutionContext(Device{0});
+    auto tensor = Empty(context, Shape{4}, DType::INT32);
+    auto wrong_size = runtime.AllocatePinned(sizeof(int32_t));
+    EXPECT_THROW(CopyFromPinnedAsync(context, tensor, wrong_size), InvalidArgumentError);
+    EXPECT_THROW(CopyToPinnedAsync(context, wrong_size, tensor), InvalidArgumentError);
+
+    auto strided = EmptyStrided(context, Shape{2, 2}, Strides{1, 2}, DType::INT32);
+    auto matching = runtime.AllocatePinned(4 * sizeof(int32_t));
+    EXPECT_THROW(CopyFromPinnedAsync(context, strided, matching), InvalidArgumentError);
+    EXPECT_THROW(CopyToPinnedAsync(context, matching, strided), InvalidArgumentError);
+
+    auto moved_from = runtime.AllocatePinned(4 * sizeof(int32_t));
+    [[maybe_unused]] auto owner = std::move(moved_from);
+    // The public boundary must diagnose a moved-from handle instead of dereferencing it.
+    EXPECT_THROW(CopyFromPinnedAsync(context, tensor, moved_from),  // NOLINT(bugprone-use-after-move)
+                 InvalidArgumentError);
   }
 
   runtime.Shutdown();

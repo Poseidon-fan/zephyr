@@ -1,6 +1,12 @@
 #include "ttl/ops/copy.hpp"
 
+#include <cstddef>
+#include <cstring>
 #include <source_location>
+#include <span>
+#include <string>
+#include <string_view>
+#include <utility>
 
 #include <driver_types.h>
 
@@ -16,6 +22,7 @@
 #include "ttl/internal/event.hpp"
 #include "ttl/internal/execution_context.hpp"
 #include "ttl/internal/op_guard.hpp"
+#include "ttl/internal/pinned_allocator.hpp"
 #include "ttl/internal/stream.hpp"
 #include "ttl/internal/tensor_impl.hpp"
 #include "ttl/stream.hpp"
@@ -61,6 +68,56 @@ void CopyOutImpl(internal::OpGuard &guard, Tensor &output, const Tensor &input, 
     internal::LaunchCopy(guard.GetNativeStream(), output.GetDType(), iterator, location);
   }
   guard.CheckLaunch();
+}
+
+auto ValidateHostTransfer(internal::OpGuard &guard, const Tensor &tensor, size_t host_bytes, std::string_view operation,
+                          std::source_location location) -> size_t {
+  guard.ValidateTensor(tensor);
+  if (!tensor.IsContiguous()) {
+    std::string message{operation};
+    message.append(" requires a contiguous tensor");
+    throw InvalidArgumentError(std::move(message), location);
+  }
+  const auto expected_bytes =
+      internal::CheckedBytes(tensor.GetNumElements(), GetDTypeSize(tensor.GetDType(), location), location);
+  if (host_bytes != expected_bytes) {
+    std::string message{operation};
+    message.append(" requires host and tensor byte counts to match");
+    throw InvalidArgumentError(std::move(message), location);
+  }
+  return expected_bytes;
+}
+
+void CopyFromPinnedImpl(internal::OpGuard &guard, Tensor &output, const PinnedBuffer &source,
+                        std::source_location location) {
+  auto &source_block = internal::PinnedBufferAccess::GetBlock(source, location);
+  const auto bytes = ValidateHostTransfer(guard, output, source_block.GetSizeBytes(), "CopyFromPinnedAsync", location);
+  if (bytes == 0) {
+    return;
+  }
+
+  guard.RecordTensor(output);
+  source_block.RecordUsage(guard.GetStream(), location);
+  internal::CheckCuda(internal::GetCudaApi().memcpy_async_(internal::TensorAccess::GetMutableData(output, location),
+                                                           source_block.GetData(), bytes, cudaMemcpyHostToDevice,
+                                                           guard.GetNativeStream()),
+                      "cudaMemcpyAsync (CopyFromPinnedAsync)", location);
+}
+
+void CopyToPinnedImpl(internal::OpGuard &guard, PinnedBuffer &output, const Tensor &source,
+                      std::source_location location) {
+  auto &output_block = internal::PinnedBufferAccess::GetBlock(output, location);
+  const auto bytes = ValidateHostTransfer(guard, source, output_block.GetSizeBytes(), "CopyToPinnedAsync", location);
+  if (bytes == 0) {
+    return;
+  }
+
+  guard.RecordTensor(source);
+  output_block.RecordUsage(guard.GetStream(), location);
+  internal::CheckCuda(
+      internal::GetCudaApi().memcpy_async_(output_block.GetData(), internal::TensorAccess::GetData(source, location),
+                                           bytes, cudaMemcpyDeviceToHost, guard.GetNativeStream()),
+      "cudaMemcpyAsync (CopyToPinnedAsync)", location);
 }
 
 }  // namespace
@@ -145,6 +202,54 @@ void CopyPeerOut(ExecutionContext &destination_context, Tensor &destination, con
                           destination_device.GetOrdinal(), internal::TensorAccess::GetData(source, location),
                           source_device.GetOrdinal(), bytes, internal::StreamAccess::GetNative(destination_stream)),
                       "cudaMemcpyPeerAsync (CopyPeerOut)", location);
+}
+
+void CopyFromPinnedAsync(ExecutionContext &context, Tensor &output, const PinnedBuffer &source,
+                         std::source_location location) {
+  internal::OpGuard guard{context, "CopyFromPinnedAsync", location};
+  CopyFromPinnedImpl(guard, output, source, location);
+}
+
+void CopyToPinnedAsync(ExecutionContext &context, PinnedBuffer &output, const Tensor &source,
+                       std::source_location location) {
+  internal::OpGuard guard{context, "CopyToPinnedAsync", location};
+  CopyToPinnedImpl(guard, output, source, location);
+}
+
+void CopyFromHostBlocking(ExecutionContext &context, Tensor &output, std::span<const std::byte> source,
+                          std::source_location location) {
+  {
+    internal::OpGuard guard{context, "CopyFromHostBlocking", location};
+    ValidateHostTransfer(guard, output, source.size(), "CopyFromHostBlocking", location);
+  }
+
+  {
+    auto staging = internal::ContextAccess::AllocatePinned(context, source.size(), location);
+    if (!source.empty()) {
+      std::memcpy(staging.GetData(), source.data(), source.size());
+    }
+    internal::OpGuard guard{context, "CopyFromHostBlocking", location};
+    CopyFromPinnedImpl(guard, output, staging, location);
+  }
+  context.Synchronize(location);
+}
+
+void CopyToHostBlocking(ExecutionContext &context, std::span<std::byte> output, const Tensor &source,
+                        std::source_location location) {
+  {
+    internal::OpGuard guard{context, "CopyToHostBlocking", location};
+    ValidateHostTransfer(guard, source, output.size(), "CopyToHostBlocking", location);
+  }
+
+  auto staging = internal::ContextAccess::AllocatePinned(context, output.size(), location);
+  {
+    internal::OpGuard guard{context, "CopyToHostBlocking", location};
+    CopyToPinnedImpl(guard, staging, source, location);
+  }
+  context.Synchronize(location);
+  if (!output.empty()) {
+    std::memcpy(output.data(), staging.GetData(), output.size());
+  }
 }
 
 }  // namespace ttl

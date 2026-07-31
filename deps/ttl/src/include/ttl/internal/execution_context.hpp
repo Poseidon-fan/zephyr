@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -20,6 +21,7 @@
 namespace ttl {
 
 struct DeviceProperties;
+class PinnedBuffer;
 class Runtime;
 
 }  // namespace ttl
@@ -29,6 +31,7 @@ namespace ttl::internal {
 class DeviceContext;
 class DeviceErrorState;
 class MatmulAlgorithmCache;
+class PinnedAllocator;
 class RuntimeState;
 
 enum class ExecutionContextStatus : uint8_t {
@@ -102,6 +105,10 @@ class ContextAccess final {
       -> bool;
   [[nodiscard]] static auto GetErrorSink(ExecutionContext &context, std::source_location location)
       -> const std::shared_ptr<ErrorSink> &;
+  [[nodiscard]] static auto GetPinnedAllocator(ExecutionContext &context, std::source_location location)
+      -> const std::shared_ptr<PinnedAllocator> &;
+  [[nodiscard]] static auto AllocatePinned(ExecutionContext &context, size_t bytes, std::source_location location)
+      -> PinnedBuffer;
   [[nodiscard]] static auto GetStream(ExecutionContext &context, std::source_location location) -> const Stream &;
   [[nodiscard]] static auto GetNativeStream(ExecutionContext &context, std::source_location location) -> cudaStream_t;
   [[nodiscard]] static auto GetPrimaryLane(ExecutionContext &context, std::source_location location) -> ExecutionLane &;

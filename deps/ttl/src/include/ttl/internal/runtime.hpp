@@ -16,6 +16,7 @@
 #include "ttl/internal/device_allocator.hpp"
 #include "ttl/internal/event_pool.hpp"
 #include "ttl/internal/matmul_plan.hpp"
+#include "ttl/internal/pinned_allocator.hpp"
 #include "ttl/runtime.hpp"
 
 namespace ttl::internal {
@@ -59,12 +60,15 @@ class RuntimeState final {
       -> const std::shared_ptr<DeviceContext> &;
   [[nodiscard]] auto CanAccessPeer(Device device, Device peer_device, std::source_location location) const -> bool;
   [[nodiscard]] auto GetErrorSink() const noexcept -> const std::shared_ptr<ErrorSink> &;
+  [[nodiscard]] auto GetPinnedAllocator() const noexcept -> const std::shared_ptr<PinnedAllocator> &;
   [[nodiscard]] auto GetStatus() const noexcept -> RuntimeStatus;
 
   void EnsureRunning(std::source_location location) const;
   void RegisterExecutionContext(std::source_location location);
   void UnregisterExecutionContext() noexcept;
+  [[nodiscard]] auto AllocatePinned(size_t bytes, std::source_location location) -> PinnedBuffer;
   void TrimMemory(Device device, size_t target_reserved_bytes, std::source_location location);
+  void TrimPinnedMemory(std::source_location location);
   void Poll() noexcept;
   void Shutdown(std::source_location location);
   void Abandon() noexcept;
@@ -76,6 +80,7 @@ class RuntimeState final {
   std::vector<std::shared_ptr<DeviceContext>> device_contexts_;
   std::vector<uint8_t> peer_access_;
   std::shared_ptr<ErrorSink> error_sink_;
+  std::shared_ptr<PinnedAllocator> pinned_allocator_;
   std::source_location location_;
 
   mutable std::mutex lifecycle_latch_;

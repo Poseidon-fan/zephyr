@@ -1,9 +1,12 @@
 #pragma once
 
+#include <cstddef>
 #include <source_location>
+#include <span>
 
 #include "ttl/event.hpp"
 #include "ttl/execution_context.hpp"
+#include "ttl/pinned_buffer.hpp"
 #include "ttl/tensor.hpp"
 
 namespace ttl {
@@ -32,5 +35,21 @@ void ContiguousOut(ExecutionContext &context, Tensor &output, const Tensor &inpu
  */
 void CopyPeerOut(ExecutionContext &destination_context, Tensor &destination, const Tensor &source,
                  const Event &source_ready, std::source_location location = std::source_location::current());
+
+/** Enqueue a full-buffer copy from page-locked host memory into a contiguous tensor. */
+void CopyFromPinnedAsync(ExecutionContext &context, Tensor &output, const PinnedBuffer &source,
+                         std::source_location location = std::source_location::current());
+
+/** Enqueue a full-buffer copy from a contiguous tensor into page-locked host memory. */
+void CopyToPinnedAsync(ExecutionContext &context, PinnedBuffer &output, const Tensor &source,
+                       std::source_location location = std::source_location::current());
+
+/** Copy pageable host bytes into a contiguous tensor and block until the transfer and async checks complete. */
+void CopyFromHostBlocking(ExecutionContext &context, Tensor &output, std::span<const std::byte> source,
+                          std::source_location location = std::source_location::current());
+
+/** Copy a contiguous tensor into pageable host bytes and block until the transfer and async checks complete. */
+void CopyToHostBlocking(ExecutionContext &context, std::span<std::byte> output, const Tensor &source,
+                        std::source_location location = std::source_location::current());
 
 }  // namespace ttl

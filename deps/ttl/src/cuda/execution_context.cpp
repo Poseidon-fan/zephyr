@@ -24,8 +24,10 @@
 #include "ttl/internal/execution_context.hpp"
 #include "ttl/internal/execution_lane.hpp"
 #include "ttl/internal/matmul_plan.hpp"
+#include "ttl/internal/pinned_allocator.hpp"
 #include "ttl/internal/runtime.hpp"
 #include "ttl/internal/stream.hpp"
+#include "ttl/pinned_buffer.hpp"
 #include "ttl/runtime.hpp"
 #include "ttl/stream.hpp"
 
@@ -146,6 +148,16 @@ auto ContextAccess::GetErrorSink(ExecutionContext &context, std::source_location
   return GetRuntimeState(context, location)->GetErrorSink();
 }
 
+auto ContextAccess::GetPinnedAllocator(ExecutionContext &context, std::source_location location)
+    -> const std::shared_ptr<PinnedAllocator> & {
+  return GetRuntimeState(context, location)->GetPinnedAllocator();
+}
+
+auto ContextAccess::AllocatePinned(ExecutionContext &context, size_t bytes, std::source_location location)
+    -> PinnedBuffer {
+  return GetRuntimeState(context, location)->AllocatePinned(bytes, location);
+}
+
 auto ContextAccess::GetStream(ExecutionContext &context, std::source_location location) -> const Stream & {
   return GetImpl(context, location).primary_lane_.GetStream();
 }
@@ -238,12 +250,14 @@ void ExecutionContext::Synchronize(std::source_location location) {
   SynchronizeAndCheckDeviceErrors(*impl_, location);
   impl_->device_context_->GetBlasHandlePool()->Poll();
   impl_->device_context_->GetAllocator()->Poll();
+  impl_->runtime_state_->GetPinnedAllocator()->Poll();
 }
 
 void ExecutionContext::Poll(std::source_location location) {
   internal::ContextUseGuard use_guard{*this, internal::ContextUseMode::CLEANUP, location};
   impl_->device_context_->GetBlasHandlePool()->Poll();
   impl_->device_context_->GetAllocator()->Poll();
+  impl_->runtime_state_->GetPinnedAllocator()->Poll();
 }
 
 }  // namespace ttl

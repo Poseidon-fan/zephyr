@@ -15,6 +15,7 @@
 #include "ttl/device_properties.hpp"
 #include "ttl/dtype.hpp"
 #include "ttl/execution_context.hpp"
+#include "ttl/pinned_buffer.hpp"
 #include "ttl/shape.hpp"
 
 namespace ttl {
@@ -29,6 +30,11 @@ struct DeviceMemoryOptions final {
   bool enable_maintenance_thread_{true};
 };
 
+struct PinnedMemoryOptions final {
+  size_t max_cached_bytes_{256U * 1024U * 1024U};
+  size_t max_live_bytes_{512U * 1024U * 1024U};
+};
+
 struct RuntimeOptions final {
   std::vector<Device> devices_;
   DeviceMemoryOptions device_memory_;
@@ -36,6 +42,7 @@ struct RuntimeOptions final {
   size_t event_pool_capacity_per_device_{256};
   size_t event_pool_reserve_per_device_{0};
   std::shared_ptr<ErrorSink> error_sink_;
+  PinnedMemoryOptions pinned_memory_;
 };
 
 enum class RuntimeStatus : uint8_t {
@@ -86,8 +93,11 @@ class Runtime final {
                               const Strides &strides, DType dtype, int64_t storage_offset = 0,
                               std::source_location location = std::source_location::current()) -> Tensor;
 
+  [[nodiscard]] auto AllocatePinned(size_t bytes, std::source_location location = std::source_location::current())
+      -> PinnedBuffer;
   void TrimMemory(Device device, size_t target_reserved_bytes,
                   std::source_location location = std::source_location::current());
+  void TrimPinnedMemory(std::source_location location = std::source_location::current());
   void Poll() noexcept;
   void Shutdown(std::source_location location = std::source_location::current());
 
