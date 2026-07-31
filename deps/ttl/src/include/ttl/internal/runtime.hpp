@@ -19,7 +19,15 @@
 #include "ttl/internal/pinned_allocator.hpp"
 #include "ttl/runtime.hpp"
 
+namespace ttl {
+
+struct NcclOptions;
+
+}  // namespace ttl
+
 namespace ttl::internal {
+
+class CommunicatorGroupState;
 
 class DeviceContext final {
  public:
@@ -46,7 +54,7 @@ class DeviceContext final {
   MatmulAlgorithmCache matmul_algorithm_cache_;
 };
 
-class RuntimeState final {
+class RuntimeState final : public std::enable_shared_from_this<RuntimeState> {
  public:
   RuntimeState(RuntimeOptions options, std::source_location location);
 
@@ -66,6 +74,8 @@ class RuntimeState final {
   void EnsureRunning(std::source_location location) const;
   void RegisterExecutionContext(std::source_location location);
   void UnregisterExecutionContext() noexcept;
+  [[nodiscard]] auto CreateCommunicatorGroup(std::span<const Device> rank_order, const NcclOptions &options,
+                                             std::source_location location) -> std::shared_ptr<CommunicatorGroupState>;
   [[nodiscard]] auto AllocatePinned(size_t bytes, std::source_location location) -> PinnedBuffer;
   void TrimMemory(Device device, size_t target_reserved_bytes, std::source_location location);
   void TrimPinnedMemory(std::source_location location);
@@ -75,17 +85,25 @@ class RuntimeState final {
 
  private:
   [[nodiscard]] auto FindDeviceIndex(Device device, std::source_location location) const -> size_t;
+  [[nodiscard]] auto HasOpenCommunicatorGroups() noexcept -> bool;
 
   std::vector<Device> devices_;
   std::vector<std::shared_ptr<DeviceContext>> device_contexts_;
   std::vector<uint8_t> peer_access_;
   std::shared_ptr<ErrorSink> error_sink_;
   std::shared_ptr<PinnedAllocator> pinned_allocator_;
+  std::vector<std::weak_ptr<CommunicatorGroupState>> communicator_groups_;
   std::source_location location_;
 
   mutable std::mutex lifecycle_latch_;
   std::atomic<RuntimeStatus> status_{RuntimeStatus::RUNNING};
   std::atomic<size_t> execution_context_count_{0};
+};
+
+class RuntimeAccess final {
+ public:
+  [[nodiscard]] static auto GetState(Runtime &runtime, std::source_location location)
+      -> const std::shared_ptr<RuntimeState> &;
 };
 
 }  // namespace ttl::internal

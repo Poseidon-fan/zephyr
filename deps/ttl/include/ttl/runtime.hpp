@@ -23,6 +23,12 @@ namespace ttl {
 class ErrorSink;
 class Tensor;
 
+namespace internal {
+
+class RuntimeAccess;
+
+}  // namespace internal
+
 struct DeviceMemoryOptions final {
   uint64_t release_threshold_bytes_{std::numeric_limits<uint64_t>::max()};
   uint64_t max_live_bytes_{0};
@@ -102,6 +108,8 @@ class Runtime final {
   void Shutdown(std::source_location location = std::source_location::current());
 
  private:
+  friend class internal::RuntimeAccess;
+
   class Impl;
 
   std::unique_ptr<Impl> impl_;

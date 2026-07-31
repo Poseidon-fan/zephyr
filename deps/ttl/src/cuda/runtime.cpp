@@ -16,6 +16,7 @@
 
 #include <driver_types.h>
 
+#include "ttl/communicator.hpp"
 #include "ttl/device.hpp"
 #include "ttl/device_properties.hpp"
 #include "ttl/dtype.hpp"
@@ -25,6 +26,7 @@
 #include "ttl/internal/allocation.hpp"
 #include "ttl/internal/blas_handle_pool.hpp"
 #include "ttl/internal/checked_math.hpp"
+#include "ttl/internal/communicator.hpp"
 #include "ttl/internal/cuda_api.hpp"
 #include "ttl/internal/cuda_check.hpp"
 #include "ttl/internal/device_allocator.hpp"
@@ -246,6 +248,15 @@ void RuntimeState::UnregisterExecutionContext() noexcept {
   }
 }
 
+auto RuntimeState::CreateCommunicatorGroup(std::span<const Device> rank_order, const NcclOptions &options,
+                                           std::source_location location) -> std::shared_ptr<CommunicatorGroupState> {
+  const std::scoped_lock lock{lifecycle_latch_};
+  EnsureRunning(location);
+  auto state = CommunicatorGroupState::Create(shared_from_this(), rank_order, options, location);
+  communicator_groups_.push_back(state);
+  return state;
+}
+
 auto RuntimeState::AllocatePinned(size_t bytes, std::source_location location) -> PinnedBuffer {
   const std::scoped_lock lock{lifecycle_latch_};
   EnsureRunning(location);
@@ -265,11 +276,26 @@ void RuntimeState::TrimPinnedMemory(std::source_location location) {
 }
 
 void RuntimeState::Poll() noexcept {
+  const std::scoped_lock lock{lifecycle_latch_};
+  std::erase_if(communicator_groups_, [](const auto &group) { return group.expired(); });
+  for (const auto &weak_group : communicator_groups_) {
+    if (const auto group = weak_group.lock(); group != nullptr) {
+      group->PollNoexcept();
+    }
+  }
   pinned_allocator_->Poll();
   for (const auto &device_context : device_contexts_) {
     device_context->GetBlasHandlePool()->Poll();
     device_context->GetAllocator()->Poll();
   }
+}
+
+auto RuntimeState::HasOpenCommunicatorGroups() noexcept -> bool {
+  std::erase_if(communicator_groups_, [](const auto &group) { return group.expired(); });
+  return std::ranges::any_of(communicator_groups_, [](const auto &weak_group) {
+    const auto group = weak_group.lock();
+    return group != nullptr && group->HasNativeResources();
+  });
 }
 
 void RuntimeState::Shutdown(std::source_location location) {
@@ -282,6 +308,9 @@ void RuntimeState::Shutdown(std::source_location location) {
   const auto context_count = execution_context_count_.load(std::memory_order_acquire);
   if (context_count != 0) {
     throw InvalidArgumentError(FormatOutstandingContexts(context_count), location);
+  }
+  if (HasOpenCommunicatorGroups()) {
+    throw InvalidArgumentError("cannot shut down runtime while an NCCL communicator group remains open", location);
   }
 
   for (const auto &device_context : device_contexts_) {
@@ -391,3 +420,14 @@ void Runtime::Poll() noexcept { impl_->state_->Poll(); }
 void Runtime::Shutdown(std::source_location location) { impl_->state_->Shutdown(location); }
 
 }  // namespace ttl
+
+namespace ttl::internal {
+
+auto RuntimeAccess::GetState(Runtime &runtime, std::source_location location) -> const std::shared_ptr<RuntimeState> & {
+  if (runtime.impl_ == nullptr || runtime.impl_->state_ == nullptr) {
+    throw InvalidArgumentError("runtime has no state", location);
+  }
+  return runtime.impl_->state_;
+}
+
+}  // namespace ttl::internal
