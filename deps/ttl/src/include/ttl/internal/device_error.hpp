@@ -74,6 +74,7 @@ class DeviceErrorState final {
                               std::source_location location) -> DeviceErrorLaunchContext;
   void EnqueueRead(cudaStream_t stream, std::source_location location);
   void ConsumeAndReset(cudaStream_t stream, std::source_location location);
+  [[nodiscard]] auto GetStorage() const noexcept -> const std::shared_ptr<Storage> &;
 
  private:
   DeviceErrorState(std::shared_ptr<Storage> storage, std::unique_ptr<PinnedDeviceErrorRecord> host_record) noexcept;

@@ -42,6 +42,7 @@ class BlasHandleLease final {
   [[nodiscard]] auto GetCublasHandle() const noexcept -> cublasHandle_t;
   [[nodiscard]] auto GetCublasLtHandle() const noexcept -> cublasLtHandle_t;
   [[nodiscard]] auto GetWorkspace() const noexcept -> Storage &;
+  [[nodiscard]] auto GetWorkspaceStorage() const noexcept -> const std::shared_ptr<Storage> &;
 
  private:
   friend class BlasHandlePoolState;

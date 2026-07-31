@@ -271,6 +271,11 @@ auto CommunicatorGroupState::HasNativeResources() const noexcept -> bool {
   return native_resource_count_.load(std::memory_order_acquire) != 0;
 }
 
+auto CommunicatorGroupState::HasGraphReferences() const noexcept -> bool {
+  const std::scoped_lock lock{lifecycle_latch_};
+  return graph_reference_count_ != 0;
+}
+
 void CommunicatorGroupState::ValidateRank(size_t rank, std::source_location location) const {
   if (rank >= rank_order_.size()) {
     throw InvalidArgumentError(FormatRankOutOfRange(rank, rank_order_.size()), location);
@@ -296,6 +301,9 @@ auto CommunicatorGroupState::Acquire(std::vector<size_t> ranks, std::source_loca
   if (GetStatus() != CommunicatorStatus::READY) {
     throw InvalidArgumentError("communicator group is not ready for submission", location);
   }
+  if (graph_reference_count_ != 0) {
+    throw CaptureError("communicator group is retained by a captured CUDA graph", location);
+  }
   for (const auto rank : ranks) {
     ValidateRank(rank, location);
     if (rank_in_use_[rank] != 0) {
@@ -307,6 +315,55 @@ auto CommunicatorGroupState::Acquire(std::vector<size_t> ranks, std::source_loca
   }
   active_rank_count_ += ranks.size();
   return CommunicatorOperationLease{shared_from_this(), std::move(ranks)};
+}
+
+void CommunicatorGroupState::RegisterGraph(std::source_location location) {
+  const std::scoped_lock lock{lifecycle_latch_};
+  if (GetStatus() != CommunicatorStatus::READY) {
+    throw InvalidArgumentError("only a ready communicator group can be retained by a CUDA graph", location);
+  }
+  if (graph_reference_count_ == std::numeric_limits<size_t>::max()) {
+    throw OverflowError("communicator CUDA graph reference count overflow", location);
+  }
+  graph_reference_count_++;
+}
+
+void CommunicatorGroupState::UnregisterGraph() noexcept {
+  bool should_abort = false;
+  {
+    const std::scoped_lock lock{lifecycle_latch_};
+    if (graph_reference_count_ == 0) {
+      std::terminate();
+    }
+    graph_reference_count_--;
+    should_abort = graph_reference_count_ == 0 &&
+                   (!public_owner_alive_ || abort_requested_ || GetStatus() != CommunicatorStatus::READY);
+  }
+  if (should_abort) {
+    AbortHandlesNoexcept();
+  }
+}
+
+void CommunicatorGroupState::ValidateGraphLaunch(std::source_location location) const {
+  const std::scoped_lock lock{lifecycle_latch_};
+  if (graph_reference_count_ == 0 || abort_requested_ || GetStatus() != CommunicatorStatus::READY) {
+    throw CaptureError("captured CUDA graph communicator is not ready for replay", location);
+  }
+}
+
+void CommunicatorGroupState::ReleasePublicOwner() noexcept {
+  bool should_abort = false;
+  {
+    const std::scoped_lock lock{lifecycle_latch_};
+    if (!public_owner_alive_) {
+      return;
+    }
+    public_owner_alive_ = false;
+    should_abort = graph_reference_count_ == 0;
+  }
+  if (should_abort) {
+    AbortHandlesNoexcept();
+  }
 }
 
 void CommunicatorGroupState::Release(std::span<const size_t> ranks) noexcept {
@@ -413,19 +470,23 @@ auto CommunicatorGroupState::GetBarrierStorage(size_t rank) const noexcept -> co
   return barrier_storage_[rank];
 }
 
-void CommunicatorGroupState::BeginBarrier(size_t rank, const Stream &stream, std::source_location location) {
+void CommunicatorGroupState::BeginBarrier(size_t rank, const Stream &stream, bool capture_external,
+                                          std::source_location location) {
   DeviceGuard device_guard{stream.GetDevice(), *error_sink_, location};
   CheckCuda(GetCudaApi().stream_wait_event_(StreamAccess::GetNative(stream), barrier_events_[rank].GetNative(),
-                                            cudaEventWaitDefault),
+                                            capture_external ? cudaEventWaitExternal : cudaEventWaitDefault),
             "cudaStreamWaitEvent (NCCL barrier)", location);
   barrier_storage_[rank]->RecordUsage(stream);
 }
 
-void CommunicatorGroupState::EndBarrier(size_t rank, const Stream &stream, std::source_location location) {
+void CommunicatorGroupState::EndBarrier(size_t rank, const Stream &stream, bool capture_external,
+                                        std::source_location location) {
   try {
     DeviceGuard device_guard{stream.GetDevice(), *error_sink_, location};
-    CheckCuda(GetCudaApi().record_event_(barrier_events_[rank].GetNative(), StreamAccess::GetNative(stream)),
-              "cudaEventRecord (NCCL barrier)", location);
+    CheckCuda(
+        GetCudaApi().record_event_with_flags_(barrier_events_[rank].GetNative(), StreamAccess::GetNative(stream),
+                                              capture_external ? cudaEventRecordExternal : cudaEventRecordDefault),
+        "cudaEventRecord (NCCL barrier)", location);
   } catch (...) {
     MarkFailed();
     throw;
@@ -507,6 +568,9 @@ void CommunicatorGroupState::Close(std::source_location location) {
     if (active_rank_count_ != 0) {
       throw InvalidArgumentError("cannot close communicator group while a host submission is active", location);
     }
+    if (graph_reference_count_ != 0) {
+      throw InvalidArgumentError("cannot close communicator group while captured CUDA graphs retain it", location);
+    }
     if (GetStatus() != CommunicatorStatus::READY) {
       throw InvalidArgumentError("only a ready communicator group can be closed", location);
     }
@@ -555,7 +619,8 @@ void CommunicatorGroupState::AbortHandlesNoexcept() noexcept {
       return;
     }
     status_.store(CommunicatorStatus::FAILED, std::memory_order_release);
-    if (active_rank_count_ != 0) {
+    abort_requested_ = true;
+    if (active_rank_count_ != 0 || graph_reference_count_ != 0) {
       return;
     }
     abort_in_progress_ = true;
@@ -590,6 +655,7 @@ void CommunicatorGroupState::AbortHandlesNoexcept() noexcept {
   {
     const std::scoped_lock lock{lifecycle_latch_};
     abort_in_progress_ = false;
+    abort_requested_ = !all_released;
     status_.store(all_released ? CommunicatorStatus::ABORTED : CommunicatorStatus::FAILED, std::memory_order_release);
   }
 }
@@ -663,7 +729,7 @@ auto LocalCommunicatorGroup::Create(Runtime &runtime, std::span<const Device> ra
 
 LocalCommunicatorGroup::~LocalCommunicatorGroup() noexcept {
   if (state_ != nullptr) {
-    state_->Abort();
+    state_->ReleasePublicOwner();
   }
 }
 

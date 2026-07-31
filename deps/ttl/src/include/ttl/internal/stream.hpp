@@ -30,6 +30,7 @@ class StreamState final {
   [[nodiscard]] auto GetDevice() const noexcept -> Device;
   [[nodiscard]] auto GetNative() const noexcept -> cudaStream_t;
   [[nodiscard]] auto IsExternal() const noexcept -> bool;
+  [[nodiscard]] auto HasExternalOwner() const noexcept -> bool;
 
  private:
   friend class StreamAccess;

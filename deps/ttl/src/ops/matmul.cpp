@@ -573,6 +573,9 @@ void InitializeLayout(cublasLtMatrixLayout_t descriptor, cudaDataType_t dtype, c
   };
   auto choice = guard.GetMatmulAlgorithmCache().Find(key);
   if (!choice.has_value()) {
+    if (guard.IsCapturing()) {
+      throw CaptureError("cuBLASLt algorithm must be warmed up before CUDA graph capture", location);
+    }
     auto heuristic_results = std::array<cublasLtMatmulHeuristicResult_t, MATMUL_HEURISTIC_RESULT_COUNT>{};
     int result_count = 0;
     const auto heuristic_status = internal::GetCublasApi().lt_matmul_algo_get_heuristic_(
@@ -627,7 +630,7 @@ void InitializeLayout(cublasLtMatrixLayout_t descriptor, cudaDataType_t dtype, c
                                  const MatmulShapeInfo &shape_info, MatmulKind kind, const std::optional<Tensor> &bias,
                                  const LinearOptions &linear_options, std::source_location location)
     -> MatmulExecutionResult {
-  internal::OpGuard guard{context, GetName(kind), location};
+  internal::OpGuard guard{context, GetName(kind), location, internal::CapturePolicy::SAFE};
   ValidateCommonSchema(guard, output, lhs, rhs, shape_info, kind, location);
   if (bias.has_value()) {
     guard.ValidateTensor(*bias);
@@ -749,14 +752,14 @@ void MatmulOutImpl(ExecutionContext &context, Tensor &output, const Tensor &lhs,
                    const MatmulOptions &options, std::source_location location) {
   MatmulShapeInfo shape_info;
   {
-    internal::OpGuard guard{context, GetName(kind), location};
+    internal::OpGuard guard{context, GetName(kind), location, internal::CapturePolicy::SAFE};
     guard.ValidateTensor(lhs);
     guard.ValidateTensor(rhs);
     shape_info = InferMatmulShape(lhs, rhs, kind, location);
   }
   if (shape_info.k_ == 0) {
     {
-      internal::OpGuard guard{context, GetName(kind), location};
+      internal::OpGuard guard{context, GetName(kind), location, internal::CapturePolicy::SAFE};
       ValidateCommonSchema(guard, output, lhs, rhs, shape_info, kind, location);
     }
     FillOut(context, output, Scalar{int64_t{0}}, location);
@@ -812,7 +815,7 @@ void LinearOut(ExecutionContext &context, Tensor &output, const Tensor &input, c
   ValidateLinearOptions(options, location);
   MatmulShapeInfo shape_info;
   {
-    internal::OpGuard guard{context, "LinearOut", location};
+    internal::OpGuard guard{context, "LinearOut", location, internal::CapturePolicy::SAFE};
     guard.ValidateTensor(input);
     guard.ValidateTensor(weight);
     shape_info = InferMatmulShape(input, weight, MatmulKind::LINEAR, location);

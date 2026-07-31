@@ -30,12 +30,14 @@ namespace ttl::internal {
 
 class DeviceContext;
 class DeviceErrorState;
+class CaptureSessionState;
 class MatmulAlgorithmCache;
 class PinnedAllocator;
 class RuntimeState;
 
 enum class ExecutionContextStatus : uint8_t {
   READY,
+  CAPTURING,
   FAILED,
 };
 
@@ -65,6 +67,7 @@ class ExecutionContextImpl final {
   std::optional<PooledEvent> fork_event_;
   std::vector<PooledEvent> join_events_;
   std::unique_ptr<DeviceErrorState> device_error_state_;
+  std::shared_ptr<CaptureSessionState> capture_state_;
   std::atomic_flag in_use_ = ATOMIC_FLAG_INIT;
   std::atomic<ExecutionContextStatus> status_{ExecutionContextStatus::READY};
 };

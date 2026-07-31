@@ -146,7 +146,7 @@ void LaunchReduction(ExecutionContext &context, internal::OpGuard &guard, Tensor
 void ReductionOutImpl(ExecutionContext &context, Tensor &output, const Tensor &input, const ReductionOptions &options,
                       internal::ReductionOp operation, std::source_location location) {
   const auto name = internal::GetReductionName(operation);
-  internal::OpGuard guard{context, name, location};
+  internal::OpGuard guard{context, name, location, internal::CapturePolicy::SAFE};
   guard.ValidateTensor(output);
   guard.ValidateTensor(input);
   ValidateInputDType(operation, input.GetDType(), location);

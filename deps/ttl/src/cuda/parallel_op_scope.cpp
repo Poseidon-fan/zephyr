@@ -18,6 +18,7 @@
 #include "ttl/execution_context.hpp"
 #include "ttl/internal/cuda_api.hpp"
 #include "ttl/internal/cuda_check.hpp"
+#include "ttl/internal/cuda_graph.hpp"
 #include "ttl/internal/event_pool.hpp"
 #include "ttl/internal/execution_context.hpp"
 #include "ttl/internal/execution_lane.hpp"
@@ -78,20 +79,24 @@ ParallelOpScope::ParallelOpScope(OpGuard &guard, size_t auxiliary_stream_count, 
   if (guard_.parallel_scope_active_) {
     throw InvalidArgumentError("nested parallel operator scopes are not supported", location_);
   }
-  if (!impl_.fork_event_.has_value() || impl_.join_events_.size() < auxiliary_stream_count_) {
+  if (guard_.capture_state_ == nullptr &&
+      (!impl_.fork_event_.has_value() || impl_.join_events_.size() < auxiliary_stream_count_)) {
     throw InternalError("execution context auxiliary dependency resources are incomplete", location_);
   }
 
   guard_.parallel_scope_active_ = true;
   const auto &cuda_api = GetCudaApi();
   const auto primary_stream = StreamAccess::GetNative(impl_.primary_lane_.GetStream());
+  auto &fork_event = guard_.capture_state_ == nullptr ? *impl_.fork_event_ : guard_.capture_state_->GetForkEvent();
   FirstCudaFailure failure;
-  failure.Observe(cuda_api.record_event_(impl_.fork_event_->GetNative(), primary_stream),
-                  "cudaEventRecord (parallel fork)");
+  failure.Observe(cuda_api.record_event_(fork_event.GetNative(), primary_stream), "cudaEventRecord (parallel fork)");
   if (failure.status_ == cudaSuccess) {
     for (size_t index = 0; index < auxiliary_stream_count_; index++) {
+      if (guard_.capture_state_ != nullptr) {
+        guard_.capture_state_->RetainAuxiliaryStream(StreamAccess::GetState(impl_.auxiliary_lanes_[index].GetStream()));
+      }
       failure.Observe(cuda_api.stream_wait_event_(StreamAccess::GetNative(impl_.auxiliary_lanes_[index].GetStream()),
-                                                  impl_.fork_event_->GetNative(), cudaEventWaitDefault),
+                                                  fork_event.GetNative(), cudaEventWaitDefault),
                       "cudaStreamWaitEvent (parallel fork)");
     }
   }
@@ -141,26 +146,55 @@ auto ParallelOpScope::GetNativeAuxiliaryStream(size_t index) const -> cudaStream
 }
 
 auto ParallelOpScope::GetAuxiliaryCublasHandle(size_t index) const -> cublasHandle_t {
-  return GetAuxiliaryLane(index).GetCublasHandle(location_);
+  auto &lane = GetAuxiliaryLane(index);
+  if (guard_.capture_state_ != nullptr && !lane.HasBlas()) {
+    throw CaptureError("auxiliary cuBLAS resources must be warmed up before CUDA graph capture", location_);
+  }
+  return lane.GetCublasHandle(location_);
 }
 
 auto ParallelOpScope::GetAuxiliaryCublasLtHandle(size_t index) const -> cublasLtHandle_t {
-  return GetAuxiliaryLane(index).GetCublasLtHandle(location_);
+  auto &lane = GetAuxiliaryLane(index);
+  if (guard_.capture_state_ != nullptr && !lane.HasBlas()) {
+    throw CaptureError("auxiliary cuBLAS resources must be warmed up before CUDA graph capture", location_);
+  }
+  return lane.GetCublasLtHandle(location_);
 }
 
 auto ParallelOpScope::GetAuxiliaryBlasWorkspace(size_t index) const -> void * {
-  return GetAuxiliaryLane(index).GetBlasWorkspace(location_).GetBasePointer();
+  auto &lane = GetAuxiliaryLane(index);
+  if (guard_.capture_state_ != nullptr && !lane.HasBlas()) {
+    throw CaptureError("auxiliary cuBLAS resources must be warmed up before CUDA graph capture", location_);
+  }
+  const auto &storage = lane.GetBlasWorkspaceStorage(location_);
+  guard_.RetainStorage(storage);
+  return storage->GetBasePointer();
 }
 
 auto ParallelOpScope::GetAuxiliaryBlasWorkspaceBytes(size_t index) const -> size_t {
-  return GetAuxiliaryLane(index).GetBlasWorkspace(location_).GetCapacityBytes();
+  auto &lane = GetAuxiliaryLane(index);
+  if (guard_.capture_state_ != nullptr && !lane.HasBlas()) {
+    throw CaptureError("auxiliary cuBLAS resources must be warmed up before CUDA graph capture", location_);
+  }
+  const auto &storage = lane.GetBlasWorkspaceStorage(location_);
+  guard_.RetainStorage(storage);
+  return storage->GetCapacityBytes();
 }
 
 auto ParallelOpScope::MakeAuxiliaryScratchScope(size_t index) const -> ScratchArena::Scope {
-  return GetAuxiliaryLane(index).MakeScratchScope(ScratchGrowthPolicy::GROWABLE, location_);
+  auto &lane = GetAuxiliaryLane(index);
+  if (lane.GetScratchStorage() != nullptr) {
+    guard_.RetainStorage(lane.GetScratchStorage());
+  }
+  return lane.MakeScratchScope(
+      guard_.capture_state_ == nullptr ? ScratchGrowthPolicy::GROWABLE : ScratchGrowthPolicy::FIXED_CAPACITY,
+      location_);
 }
 
 void ParallelOpScope::ReserveAuxiliaryScratch(size_t index, size_t capacity_bytes) const {
+  if (guard_.capture_state_ != nullptr) {
+    throw CaptureError("auxiliary scratch capacity cannot be reserved during CUDA graph capture", location_);
+  }
   GetAuxiliaryLane(index).ReserveScratch(capacity_bytes, location_);
 }
 
@@ -209,12 +243,14 @@ auto ParallelOpScope::EnqueueJoin() noexcept -> JoinResult {
   FirstCudaFailure failure;
 
   for (size_t index = 0; index < auxiliary_stream_count_; index++) {
+    auto &join_event =
+        guard_.capture_state_ == nullptr ? impl_.join_events_[index] : guard_.capture_state_->GetJoinEvent(index);
     const auto record_status = cuda_api.record_event_(
-        impl_.join_events_[index].GetNative(), StreamAccess::GetNative(impl_.auxiliary_lanes_[index].GetStream()));
+        join_event.GetNative(), StreamAccess::GetNative(impl_.auxiliary_lanes_[index].GetStream()));
     failure.Observe(record_status, "cudaEventRecord (parallel join)");
     if (record_status == cudaSuccess) {
       const auto wait_status =
-          cuda_api.stream_wait_event_(primary_stream, impl_.join_events_[index].GetNative(), cudaEventWaitDefault);
+          cuda_api.stream_wait_event_(primary_stream, join_event.GetNative(), cudaEventWaitDefault);
       failure.Observe(wait_status, "cudaStreamWaitEvent (parallel join)");
     }
   }

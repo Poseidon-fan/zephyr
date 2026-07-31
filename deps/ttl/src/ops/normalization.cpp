@@ -126,7 +126,7 @@ void NormalizationOutImpl(ExecutionContext &context, Tensor &output, const Tenso
                           const NormOptions &options, internal::NormalizationOp operation,
                           std::source_location location) {
   const auto name = GetName(operation);
-  internal::OpGuard guard{context, name, location};
+  internal::OpGuard guard{context, name, location, internal::CapturePolicy::SAFE};
   guard.ValidateTensor(output);
   guard.ValidateTensor(input);
   ValidateFloatingDType(input.GetDType(), name, location);

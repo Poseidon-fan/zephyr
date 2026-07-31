@@ -68,6 +68,7 @@ class CommunicatorGroupState final : public std::enable_shared_from_this<Communi
   [[nodiscard]] auto GetStatus() const noexcept -> CommunicatorStatus;
   [[nodiscard]] auto BelongsTo(const std::shared_ptr<RuntimeState> &runtime_state) const noexcept -> bool;
   [[nodiscard]] auto HasNativeResources() const noexcept -> bool;
+  [[nodiscard]] auto HasGraphReferences() const noexcept -> bool;
 
   [[nodiscard]] auto AcquireRank(size_t rank, std::source_location location) -> CommunicatorOperationLease;
   [[nodiscard]] auto AcquireAll(std::source_location location) -> CommunicatorOperationLease;
@@ -77,10 +78,14 @@ class CommunicatorGroupState final : public std::enable_shared_from_this<Communi
   void CheckGroupedSubmission(std::span<const size_t> ranks, std::span<const ncclResult_t> statuses,
                               ncclResult_t end_status, std::string_view operation, std::source_location location);
   void MarkFailed() noexcept;
+  void RegisterGraph(std::source_location location);
+  void UnregisterGraph() noexcept;
+  void ValidateGraphLaunch(std::source_location location) const;
+  void ReleasePublicOwner() noexcept;
 
   [[nodiscard]] auto GetBarrierStorage(size_t rank) const noexcept -> const std::shared_ptr<Storage> &;
-  void BeginBarrier(size_t rank, const Stream &stream, std::source_location location);
-  void EndBarrier(size_t rank, const Stream &stream, std::source_location location);
+  void BeginBarrier(size_t rank, const Stream &stream, bool capture_external, std::source_location location);
+  void EndBarrier(size_t rank, const Stream &stream, bool capture_external, std::source_location location);
 
   void Poll(std::source_location location);
   void PollNoexcept() noexcept;
@@ -118,6 +123,9 @@ class CommunicatorGroupState final : public std::enable_shared_from_this<Communi
   std::vector<uint8_t> rank_in_use_;
   size_t active_rank_count_{0};
   bool abort_in_progress_{false};
+  bool abort_requested_{false};
+  bool public_owner_alive_{true};
+  size_t graph_reference_count_{0};
   std::atomic<CommunicatorStatus> status_{CommunicatorStatus::INITIALIZING};
   std::atomic<size_t> native_resource_count_{0};
 };

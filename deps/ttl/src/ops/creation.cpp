@@ -162,7 +162,7 @@ auto Arange(ExecutionContext &context, Scalar start, Scalar end, Scalar step, DT
 }
 
 void FillOut(ExecutionContext &context, Tensor &output, Scalar value, std::source_location location) {
-  internal::OpGuard guard{context, "FillOut", location};
+  internal::OpGuard guard{context, "FillOut", location, internal::CapturePolicy::SAFE};
   guard.ValidateTensor(output);
 
   auto iterator = internal::ElementwiseIterator::Builder{}

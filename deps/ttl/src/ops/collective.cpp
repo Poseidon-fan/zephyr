@@ -23,11 +23,14 @@
 #include "ttl/internal/communicator.hpp"
 #include "ttl/internal/cuda_api.hpp"
 #include "ttl/internal/cuda_check.hpp"
+#include "ttl/internal/cuda_graph.hpp"
 #include "ttl/internal/elementwise_iterator.hpp"
 #include "ttl/internal/execution_context.hpp"
+#include "ttl/internal/execution_lane.hpp"
 #include "ttl/internal/nccl_api.hpp"
 #include "ttl/internal/op_guard.hpp"
 #include "ttl/internal/runtime.hpp"
+#include "ttl/internal/scratch_arena.hpp"
 #include "ttl/internal/storage.hpp"
 #include "ttl/internal/stream.hpp"
 #include "ttl/internal/tensor_impl.hpp"
@@ -53,7 +56,7 @@ struct PreparedCall final {
   ExecutionContext *context_;
   Tensor *output_;
   const Tensor *input_;
-  NcclCommunicator *communicator_;
+  std::optional<internal::ScratchArena::Scope> scratch_scope_;
   std::optional<Tensor> contiguous_input_;
   std::optional<Tensor> contiguous_output_;
 
@@ -303,6 +306,25 @@ void ValidateCall(CollectiveKind kind, ExecutionContext &context, Tensor &output
   ValidateAlias(kind, output, input, rank, state->GetWorldSize(), static_cast<size_t>(root), location);
 }
 
+[[nodiscard]] auto CreateScratchTensor(ExecutionContext &context, internal::ScratchArena::Scope &scratch_scope,
+                                       const Tensor &prototype, std::source_location location) -> Tensor {
+  const auto element_size = GetDTypeSize(prototype.GetDType(), location);
+  const auto bytes = internal::CheckedBytes(prototype.GetNumElements(), element_size, location);
+  const auto allocation = scratch_scope.AllocateBytes(bytes, 256, location);
+  if (allocation.GetOffsetBytes() % element_size != 0) {
+    throw InternalError("collective scratch offset is not aligned to the tensor element size", location);
+  }
+  const auto &storage = internal::ContextAccess::GetPrimaryLane(context, location).GetScratchStorage();
+  if (storage == nullptr) {
+    throw InternalError("collective scratch allocation did not create backing storage", location);
+  }
+  return internal::TensorFactory::Create(
+      storage, prototype.GetDType(), prototype.GetShape(), GetContiguousStrides(prototype.GetShape(), location),
+      internal::CheckedNarrow<int64_t>(allocation.GetOffsetBytes() / element_size, "collective scratch element offset",
+                                       location),
+      location);
+}
+
 [[nodiscard]] auto PrepareCall(CollectiveKind kind, ExecutionContext &context, Tensor &output, const Tensor &input,
                                NcclCommunicator &communicator, int32_t root, std::source_location location)
     -> PreparedCall {
@@ -311,15 +333,30 @@ void ValidateCall(CollectiveKind kind, ExecutionContext &context, Tensor &output
       .context_ = &context,
       .output_ = &output,
       .input_ = &input,
-      .communicator_ = &communicator,
+      .scratch_scope_ = std::nullopt,
       .contiguous_input_ = std::nullopt,
       .contiguous_output_ = std::nullopt,
   };
-  if (ReadsInput(kind, rank, static_cast<size_t>(root)) && !input.IsContiguous()) {
-    call.contiguous_input_.emplace(Contiguous(context, input, location));
+  const auto pack_input =
+      input.GetNumElements() != 0 && ReadsInput(kind, rank, static_cast<size_t>(root)) && !input.IsContiguous();
+  const auto unpack_output =
+      output.GetNumElements() != 0 && WritesOutput(kind, rank, static_cast<size_t>(root)) && !output.IsContiguous();
+  if (!pack_input && !unpack_output) {
+    return call;
   }
-  if (WritesOutput(kind, rank, static_cast<size_t>(root)) && !output.IsContiguous()) {
-    call.contiguous_output_.emplace(Empty(context, output.GetShape(), output.GetDType(), location));
+
+  {
+    internal::OpGuard guard{context, GetCollectiveName(kind), location, internal::CapturePolicy::SAFE};
+    call.scratch_scope_.emplace(guard.MakeScratchScope());
+    if (pack_input) {
+      call.contiguous_input_.emplace(CreateScratchTensor(context, *call.scratch_scope_, input, location));
+    }
+    if (unpack_output) {
+      call.contiguous_output_.emplace(CreateScratchTensor(context, *call.scratch_scope_, output, location));
+    }
+  }
+  if (pack_input) {
+    CopyOut(context, *call.contiguous_input_, input, location);
   }
   return call;
 }
@@ -473,32 +510,31 @@ void SubmitRank(CollectiveKind kind, ExecutionContext &context, Tensor &output, 
   const auto &state = internal::CommunicatorAccess::GetState(communicator, location);
   const auto rank = internal::CommunicatorAccess::GetRank(communicator, location);
   if (input.GetNumElements() != 0) {
-    {
-      internal::OpGuard guard{context, GetCollectiveName(kind), location};
-      auto lease = state->AcquireRank(rank, location);
-      RecordCall(guard, kind, call, rank, static_cast<size_t>(root));
-      SubmitSelfCopy(kind, call, rank, state->GetWorldSize(), guard.GetNativeStream(), location);
+    internal::OpGuard guard{context, GetCollectiveName(kind), location, internal::CapturePolicy::SAFE};
+    guard.RetainCommunicator(state);
+    auto lease = state->AcquireRank(rank, location);
+    RecordCall(guard, kind, call, rank, static_cast<size_t>(root));
+    SubmitSelfCopy(kind, call, rank, state->GetWorldSize(), guard.GetNativeStream(), location);
 
-      std::vector<ncclResult_t> statuses;
-      if (UsesPointToPoint(kind)) {
-        statuses.reserve((state->GetWorldSize() - 1) * 2);
-        internal::CheckNccl(internal::GetNcclApi().group_start_(), "ncclGroupStart", location);
-      } else {
-        statuses.reserve(1);
-      }
-      try {
-        IssueCollective(kind, call, lease.GetHandle(rank), rank, state->GetWorldSize(), static_cast<size_t>(root),
-                        operation, guard.GetNativeStream(), statuses, location);
-      } catch (...) {
-        if (UsesPointToPoint(kind)) {
-          internal::GetNcclApi().group_end_();
-          state->MarkFailed();
-        }
-        throw;
-      }
-      const auto end_status = UsesPointToPoint(kind) ? internal::GetNcclApi().group_end_() : ncclSuccess;
-      state->CheckGroupedSubmission(lease.GetRanks(), statuses, end_status, GetCollectiveName(kind), location);
+    std::vector<ncclResult_t> statuses;
+    if (UsesPointToPoint(kind)) {
+      statuses.reserve((state->GetWorldSize() - 1) * 2);
+      internal::CheckNccl(internal::GetNcclApi().group_start_(), "ncclGroupStart", location);
+    } else {
+      statuses.reserve(1);
     }
+    try {
+      IssueCollective(kind, call, lease.GetHandle(rank), rank, state->GetWorldSize(), static_cast<size_t>(root),
+                      operation, guard.GetNativeStream(), statuses, location);
+    } catch (...) {
+      if (UsesPointToPoint(kind)) {
+        internal::GetNcclApi().group_end_();
+        state->MarkFailed();
+      }
+      throw;
+    }
+    const auto end_status = UsesPointToPoint(kind) ? internal::GetNcclApi().group_end_() : ncclSuccess;
+    state->CheckGroupedSubmission(lease.GetRanks(), statuses, end_status, GetCollectiveName(kind), location);
   }
   CompleteCall(call, location);
 }
@@ -542,6 +578,14 @@ void SubmitRank(CollectiveKind kind, ExecutionContext &context, Tensor &output, 
 void SubmitLocal(CollectiveKind kind, std::span<const LocalCollectiveCall> calls, ReduceOp operation, int32_t root,
                  std::source_location location) {
   auto state = ValidateLocalCalls(kind, calls, operation, root, location);
+  for (const auto &call : calls) {
+    if (internal::GetCaptureState(*call.context_, location) != nullptr) {
+      throw CaptureError(
+          "local multi-rank collective APIs are not allowed during CUDA graph capture; use "
+          "CapturedGraphGroup rank-local callbacks",
+          location);
+    }
+  }
   std::vector<PreparedCall> prepared;
   prepared.reserve(calls.size());
   for (const auto &call : calls) {
@@ -627,7 +671,9 @@ void SubmitPointToPoint(ExecutionContext &context, const Tensor *send, int32_t s
     throw InvalidArgumentError("simultaneous send and receive tensors must not overlap", location);
   }
 
-  internal::OpGuard guard{context, send != nullptr && receive != nullptr ? "SendReceive" : "PointToPoint", location};
+  internal::OpGuard guard{context, send != nullptr && receive != nullptr ? "SendReceive" : "PointToPoint", location,
+                          internal::CapturePolicy::SAFE};
+  guard.RetainCommunicator(state);
   auto lease = state->AcquireRank(rank, location);
   std::vector<ncclResult_t> statuses;
   statuses.reserve(2);
@@ -724,14 +770,16 @@ void Barrier(ExecutionContext &context, NcclCommunicator &communicator, std::sou
   const auto &state = internal::CommunicatorAccess::GetState(communicator, location);
   const auto rank = internal::CommunicatorAccess::GetRank(communicator, location);
   ValidateContext(context, communicator, state, location);
-  internal::OpGuard guard{context, "Barrier", location};
+  internal::OpGuard guard{context, "Barrier", location, internal::CapturePolicy::SAFE};
+  guard.RetainCommunicator(state);
   auto lease = state->AcquireRank(rank, location);
-  state->BeginBarrier(rank, guard.GetStream(), location);
+  state->BeginBarrier(rank, guard.GetStream(), guard.IsCapturing(), location);
   const auto &storage = state->GetBarrierStorage(rank);
+  guard.RetainStorage(storage);
   const auto status =
       internal::GetNcclApi().all_reduce_(storage->GetBasePointer(), storage->GetBasePointer(), 1, ncclUint8, ncclMax,
                                          lease.GetHandle(rank), guard.GetNativeStream());
-  state->EndBarrier(rank, guard.GetStream(), location);
+  state->EndBarrier(rank, guard.GetStream(), guard.IsCapturing(), location);
   state->CheckSubmission(lease.GetRanks(), status, "NCCL barrier", location);
 }
 
@@ -901,7 +949,7 @@ void BarrierLocal(std::span<const LocalBarrierCall> calls, std::source_location 
 
   auto lease = state->AcquireAll(location);
   for (size_t rank = 0; rank < calls.size(); rank++) {
-    state->BeginBarrier(rank, guards[rank]->GetStream(), location);
+    state->BeginBarrier(rank, guards[rank]->GetStream(), false, location);
   }
   const auto &cuda_api = internal::GetCudaApi();
   int previous_device = -1;
@@ -923,7 +971,7 @@ void BarrierLocal(std::span<const LocalBarrierCall> calls, std::source_location 
   const auto end_status = internal::GetNcclApi().group_end_();
   const auto restore_status = cuda_api.set_device_(previous_device);
   for (size_t rank = 0; rank < calls.size(); rank++) {
-    state->EndBarrier(rank, guards[rank]->GetStream(), location);
+    state->EndBarrier(rank, guards[rank]->GetStream(), false, location);
   }
   if (set_device_status != cudaSuccess || restore_status != cudaSuccess) {
     state->MarkFailed();

@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
+#include <memory>
 #include <source_location>
 #include <string_view>
 
@@ -19,14 +21,23 @@
 
 namespace ttl::internal {
 
+class CaptureSessionState;
+class CommunicatorGroupState;
 class MatmulAlgorithmCache;
 class ParallelOpScope;
+class Storage;
+
+enum class CapturePolicy : uint8_t {
+  FORBIDDEN,
+  SAFE,
+};
 
 /** Common checked entry scope for CUDA operator wrappers. */
 class OpGuard final {
  public:
   OpGuard(ExecutionContext &context, std::string_view operation,
-          std::source_location location = std::source_location::current());
+          std::source_location location = std::source_location::current(),
+          CapturePolicy capture_policy = CapturePolicy::FORBIDDEN);
 
   OpGuard(const OpGuard &) = delete;
   auto operator=(const OpGuard &) -> OpGuard & = delete;
@@ -35,6 +46,8 @@ class OpGuard final {
 
   void ValidateTensor(const Tensor &tensor) const;
   void RecordTensor(const Tensor &tensor);
+  void RetainStorage(const std::shared_ptr<Storage> &storage);
+  void RetainCommunicator(const std::shared_ptr<CommunicatorGroupState> &communicator);
   void CheckLaunch() const;
   [[nodiscard]] auto RegisterDeviceError(DType source_dtype, DType target_dtype) -> DeviceErrorLaunchContext;
 
@@ -49,6 +62,7 @@ class OpGuard final {
   void ReserveScratch(size_t capacity_bytes);
   [[nodiscard]] auto GetScratchCapacityBytes() const -> size_t;
   [[nodiscard]] auto GetScratchHighWaterBytes() const -> size_t;
+  [[nodiscard]] auto IsCapturing() const noexcept -> bool;
 
  private:
   friend class ParallelOpScope;
@@ -61,6 +75,7 @@ class OpGuard final {
   ContextUseGuard use_guard_;
   DeviceGuard device_guard_;
   bool parallel_scope_active_{false};
+  std::shared_ptr<CaptureSessionState> capture_state_;
 };
 
 }  // namespace ttl::internal

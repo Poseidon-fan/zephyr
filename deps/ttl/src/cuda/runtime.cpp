@@ -110,6 +110,17 @@ void ValidateRuntimeOptions(const RuntimeOptions &options, std::source_location 
   return message;
 }
 
+[[nodiscard]] auto FormatOutstandingGraphs(size_t count) -> std::string {
+  std::string message{"cannot shut down runtime while "};
+  message.append(std::to_string(count));
+  message.append(" captured CUDA graph");
+  if (count != 1) {
+    message.push_back('s');
+  }
+  message.append(" remain alive");
+  return message;
+}
+
 void ReportAbandonedRuntime(ErrorSink &error_sink, std::source_location location) noexcept {
   try {
     error_sink.Report(ErrorRecord{
@@ -248,10 +259,47 @@ void RuntimeState::UnregisterExecutionContext() noexcept {
   }
 }
 
+void RuntimeState::RegisterGraph(std::source_location location) {
+  const std::scoped_lock lock{lifecycle_latch_};
+  EnsureRunning(location);
+  if (graph_count_.load(std::memory_order_relaxed) == std::numeric_limits<size_t>::max()) {
+    throw OverflowError("captured CUDA graph count overflow", location);
+  }
+  graph_count_.fetch_add(1, std::memory_order_relaxed);
+}
+
+void RuntimeState::UnregisterGraph() noexcept {
+  if (graph_count_.fetch_sub(1, std::memory_order_release) == 0) {
+    std::terminate();
+  }
+}
+
+void RuntimeState::BeginCapture(std::source_location location) {
+  const std::scoped_lock lock{lifecycle_latch_};
+  EnsureRunning(location);
+  if (active_capture_count_.load(std::memory_order_relaxed) == std::numeric_limits<size_t>::max()) {
+    throw OverflowError("active CUDA capture count overflow", location);
+  }
+  active_capture_count_.fetch_add(1, std::memory_order_relaxed);
+}
+
+void RuntimeState::EndCapture() noexcept {
+  if (active_capture_count_.fetch_sub(1, std::memory_order_release) == 0) {
+    std::terminate();
+  }
+}
+
+auto RuntimeState::HasActiveCapture() const noexcept -> bool {
+  return active_capture_count_.load(std::memory_order_acquire) != 0;
+}
+
 auto RuntimeState::CreateCommunicatorGroup(std::span<const Device> rank_order, const NcclOptions &options,
                                            std::source_location location) -> std::shared_ptr<CommunicatorGroupState> {
   const std::scoped_lock lock{lifecycle_latch_};
   EnsureRunning(location);
+  if (HasActiveCapture()) {
+    throw CaptureError("cannot create an NCCL communicator group during CUDA graph capture", location);
+  }
   auto state = CommunicatorGroupState::Create(shared_from_this(), rank_order, options, location);
   communicator_groups_.push_back(state);
   return state;
@@ -260,23 +308,35 @@ auto RuntimeState::CreateCommunicatorGroup(std::span<const Device> rank_order, c
 auto RuntimeState::AllocatePinned(size_t bytes, std::source_location location) -> PinnedBuffer {
   const std::scoped_lock lock{lifecycle_latch_};
   EnsureRunning(location);
+  if (HasActiveCapture()) {
+    throw CaptureError("cannot allocate pinned memory during CUDA graph capture", location);
+  }
   return pinned_allocator_->Allocate(bytes, location);
 }
 
 void RuntimeState::TrimMemory(Device device, size_t target_reserved_bytes, std::source_location location) {
   const std::scoped_lock lock{lifecycle_latch_};
   EnsureRunning(location);
+  if (HasActiveCapture()) {
+    throw CaptureError("cannot trim device memory during CUDA graph capture", location);
+  }
   GetDeviceContext(device, location)->GetAllocator()->TrimTo(target_reserved_bytes, location);
 }
 
 void RuntimeState::TrimPinnedMemory(std::source_location location) {
   const std::scoped_lock lock{lifecycle_latch_};
   EnsureRunning(location);
+  if (HasActiveCapture()) {
+    throw CaptureError("cannot trim pinned memory during CUDA graph capture", location);
+  }
   pinned_allocator_->Trim(location);
 }
 
 void RuntimeState::Poll() noexcept {
   const std::scoped_lock lock{lifecycle_latch_};
+  if (HasActiveCapture()) {
+    return;
+  }
   std::erase_if(communicator_groups_, [](const auto &group) { return group.expired(); });
   for (const auto &weak_group : communicator_groups_) {
     if (const auto group = weak_group.lock(); group != nullptr) {
@@ -308,6 +368,13 @@ void RuntimeState::Shutdown(std::source_location location) {
   const auto context_count = execution_context_count_.load(std::memory_order_acquire);
   if (context_count != 0) {
     throw InvalidArgumentError(FormatOutstandingContexts(context_count), location);
+  }
+  const auto graph_count = graph_count_.load(std::memory_order_acquire);
+  if (graph_count != 0) {
+    throw InvalidArgumentError(FormatOutstandingGraphs(graph_count), location);
+  }
+  if (HasActiveCapture()) {
+    throw InvalidArgumentError("cannot shut down runtime while CUDA graph capture is active", location);
   }
   if (HasOpenCommunicatorGroups()) {
     throw InvalidArgumentError("cannot shut down runtime while an NCCL communicator group remains open", location);
@@ -371,6 +438,9 @@ auto Runtime::GetStatus() const noexcept -> RuntimeStatus { return impl_->state_
 auto Runtime::CreateExecutionContext(Device device, const ExecutionContextOptions &options,
                                      std::source_location location) -> ExecutionContext {
   impl_->state_->EnsureRunning(location);
+  if (impl_->state_->HasActiveCapture()) {
+    throw CaptureError("cannot create an execution context during CUDA graph capture", location);
+  }
   const auto device_context = impl_->state_->GetDeviceContext(device, location);
   auto stream =
       internal::StreamAccess::CreateOwned(device, options.stream_priority_, impl_->state_->GetErrorSink(), location);
@@ -381,6 +451,9 @@ auto Runtime::WrapExternalStream(Device device, cudaStream_t stream, std::shared
                                  const ExecutionContextOptions &options, std::source_location location)
     -> ExecutionContext {
   impl_->state_->EnsureRunning(location);
+  if (impl_->state_->HasActiveCapture()) {
+    throw CaptureError("cannot wrap an external stream during CUDA graph capture", location);
+  }
   const auto device_context = impl_->state_->GetDeviceContext(device, location);
   auto wrapped_stream =
       internal::StreamAccess::WrapExternal(device, stream, std::move(owner), impl_->state_->GetErrorSink(), location);
@@ -390,6 +463,9 @@ auto Runtime::WrapExternalStream(Device device, cudaStream_t stream, std::shared
 auto Runtime::FromBlob(ExecutionContext &context, ExternalMemory memory, const Shape &shape, const Strides &strides,
                        DType dtype, int64_t storage_offset, std::source_location location) -> Tensor {
   internal::ContextUseGuard use_guard{context, internal::ContextUseMode::SUBMIT, location};
+  if (impl_->state_->HasActiveCapture()) {
+    throw CaptureError("cannot wrap external memory during CUDA graph capture", location);
+  }
   if (internal::ContextAccess::GetRuntimeState(context, location).get() != impl_->state_.get()) {
     throw InvalidArgumentError("execution context belongs to a different runtime", location);
   }

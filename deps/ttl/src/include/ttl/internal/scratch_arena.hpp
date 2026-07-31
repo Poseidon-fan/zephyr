@@ -83,6 +83,7 @@ class ScratchArena final {
 
   [[nodiscard]] auto GetCapacityBytes() const noexcept -> size_t;
   [[nodiscard]] auto GetHighWaterBytes() const noexcept -> size_t;
+  [[nodiscard]] auto GetStorage() const noexcept -> const std::shared_ptr<Storage> &;
 
  private:
   [[nodiscard]] auto Allocate(Scope &scope, size_t bytes, size_t alignment, std::source_location location)

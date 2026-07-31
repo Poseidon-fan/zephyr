@@ -212,7 +212,7 @@ void RecordAndLaunchBinary(internal::OpGuard &guard, Tensor &output, const Tenso
 void BinaryOutImpl(ExecutionContext &context, Tensor &output, const Tensor &lhs, const Tensor &rhs,
                    internal::BinaryElementwiseOp operation, std::source_location location) {
   const auto name = GetBinaryName(operation);
-  internal::OpGuard guard{context, name, location};
+  internal::OpGuard guard{context, name, location, internal::CapturePolicy::SAFE};
   guard.ValidateTensor(output);
   guard.ValidateTensor(lhs);
   guard.ValidateTensor(rhs);
@@ -238,7 +238,7 @@ void BinaryOutImpl(ExecutionContext &context, Tensor &output, const Tensor &lhs,
 void ScalarBinaryOutImpl(ExecutionContext &context, Tensor &output, const Tensor &input, Scalar scalar,
                          internal::BinaryElementwiseOp operation, std::source_location location) {
   const auto name = GetBinaryName(operation);
-  internal::OpGuard guard{context, name, location};
+  internal::OpGuard guard{context, name, location, internal::CapturePolicy::SAFE};
   guard.ValidateTensor(output);
   guard.ValidateTensor(input);
   ValidateOutputShape(output.GetShape(), input.GetShape(), name, location);
@@ -303,7 +303,7 @@ void ScalarBinaryOutImpl(ExecutionContext &context, Tensor &output, const Tensor
 void ComparisonOutImpl(ExecutionContext &context, Tensor &output, const Tensor &lhs, const Tensor &rhs,
                        internal::ComparisonElementwiseOp operation, std::source_location location) {
   const auto name = GetComparisonName(operation);
-  internal::OpGuard guard{context, name, location};
+  internal::OpGuard guard{context, name, location, internal::CapturePolicy::SAFE};
   guard.ValidateTensor(output);
   guard.ValidateTensor(lhs);
   guard.ValidateTensor(rhs);
@@ -332,7 +332,7 @@ void ComparisonOutImpl(ExecutionContext &context, Tensor &output, const Tensor &
 void ScalarComparisonOutImpl(ExecutionContext &context, Tensor &output, const Tensor &input, Scalar scalar,
                              internal::ComparisonElementwiseOp operation, std::source_location location) {
   const auto name = GetComparisonName(operation);
-  internal::OpGuard guard{context, name, location};
+  internal::OpGuard guard{context, name, location, internal::CapturePolicy::SAFE};
   guard.ValidateTensor(output);
   guard.ValidateTensor(input);
   ValidateOutputShape(output.GetShape(), input.GetShape(), name, location);
@@ -391,7 +391,7 @@ void ScalarComparisonOutImpl(ExecutionContext &context, Tensor &output, const Te
 void UnaryOutImpl(ExecutionContext &context, Tensor &output, const Tensor &input,
                   internal::UnaryElementwiseOp operation, std::source_location location) {
   const auto name = GetUnaryName(operation);
-  internal::OpGuard guard{context, name, location};
+  internal::OpGuard guard{context, name, location, internal::CapturePolicy::SAFE};
   guard.ValidateTensor(output);
   guard.ValidateTensor(input);
   ValidateOutputShape(output.GetShape(), input.GetShape(), name, location);
@@ -459,7 +459,7 @@ void ValidateClampBounds(const std::optional<Scalar> &minimum, const std::option
 void LogicalBinaryOutImpl(ExecutionContext &context, Tensor &output, const Tensor &lhs, const Tensor &rhs,
                           internal::LogicalElementwiseOp operation, std::source_location location) {
   const auto name = GetLogicalName(operation);
-  internal::OpGuard guard{context, name, location};
+  internal::OpGuard guard{context, name, location, internal::CapturePolicy::SAFE};
   guard.ValidateTensor(output);
   guard.ValidateTensor(lhs);
   guard.ValidateTensor(rhs);
@@ -668,7 +668,7 @@ TTL_DEFINE_UNARY(Silu, SILU)
 
 void GeluOut(ExecutionContext &context, Tensor &output, const Tensor &input, GeluApproximation approximation,
              std::source_location location) {
-  internal::OpGuard guard{context, "GeluOut", location};
+  internal::OpGuard guard{context, "GeluOut", location, internal::CapturePolicy::SAFE};
   ValidateGeluApproximation(approximation, location);
   guard.ValidateTensor(output);
   guard.ValidateTensor(input);
@@ -705,7 +705,7 @@ auto Gelu(ExecutionContext &context, const Tensor &input, GeluApproximation appr
 
 void ClampOut(ExecutionContext &context, Tensor &output, const Tensor &input, std::optional<Scalar> minimum,
               std::optional<Scalar> maximum, std::source_location location) {
-  internal::OpGuard guard{context, "ClampOut", location};
+  internal::OpGuard guard{context, "ClampOut", location, internal::CapturePolicy::SAFE};
   guard.ValidateTensor(output);
   guard.ValidateTensor(input);
   ValidateOutputShape(output.GetShape(), input.GetShape(), "ClampOut", location);
@@ -765,7 +765,7 @@ auto LogicalOr(ExecutionContext &context, const Tensor &lhs, const Tensor &rhs, 
 }
 
 void LogicalNotOut(ExecutionContext &context, Tensor &output, const Tensor &input, std::source_location location) {
-  internal::OpGuard guard{context, "LogicalNotOut", location};
+  internal::OpGuard guard{context, "LogicalNotOut", location, internal::CapturePolicy::SAFE};
   guard.ValidateTensor(output);
   guard.ValidateTensor(input);
   ValidateOutputShape(output.GetShape(), input.GetShape(), "LogicalNotOut", location);
@@ -803,7 +803,7 @@ auto LogicalNot(ExecutionContext &context, const Tensor &input, std::source_loca
 
 void WhereOut(ExecutionContext &context, Tensor &output, const Tensor &condition, const Tensor &true_value,
               const Tensor &false_value, std::source_location location) {
-  internal::OpGuard guard{context, "WhereOut", location};
+  internal::OpGuard guard{context, "WhereOut", location, internal::CapturePolicy::SAFE};
   guard.ValidateTensor(output);
   guard.ValidateTensor(condition);
   guard.ValidateTensor(true_value);

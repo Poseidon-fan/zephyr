@@ -74,6 +74,11 @@ class RuntimeState final : public std::enable_shared_from_this<RuntimeState> {
   void EnsureRunning(std::source_location location) const;
   void RegisterExecutionContext(std::source_location location);
   void UnregisterExecutionContext() noexcept;
+  void RegisterGraph(std::source_location location);
+  void UnregisterGraph() noexcept;
+  void BeginCapture(std::source_location location);
+  void EndCapture() noexcept;
+  [[nodiscard]] auto HasActiveCapture() const noexcept -> bool;
   [[nodiscard]] auto CreateCommunicatorGroup(std::span<const Device> rank_order, const NcclOptions &options,
                                              std::source_location location) -> std::shared_ptr<CommunicatorGroupState>;
   [[nodiscard]] auto AllocatePinned(size_t bytes, std::source_location location) -> PinnedBuffer;
@@ -98,6 +103,8 @@ class RuntimeState final : public std::enable_shared_from_this<RuntimeState> {
   mutable std::mutex lifecycle_latch_;
   std::atomic<RuntimeStatus> status_{RuntimeStatus::RUNNING};
   std::atomic<size_t> execution_context_count_{0};
+  std::atomic<size_t> graph_count_{0};
+  std::atomic<size_t> active_capture_count_{0};
 };
 
 class RuntimeAccess final {

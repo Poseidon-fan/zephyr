@@ -100,7 +100,7 @@ void ValidateTopKOutputs(Tensor &values, Tensor &indices, const Tensor &input, c
 
 void TopKOut(ExecutionContext &context, Tensor &values, Tensor &indices, const Tensor &input,
              const TopKOptions &options, std::source_location location) {
-  internal::OpGuard guard{context, "TopKOut", location};
+  internal::OpGuard guard{context, "TopKOut", location, internal::CapturePolicy::SAFE};
   guard.ValidateTensor(values);
   guard.ValidateTensor(indices);
   guard.ValidateTensor(input);

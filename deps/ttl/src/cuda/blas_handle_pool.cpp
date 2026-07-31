@@ -555,6 +555,8 @@ auto BlasHandleLease::GetCublasLtHandle() const noexcept -> cublasLtHandle_t { r
 
 auto BlasHandleLease::GetWorkspace() const noexcept -> Storage & { return *workspace_; }
 
+auto BlasHandleLease::GetWorkspaceStorage() const noexcept -> const std::shared_ptr<Storage> & { return workspace_; }
+
 void BlasHandleLease::Reset() noexcept {
   if (handle_ == nullptr) {
     return;

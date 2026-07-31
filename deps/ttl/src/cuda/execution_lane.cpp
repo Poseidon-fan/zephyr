@@ -48,6 +48,16 @@ auto ExecutionLane::GetScratchCapacityBytes() const noexcept -> size_t { return 
 
 auto ExecutionLane::GetScratchHighWaterBytes() const noexcept -> size_t { return scratch_arena_->GetHighWaterBytes(); }
 
+auto ExecutionLane::GetScratchStorage() const noexcept -> const std::shared_ptr<Storage> & {
+  return scratch_arena_->GetStorage();
+}
+
+auto ExecutionLane::GetBlasWorkspaceStorage(std::source_location location) -> const std::shared_ptr<Storage> & {
+  return GetBlas(location).GetWorkspaceStorage();
+}
+
+auto ExecutionLane::HasBlas() const noexcept -> bool { return blas_.has_value(); }
+
 auto ExecutionLane::GetBlas(std::source_location location) -> BlasHandleLease & {
   if (!blas_.has_value()) {
     blas_.emplace(blas_handle_pool_->Acquire(stream_, location));

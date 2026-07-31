@@ -10,6 +10,7 @@
 
 #include <driver_types.h>
 
+#include "ttl/cuda_graph.hpp"
 #include "ttl/device.hpp"
 #include "ttl/error.hpp"
 #include "ttl/error_sink.hpp"
@@ -17,6 +18,7 @@
 #include "ttl/internal/blas_handle_pool.hpp"
 #include "ttl/internal/cuda_api.hpp"
 #include "ttl/internal/cuda_check.hpp"
+#include "ttl/internal/cuda_graph.hpp"
 #include "ttl/internal/device_error.hpp"
 #include "ttl/internal/device_guard.hpp"
 #include "ttl/internal/event.hpp"
@@ -62,6 +64,10 @@ ContextUseGuard::ContextUseGuard(ExecutionContext &context, ContextUseMode mode,
   if (impl_.status_.load(std::memory_order_acquire) == ExecutionContextStatus::FAILED && !is_cleanup) {
     impl_.in_use_.clear(std::memory_order_release);
     throw InvalidArgumentError("execution context is in a failed state", location);
+  }
+  if (impl_.capture_state_ != nullptr && is_cleanup) {
+    impl_.in_use_.clear(std::memory_order_release);
+    throw CaptureError("synchronization and polling are forbidden during CUDA graph capture", location);
   }
 }
 
@@ -230,12 +236,27 @@ auto ExecutionContext::IsExternalStream() const noexcept -> bool {
 
 auto ExecutionContext::RecordEvent(std::source_location location) -> Event {
   internal::ContextUseGuard use_guard{*this, internal::ContextUseMode::SUBMIT, location};
+  if (impl_->capture_state_ != nullptr) {
+    throw CaptureError("public event recording is forbidden during CUDA graph capture", location);
+  }
   return internal::EventAccess::Record(impl_->primary_lane_.GetStream(), location);
 }
 
 void ExecutionContext::Wait(const Event &event, std::source_location location) {
   internal::ContextUseGuard use_guard{*this, internal::ContextUseMode::SUBMIT, location};
+  if (impl_->capture_state_ != nullptr) {
+    throw CaptureError("public event waits are forbidden during CUDA graph capture", location);
+  }
   internal::EventAccess::Wait(impl_->primary_lane_.GetStream(), event, location);
+}
+
+auto ExecutionContext::BeginCapture(std::source_location location) -> CaptureSession {
+  return BeginCapture(GraphCaptureOptions{}, location);
+}
+
+auto ExecutionContext::BeginCapture(const GraphCaptureOptions &options, std::source_location location)
+    -> CaptureSession {
+  return CaptureSession{internal::CaptureSessionState::Begin(*this, options, location)};
 }
 
 void ExecutionContext::CheckAsyncErrors(std::source_location location) {

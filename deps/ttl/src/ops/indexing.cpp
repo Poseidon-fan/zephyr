@@ -188,7 +188,7 @@ void ValidateIndexingOutput(Tensor &output, const Tensor &input, const Tensor &i
 void IndexingOutImpl(ExecutionContext &context, Tensor &output, const Tensor &input, int64_t raw_axis,
                      const Tensor &index, IndexingKind kind, std::source_location location) {
   const auto name = GetName(kind);
-  internal::OpGuard guard{context, name, location};
+  internal::OpGuard guard{context, name, location, internal::CapturePolicy::SAFE};
   guard.ValidateTensor(output);
   guard.ValidateTensor(input);
   guard.ValidateTensor(index);
@@ -315,7 +315,7 @@ void IndexingOutImpl(ExecutionContext &context, Tensor &output, const Tensor &in
 
 void GatherRowsOutImpl(ExecutionContext &context, Tensor &output, const Tensor &table, const Tensor &indices,
                        std::string_view operation, std::source_location location) {
-  internal::OpGuard guard{context, operation, location};
+  internal::OpGuard guard{context, operation, location, internal::CapturePolicy::SAFE};
   guard.ValidateTensor(output);
   guard.ValidateTensor(table);
   guard.ValidateTensor(indices);

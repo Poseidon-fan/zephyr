@@ -17,6 +17,7 @@
 #include "ttl/internal/checked_math.hpp"
 #include "ttl/internal/cuda_api.hpp"
 #include "ttl/internal/cuda_check.hpp"
+#include "ttl/internal/cuda_graph.hpp"
 #include "ttl/internal/elementwise_iterator.hpp"
 #include "ttl/internal/elementwise_launch.hpp"
 #include "ttl/internal/event.hpp"
@@ -123,7 +124,7 @@ void CopyToPinnedImpl(internal::OpGuard &guard, PinnedBuffer &output, const Tens
 }  // namespace
 
 void CopyOut(ExecutionContext &context, Tensor &output, const Tensor &input, std::source_location location) {
-  internal::OpGuard guard{context, "CopyOut", location};
+  internal::OpGuard guard{context, "CopyOut", location, internal::CapturePolicy::SAFE};
   CopyOutImpl(guard, output, input, false, location);
 }
 
@@ -139,7 +140,7 @@ auto Clone(ExecutionContext &context, const Tensor &input, std::source_location 
 }
 
 void ContiguousOut(ExecutionContext &context, Tensor &output, const Tensor &input, std::source_location location) {
-  internal::OpGuard guard{context, "ContiguousOut", location};
+  internal::OpGuard guard{context, "ContiguousOut", location, internal::CapturePolicy::SAFE};
   CopyOutImpl(guard, output, input, true, location);
 }
 
@@ -163,6 +164,9 @@ auto Contiguous(ExecutionContext &context, const Tensor &input, std::source_loca
 void CopyPeerOut(ExecutionContext &destination_context, Tensor &destination, const Tensor &source,
                  const Event &source_ready, std::source_location location) {
   internal::ContextUseGuard use_guard{destination_context, internal::ContextUseMode::SUBMIT, location};
+  if (internal::GetCaptureState(destination_context, location) != nullptr) {
+    throw CaptureError("CopyPeerOut with a public source event is not allowed during CUDA graph capture", location);
+  }
   const auto destination_device = destination_context.GetDevice();
   const auto source_device = source.GetDevice();
   if (destination.GetDevice() != destination_device) {

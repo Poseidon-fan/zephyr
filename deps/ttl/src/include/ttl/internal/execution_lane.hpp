@@ -36,6 +36,9 @@ class ExecutionLane final {
   void ReserveScratch(size_t capacity_bytes, std::source_location location = std::source_location::current());
   [[nodiscard]] auto GetScratchCapacityBytes() const noexcept -> size_t;
   [[nodiscard]] auto GetScratchHighWaterBytes() const noexcept -> size_t;
+  [[nodiscard]] auto GetScratchStorage() const noexcept -> const std::shared_ptr<Storage> &;
+  [[nodiscard]] auto GetBlasWorkspaceStorage(std::source_location location) -> const std::shared_ptr<Storage> &;
+  [[nodiscard]] auto HasBlas() const noexcept -> bool;
 
  private:
   [[nodiscard]] auto GetBlas(std::source_location location) -> BlasHandleLease &;

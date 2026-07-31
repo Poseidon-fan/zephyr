@@ -152,7 +152,7 @@ void ValidateComposition(ExecutionContext &context, Tensor *output, std::span<co
 void CompositionOutImpl(ExecutionContext &context, Tensor &output, std::span<const Tensor> inputs, int64_t raw_axis,
                         CompositionKind kind, std::source_location location) {
   const auto name = GetName(kind);
-  internal::OpGuard guard{context, name, location};
+  internal::OpGuard guard{context, name, location, internal::CapturePolicy::SAFE};
   auto shape_info = CompositionShapeInfo{};
   guard.ValidateTensor(output);
   for (const auto &input : inputs) {

@@ -223,4 +223,6 @@ void DeviceErrorState::ConsumeAndReset(cudaStream_t stream, std::source_location
   throw InternalError("device error record contains an invalid error code", location);
 }
 
+auto DeviceErrorState::GetStorage() const noexcept -> const std::shared_ptr<Storage> & { return storage_; }
+
 }  // namespace ttl::internal

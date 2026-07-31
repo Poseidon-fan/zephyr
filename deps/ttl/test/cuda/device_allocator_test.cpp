@@ -191,6 +191,11 @@ auto FakeSynchronizeStream(cudaStream_t /* stream */) -> cudaError_t {
   return cudaSuccess;
 }
 
+auto FakeIsStreamCapturing(cudaStream_t /* stream */, cudaStreamCaptureStatus *status) -> cudaError_t {
+  *status = cudaStreamCaptureStatusNone;
+  return cudaSuccess;
+}
+
 auto FakeCreatePool(cudaMemPool_t *pool, const cudaMemPoolProps *properties) -> cudaError_t {
   fake_cuda_state.create_pool_count_.fetch_add(1);
   fake_cuda_state.last_pool_location_.store(properties->location.id);
@@ -289,6 +294,7 @@ auto FakeCanAccessPeer(int *can_access, int /* device */, int /* peer */) -> cud
   cuda_api.destroy_event_ = FakeDestroyEvent;
   cuda_api.stream_wait_event_ = FakeWaitEvent;
   cuda_api.synchronize_stream_ = FakeSynchronizeStream;
+  cuda_api.is_stream_capturing_ = FakeIsStreamCapturing;
   cuda_api.create_memory_pool_ = FakeCreatePool;
   cuda_api.destroy_memory_pool_ = FakeDestroyPool;
   cuda_api.set_memory_pool_attribute_ = FakeSetPoolAttribute;

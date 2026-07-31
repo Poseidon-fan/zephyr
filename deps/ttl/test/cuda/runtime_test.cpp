@@ -238,6 +238,11 @@ auto FakeSynchronizeStream(cudaStream_t /*stream*/) -> cudaError_t {
   return cudaSuccess;
 }
 
+auto FakeIsStreamCapturing(cudaStream_t /*stream*/, cudaStreamCaptureStatus *status) -> cudaError_t {
+  *status = cudaStreamCaptureStatusNone;
+  return cudaSuccess;
+}
+
 auto FakeCreatePool(cudaMemPool_t *pool, const cudaMemPoolProps *properties) -> cudaError_t {
   if (properties->location.type != cudaMemLocationTypeDevice || properties->location.id < 0 ||
       properties->location.id >= FAKE_DEVICE_COUNT) {
@@ -424,6 +429,7 @@ auto FakeCublasSetWorkspace(cublasHandle_t handle, void *workspace, size_t works
   cuda_api.destroy_event_ = FakeDestroyEvent;
   cuda_api.stream_wait_event_ = FakeStreamWaitEvent;
   cuda_api.synchronize_stream_ = FakeSynchronizeStream;
+  cuda_api.is_stream_capturing_ = FakeIsStreamCapturing;
   cuda_api.create_memory_pool_ = FakeCreatePool;
   cuda_api.destroy_memory_pool_ = FakeDestroyPool;
   cuda_api.set_memory_pool_attribute_ = FakeSetPoolAttribute;

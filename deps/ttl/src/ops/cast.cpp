@@ -17,7 +17,7 @@ namespace ttl {
 void CastOut(ExecutionContext &context, Tensor &output, const Tensor &input, std::source_location location) {
   auto same_dtype = false;
   {
-    internal::OpGuard guard{context, "CastOut", location};
+    internal::OpGuard guard{context, "CastOut", location, internal::CapturePolicy::SAFE};
     guard.ValidateTensor(output);
     guard.ValidateTensor(input);
     if (output.GetShape() != input.GetShape()) {

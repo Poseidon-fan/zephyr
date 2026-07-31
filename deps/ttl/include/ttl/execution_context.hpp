@@ -20,6 +20,9 @@ class ExecutionContextImpl;
 
 namespace ttl {
 
+class CaptureSession;
+struct GraphCaptureOptions;
+
 struct ExecutionContextOptions final {
   int32_t stream_priority_{0};
   size_t max_auxiliary_stream_count_{0};
@@ -47,6 +50,10 @@ class ExecutionContext final {
 
   [[nodiscard]] auto RecordEvent(std::source_location location = std::source_location::current()) -> Event;
   void Wait(const Event &event, std::source_location location = std::source_location::current());
+
+  [[nodiscard]] auto BeginCapture(std::source_location location = std::source_location::current()) -> CaptureSession;
+  [[nodiscard]] auto BeginCapture(const GraphCaptureOptions &options,
+                                  std::source_location location = std::source_location::current()) -> CaptureSession;
 
   /** Synchronize submitted work and surface the first pending device-side semantic error. */
   void CheckAsyncErrors(std::source_location location = std::source_location::current());

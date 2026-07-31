@@ -102,6 +102,11 @@ auto FakeDestroyEvent(cudaEvent_t /*event*/) -> cudaError_t { return cudaSuccess
 
 auto FakeSynchronizeStream(cudaStream_t /*stream*/) -> cudaError_t { return cudaSuccess; }
 
+auto FakeIsStreamCapturing(cudaStream_t /*stream*/, cudaStreamCaptureStatus *status) -> cudaError_t {
+  *status = cudaStreamCaptureStatusNone;
+  return cudaSuccess;
+}
+
 auto FakeCreatePool(cudaMemPool_t *pool, const cudaMemPoolProps *properties) -> cudaError_t {
   if (properties->location.type != cudaMemLocationTypeDevice || properties->location.id != 0) {
     return cudaErrorInvalidValue;
@@ -153,6 +158,7 @@ auto FakeGetPointerAttributes(cudaPointerAttributes *attributes, const void * /*
   cuda_api.synchronize_event_ = FakeSynchronizeEvent;
   cuda_api.destroy_event_ = FakeDestroyEvent;
   cuda_api.synchronize_stream_ = FakeSynchronizeStream;
+  cuda_api.is_stream_capturing_ = FakeIsStreamCapturing;
   cuda_api.create_memory_pool_ = FakeCreatePool;
   cuda_api.destroy_memory_pool_ = FakeDestroyPool;
   cuda_api.set_memory_pool_attribute_ = FakeSetPoolAttribute;

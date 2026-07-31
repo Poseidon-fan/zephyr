@@ -117,6 +117,8 @@ auto ScratchArena::GetCapacityBytes() const noexcept -> size_t {
 
 auto ScratchArena::GetHighWaterBytes() const noexcept -> size_t { return high_water_bytes_; }
 
+auto ScratchArena::GetStorage() const noexcept -> const std::shared_ptr<Storage> & { return storage_; }
+
 auto ScratchArena::Allocate(Scope &scope, size_t bytes, size_t alignment, std::source_location location)
     -> ScratchAllocation {
   if (!scope_active_ || scope.generation_ != active_generation_ || scope.arena_ != this) {

@@ -137,7 +137,7 @@ void ValidateGeneratorContext(const internal::GeneratorImpl &impl, const Executi
 void RandomOutImpl(ExecutionContext &context, Tensor &output, Generator &generator,
                    internal::RandomDistribution distribution, double first_parameter, double second_parameter,
                    std::string_view operation, std::source_location location) {
-  internal::OpGuard guard{context, operation, location};
+  internal::OpGuard guard{context, operation, location, internal::CapturePolicy::SAFE};
   if (distribution == internal::RandomDistribution::UNIFORM) {
     ValidateUniformOptions(UniformOptions{.low_ = first_parameter, .high_ = second_parameter}, location);
   } else {
@@ -160,6 +160,7 @@ void RandomOutImpl(ExecutionContext &context, Tensor &output, Generator &generat
                                                 static_cast<float>(second_parameter), location);
   const auto error_context = guard.RegisterDeviceError(DType::INT64, DType::INT64);
   generator_impl.storage_->RecordUsage(context.GetStream());
+  guard.RetainStorage(generator_impl.storage_);
   guard.RecordTensor(output);
   internal::LaunchRandom(guard.GetNativeStream(), output.GetDType(), distribution, parameters,
                          static_cast<internal::GeneratorState *>(generator_impl.storage_->GetBasePointer()),

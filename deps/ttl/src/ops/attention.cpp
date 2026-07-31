@@ -158,7 +158,7 @@ void ValidateMask(const Tensor &mask, const Tensor &query, const Shape &score_sh
 void ScaledDotProductAttentionOut(ExecutionContext &context, Tensor &output, const Tensor &query, const Tensor &key,
                                   const Tensor &value, const std::optional<Tensor> &mask, const SdpaOptions &options,
                                   std::source_location location) {
-  internal::OpGuard guard{context, "ScaledDotProductAttentionOut", location};
+  internal::OpGuard guard{context, "ScaledDotProductAttentionOut", location, internal::CapturePolicy::SAFE};
   guard.ValidateTensor(output);
   guard.ValidateTensor(query);
   guard.ValidateTensor(key);

@@ -15,6 +15,7 @@
 #include "ttl/execution_context.hpp"
 #include "ttl/internal/cuda_api.hpp"
 #include "ttl/internal/cuda_check.hpp"
+#include "ttl/internal/cuda_graph.hpp"
 #include "ttl/internal/device_error.hpp"
 #include "ttl/internal/execution_context.hpp"
 #include "ttl/internal/execution_lane.hpp"
@@ -39,7 +40,8 @@ namespace {
 
 }  // namespace
 
-OpGuard::OpGuard(ExecutionContext &context, std::string_view operation, std::source_location location)
+OpGuard::OpGuard(ExecutionContext &context, std::string_view operation, std::source_location location,
+                 CapturePolicy capture_policy)
     : context_(context),
       operation_(operation),
       location_(location),
@@ -48,6 +50,13 @@ OpGuard::OpGuard(ExecutionContext &context, std::string_view operation, std::sou
   if (operation_.empty()) {
     throw InvalidArgumentError("operator name must not be empty", location_);
   }
+  capture_state_ = GetCaptureState(context_, location_);
+  if (capture_state_ != nullptr) {
+    if (capture_policy != CapturePolicy::SAFE) {
+      throw CaptureError(std::string{operation_} + " is not allowed during CUDA graph capture", location_);
+    }
+    capture_state_->BeginOperation(operation_, location_);
+  }
 }
 
 void OpGuard::RecordTensorOnStream(const Tensor &tensor, const Stream &stream) {
@@ -55,7 +64,9 @@ void OpGuard::RecordTensorOnStream(const Tensor &tensor, const Stream &stream) {
   if (stream.GetDevice() != context_.GetDevice()) {
     throw InvalidArgumentError("operator stream device does not match the execution context", location_);
   }
-  TensorAccess::GetStorage(tensor, location_)->RecordUsage(stream);
+  const auto &storage = TensorAccess::GetStorage(tensor, location_);
+  storage->RecordUsage(stream);
+  RetainStorage(storage);
 }
 
 void OpGuard::ValidateTensor(const Tensor &tensor) const {
@@ -67,11 +78,30 @@ void OpGuard::ValidateTensor(const Tensor &tensor) const {
 
 void OpGuard::RecordTensor(const Tensor &tensor) { RecordTensorOnStream(tensor, context_.GetStream()); }
 
-void OpGuard::CheckLaunch() const { CheckCuda(GetCudaApi().peek_at_last_error_(), operation_, location_); }
+void OpGuard::RetainStorage(const std::shared_ptr<Storage> &storage) {
+  if (capture_state_ != nullptr) {
+    capture_state_->RetainStorage(storage, location_);
+  }
+}
+
+void OpGuard::RetainCommunicator(const std::shared_ptr<CommunicatorGroupState> &communicator) {
+  if (capture_state_ != nullptr) {
+    capture_state_->RetainCommunicator(communicator, location_);
+  }
+}
+
+void OpGuard::CheckLaunch() const {
+  const auto status = GetCudaApi().peek_at_last_error_();
+  if (status != cudaSuccess && capture_state_ != nullptr) {
+    capture_state_->Invalidate();
+  }
+  CheckCuda(status, operation_, location_);
+}
 
 auto OpGuard::RegisterDeviceError(DType source_dtype, DType target_dtype) -> DeviceErrorLaunchContext {
-  return ContextAccess::GetDeviceErrorState(context_, location_)
-      .Register(context_.GetStream(), source_dtype, target_dtype, location_);
+  auto &state = ContextAccess::GetDeviceErrorState(context_, location_);
+  RetainStorage(state.GetStorage());
+  return state.Register(context_.GetStream(), source_dtype, target_dtype, location_);
 }
 
 auto OpGuard::GetStream() const noexcept -> const Stream & { return context_.GetStream(); }
@@ -79,19 +109,43 @@ auto OpGuard::GetStream() const noexcept -> const Stream & { return context_.Get
 auto OpGuard::GetNativeStream() const noexcept -> cudaStream_t { return StreamAccess::GetNative(context_.GetStream()); }
 
 auto OpGuard::GetCublasHandle() const -> cublasHandle_t {
-  return ContextAccess::GetPrimaryLane(context_, location_).GetCublasHandle(location_);
+  auto &lane = ContextAccess::GetPrimaryLane(context_, location_);
+  if (capture_state_ != nullptr && !lane.HasBlas()) {
+    throw CaptureError("cuBLAS resources must be warmed up before CUDA graph capture", location_);
+  }
+  return lane.GetCublasHandle(location_);
 }
 
 auto OpGuard::GetCublasLtHandle() const -> cublasLtHandle_t {
-  return ContextAccess::GetPrimaryLane(context_, location_).GetCublasLtHandle(location_);
+  auto &lane = ContextAccess::GetPrimaryLane(context_, location_);
+  if (capture_state_ != nullptr && !lane.HasBlas()) {
+    throw CaptureError("cuBLAS resources must be warmed up before CUDA graph capture", location_);
+  }
+  return lane.GetCublasLtHandle(location_);
 }
 
 auto OpGuard::GetBlasWorkspace() const -> void * {
-  return ContextAccess::GetPrimaryLane(context_, location_).GetBlasWorkspace(location_).GetBasePointer();
+  auto &lane = ContextAccess::GetPrimaryLane(context_, location_);
+  if (capture_state_ != nullptr && !lane.HasBlas()) {
+    throw CaptureError("cuBLAS resources must be warmed up before CUDA graph capture", location_);
+  }
+  const auto &storage = lane.GetBlasWorkspaceStorage(location_);
+  if (capture_state_ != nullptr) {
+    capture_state_->RetainStorage(storage, location_);
+  }
+  return storage->GetBasePointer();
 }
 
 auto OpGuard::GetBlasWorkspaceBytes() const -> size_t {
-  return ContextAccess::GetPrimaryLane(context_, location_).GetBlasWorkspace(location_).GetCapacityBytes();
+  auto &lane = ContextAccess::GetPrimaryLane(context_, location_);
+  if (capture_state_ != nullptr && !lane.HasBlas()) {
+    throw CaptureError("cuBLAS resources must be warmed up before CUDA graph capture", location_);
+  }
+  const auto &storage = lane.GetBlasWorkspaceStorage(location_);
+  if (capture_state_ != nullptr) {
+    capture_state_->RetainStorage(storage, location_);
+  }
+  return storage->GetCapacityBytes();
 }
 
 auto OpGuard::GetMatmulAlgorithmCache() const -> MatmulAlgorithmCache & {
@@ -99,10 +153,18 @@ auto OpGuard::GetMatmulAlgorithmCache() const -> MatmulAlgorithmCache & {
 }
 
 auto OpGuard::MakeScratchScope() -> ScratchArena::Scope {
-  return ContextAccess::GetPrimaryLane(context_, location_).MakeScratchScope(ScratchGrowthPolicy::GROWABLE, location_);
+  auto &lane = ContextAccess::GetPrimaryLane(context_, location_);
+  if (capture_state_ != nullptr && lane.GetScratchStorage() != nullptr) {
+    capture_state_->RetainStorage(lane.GetScratchStorage(), location_);
+  }
+  return lane.MakeScratchScope(
+      capture_state_ == nullptr ? ScratchGrowthPolicy::GROWABLE : ScratchGrowthPolicy::FIXED_CAPACITY, location_);
 }
 
 void OpGuard::ReserveScratch(size_t capacity_bytes) {
+  if (capture_state_ != nullptr) {
+    throw CaptureError("scratch capacity cannot be reserved during CUDA graph capture", location_);
+  }
   ContextAccess::GetPrimaryLane(context_, location_).ReserveScratch(capacity_bytes, location_);
 }
 
@@ -113,5 +175,7 @@ auto OpGuard::GetScratchCapacityBytes() const -> size_t {
 auto OpGuard::GetScratchHighWaterBytes() const -> size_t {
   return ContextAccess::GetPrimaryLane(context_, location_).GetScratchHighWaterBytes();
 }
+
+auto OpGuard::IsCapturing() const noexcept -> bool { return capture_state_ != nullptr; }
 
 }  // namespace ttl::internal

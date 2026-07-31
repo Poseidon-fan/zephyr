@@ -133,6 +133,8 @@ auto StreamState::GetNative() const noexcept -> cudaStream_t { return stream_; }
 
 auto StreamState::IsExternal() const noexcept -> bool { return is_external_; }
 
+auto StreamState::HasExternalOwner() const noexcept -> bool { return external_owner_ != nullptr; }
+
 auto StreamAccess::CreateOwned(Device device, int32_t priority, std::shared_ptr<ErrorSink> error_sink,
                                std::source_location location) -> Stream {
   return Stream{std::make_shared<StreamState>(device, priority, std::move(error_sink), location)};

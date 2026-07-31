@@ -47,7 +47,7 @@ void ValidateDType(DType dtype, std::string_view operation, std::source_location
 void SoftmaxOutImpl(ExecutionContext &context, Tensor &output, const Tensor &input, const SoftmaxOptions &options,
                     internal::SoftmaxOp operation, std::source_location location) {
   const auto name = GetName(operation);
-  internal::OpGuard guard{context, name, location};
+  internal::OpGuard guard{context, name, location, internal::CapturePolicy::SAFE};
   guard.ValidateTensor(output);
   guard.ValidateTensor(input);
   const auto axes = ValidateAndResolveAxes(input, options, location);

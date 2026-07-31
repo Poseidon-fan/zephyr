@@ -1035,12 +1035,24 @@ DeviceAllocator::~DeviceAllocator() noexcept {
 
 auto DeviceAllocator::Allocate(const Stream &stream, size_t bytes, size_t alignment, const AllocationContext &context)
     -> std::shared_ptr<Storage> {
+  cudaStreamCaptureStatus capture_status = cudaStreamCaptureStatusNone;
+  CheckCuda(GetCudaApi().is_stream_capturing_(StreamAccess::GetNative(stream), &capture_status),
+            "cudaStreamIsCapturing (device allocation)", context.location_);
+  if (capture_status != cudaStreamCaptureStatusNone) {
+    throw CaptureError("device allocation is forbidden during CUDA graph capture", context.location_);
+  }
   return impl_->Allocate(shared_from_this(), stream, bytes, alignment, context);
 }
 
 auto DeviceAllocator::WrapExternal(const Stream &allocation_stream, void *pointer, size_t capacity_bytes,
                                    ExternalOwnership ownership, std::shared_ptr<void> owner,
                                    std::source_location location) -> std::shared_ptr<Storage> {
+  cudaStreamCaptureStatus capture_status = cudaStreamCaptureStatusNone;
+  CheckCuda(GetCudaApi().is_stream_capturing_(StreamAccess::GetNative(allocation_stream), &capture_status),
+            "cudaStreamIsCapturing (external memory wrapping)", location);
+  if (capture_status != cudaStreamCaptureStatusNone) {
+    throw CaptureError("external memory wrapping is forbidden during CUDA graph capture", location);
+  }
   return impl_->WrapExternal(shared_from_this(), allocation_stream, pointer, capacity_bytes, ownership,
                              std::move(owner), location);
 }
