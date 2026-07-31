@@ -31,6 +31,7 @@
 #include "ttl/internal/device_properties.hpp"
 #include "ttl/internal/event_pool.hpp"
 #include "ttl/internal/execution_context.hpp"
+#include "ttl/internal/matmul_plan.hpp"
 #include "ttl/internal/runtime.hpp"
 #include "ttl/internal/storage.hpp"
 #include "ttl/internal/stream.hpp"
@@ -142,6 +143,8 @@ auto DeviceContext::GetBlasHandlePool() const noexcept -> const std::shared_ptr<
   return blas_handle_pool_;
 }
 
+auto DeviceContext::GetMatmulAlgorithmCache() noexcept -> MatmulAlgorithmCache & { return matmul_algorithm_cache_; }
+
 RuntimeState::RuntimeState(RuntimeOptions options, std::source_location location) : location_(location) {
   ValidateRuntimeOptions(options, location);
 
@@ -203,10 +206,10 @@ auto RuntimeState::GetDeviceContext(Device device, std::source_location location
   return device_contexts_[FindDeviceIndex(device, location)];
 }
 
-auto RuntimeState::CanAccessPeer(Device source, Device destination, std::source_location location) const -> bool {
-  const auto source_index = FindDeviceIndex(source, location);
-  const auto destination_index = FindDeviceIndex(destination, location);
-  return peer_access_[(source_index * devices_.size()) + destination_index] != 0;
+auto RuntimeState::CanAccessPeer(Device device, Device peer_device, std::source_location location) const -> bool {
+  const auto device_index = FindDeviceIndex(device, location);
+  const auto peer_device_index = FindDeviceIndex(peer_device, location);
+  return peer_access_[(device_index * devices_.size()) + peer_device_index] != 0;
 }
 
 auto RuntimeState::GetErrorSink() const noexcept -> const std::shared_ptr<ErrorSink> & { return error_sink_; }
@@ -304,8 +307,8 @@ auto Runtime::GetDeviceProperties(Device device, std::source_location location) 
   return impl_->state_->GetDeviceContext(device, location)->GetProperties();
 }
 
-auto Runtime::CanAccessPeer(Device source, Device destination, std::source_location location) const -> bool {
-  return impl_->state_->CanAccessPeer(source, destination, location);
+auto Runtime::CanAccessPeer(Device device, Device peer_device, std::source_location location) const -> bool {
+  return impl_->state_->CanAccessPeer(device, peer_device, location);
 }
 
 auto Runtime::GetStatus() const noexcept -> RuntimeStatus { return impl_->state_->GetStatus(); }

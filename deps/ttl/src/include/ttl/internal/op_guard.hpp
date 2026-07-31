@@ -8,15 +8,18 @@
 #include <cublas_v2.h>
 #include <driver_types.h>
 
+#include "ttl/dtype.hpp"
 #include "ttl/execution_context.hpp"
 #include "ttl/internal/device_error.hpp"
 #include "ttl/internal/device_guard.hpp"
 #include "ttl/internal/execution_context.hpp"
 #include "ttl/internal/scratch_arena.hpp"
+#include "ttl/stream.hpp"
 #include "ttl/tensor.hpp"
 
 namespace ttl::internal {
 
+class MatmulAlgorithmCache;
 class ParallelOpScope;
 
 /** Common checked entry scope for CUDA operator wrappers. */
@@ -41,6 +44,7 @@ class OpGuard final {
   [[nodiscard]] auto GetCublasLtHandle() const -> cublasLtHandle_t;
   [[nodiscard]] auto GetBlasWorkspace() const -> void *;
   [[nodiscard]] auto GetBlasWorkspaceBytes() const -> size_t;
+  [[nodiscard]] auto GetMatmulAlgorithmCache() const -> MatmulAlgorithmCache &;
   [[nodiscard]] auto MakeScratchScope() -> ScratchArena::Scope;
   void ReserveScratch(size_t capacity_bytes);
   [[nodiscard]] auto GetScratchCapacityBytes() const -> size_t;

@@ -3,6 +3,7 @@
 #include <cstddef>
 
 #include <cuda_runtime_api.h>
+#include <driver_types.h>
 
 namespace ttl::internal {
 
@@ -41,6 +42,7 @@ struct CudaApi final {
   decltype(&cudaFreeAsync) free_async_;
   decltype(&cudaMemsetAsync) memset_async_;
   decltype(&cudaMemcpyAsync) memcpy_async_;
+  decltype(&cudaMemcpyPeerAsync) memcpy_peer_async_;
   HostAlloc host_alloc_;
   decltype(&cudaFreeHost) free_host_;
   decltype(&cudaMemGetInfo) get_memory_info_;

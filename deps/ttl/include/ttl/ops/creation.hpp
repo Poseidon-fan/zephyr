@@ -2,8 +2,10 @@
 
 #include <source_location>
 
+#include "ttl/dtype.hpp"
 #include "ttl/execution_context.hpp"
 #include "ttl/scalar.hpp"
+#include "ttl/shape.hpp"
 #include "ttl/tensor.hpp"
 
 namespace ttl {
@@ -23,6 +25,15 @@ namespace ttl {
 /** Allocate a canonical contiguous tensor filled with the one value of its dtype. */
 [[nodiscard]] auto Ones(ExecutionContext &context, const Shape &shape, DType dtype,
                         std::source_location location = std::source_location::current()) -> Tensor;
+
+/**
+ * Create a one-dimensional half-open arithmetic sequence.
+ *
+ * Supported output dtypes are INT32, INT64, and FLOAT32. The step must be nonzero; floating-point bounds and step
+ * must be finite.
+ */
+[[nodiscard]] auto Arange(ExecutionContext &context, Scalar start, Scalar end, Scalar step, DType dtype,
+                          std::source_location location = std::source_location::current()) -> Tensor;
 
 /** Fill every logical element of a writable tensor on the context stream. */
 void FillOut(ExecutionContext &context, Tensor &output, Scalar value,

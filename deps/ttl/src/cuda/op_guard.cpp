@@ -10,12 +10,15 @@
 #include <driver_types.h>
 
 #include "ttl/device.hpp"
+#include "ttl/dtype.hpp"
 #include "ttl/error.hpp"
 #include "ttl/execution_context.hpp"
 #include "ttl/internal/cuda_api.hpp"
 #include "ttl/internal/cuda_check.hpp"
+#include "ttl/internal/device_error.hpp"
 #include "ttl/internal/execution_context.hpp"
 #include "ttl/internal/execution_lane.hpp"
+#include "ttl/internal/matmul_plan.hpp"
 #include "ttl/internal/scratch_arena.hpp"
 #include "ttl/internal/storage.hpp"
 #include "ttl/internal/stream.hpp"
@@ -89,6 +92,10 @@ auto OpGuard::GetBlasWorkspace() const -> void * {
 
 auto OpGuard::GetBlasWorkspaceBytes() const -> size_t {
   return ContextAccess::GetPrimaryLane(context_, location_).GetBlasWorkspace(location_).GetCapacityBytes();
+}
+
+auto OpGuard::GetMatmulAlgorithmCache() const -> MatmulAlgorithmCache & {
+  return ContextAccess::GetMatmulAlgorithmCache(context_, location_);
 }
 
 auto OpGuard::MakeScratchScope() -> ScratchArena::Scope {

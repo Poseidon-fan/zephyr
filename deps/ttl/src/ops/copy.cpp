@@ -2,18 +2,23 @@
 
 #include <source_location>
 
-#include <cuda_runtime_api.h>
+#include <driver_types.h>
 
 #include "ttl/dtype.hpp"
 #include "ttl/error.hpp"
+#include "ttl/event.hpp"
 #include "ttl/execution_context.hpp"
 #include "ttl/internal/checked_math.hpp"
 #include "ttl/internal/cuda_api.hpp"
 #include "ttl/internal/cuda_check.hpp"
 #include "ttl/internal/elementwise_iterator.hpp"
 #include "ttl/internal/elementwise_launch.hpp"
+#include "ttl/internal/event.hpp"
+#include "ttl/internal/execution_context.hpp"
 #include "ttl/internal/op_guard.hpp"
+#include "ttl/internal/stream.hpp"
 #include "ttl/internal/tensor_impl.hpp"
+#include "ttl/stream.hpp"
 #include "ttl/tensor.hpp"
 
 namespace ttl {
@@ -96,6 +101,50 @@ auto Contiguous(ExecutionContext &context, const Tensor &input, std::source_loca
   auto output = Empty(context, input_impl.GetShape(), input_impl.GetDType(), location);
   ContiguousOut(context, output, input, location);
   return output;
+}
+
+void CopyPeerOut(ExecutionContext &destination_context, Tensor &destination, const Tensor &source,
+                 const Event &source_ready, std::source_location location) {
+  internal::ContextUseGuard use_guard{destination_context, internal::ContextUseMode::SUBMIT, location};
+  const auto destination_device = destination_context.GetDevice();
+  const auto source_device = source.GetDevice();
+  if (destination.GetDevice() != destination_device) {
+    throw InvalidArgumentError("CopyPeerOut destination must be on the destination context device", location);
+  }
+  if (source_device == destination_device) {
+    throw InvalidArgumentError("CopyPeerOut requires source and destination on different devices", location);
+  }
+  if (source_ready.GetDevice() != source_device) {
+    throw InvalidArgumentError("CopyPeerOut source event must be recorded on the source device", location);
+  }
+  if (destination.GetShape() != source.GetShape()) {
+    throw InvalidArgumentError("CopyPeerOut requires equal source and destination shapes", location);
+  }
+  if (destination.GetDType() != source.GetDType()) {
+    throw InvalidArgumentError("CopyPeerOut requires equal source and destination dtypes", location);
+  }
+  if (!destination.IsContiguous() || !source.IsContiguous()) {
+    throw InvalidArgumentError("CopyPeerOut requires contiguous source and destination tensors", location);
+  }
+
+  if (!internal::ContextAccess::CanAccessPeer(destination_context, source_device, location)) {
+    throw NotSupportedError("destination device cannot directly access the source device", location);
+  }
+  if (destination.GetNumElements() == 0) {
+    return;
+  }
+
+  const auto &destination_stream = destination_context.GetStream();
+  internal::EventAccess::Wait(destination_stream, source_ready, location);
+  internal::TensorAccess::RecordUsage(destination, destination_stream, location);
+  internal::TensorAccess::RecordUsage(source, destination_stream, location);
+  const auto bytes =
+      internal::CheckedBytes(destination.GetNumElements(), GetDTypeSize(destination.GetDType(), location), location);
+  internal::CheckCuda(internal::GetCudaApi().memcpy_peer_async_(
+                          internal::TensorAccess::GetMutableData(destination, location),
+                          destination_device.GetOrdinal(), internal::TensorAccess::GetData(source, location),
+                          source_device.GetOrdinal(), bytes, internal::StreamAccess::GetNative(destination_stream)),
+                      "cudaMemcpyPeerAsync (CopyPeerOut)", location);
 }
 
 }  // namespace ttl

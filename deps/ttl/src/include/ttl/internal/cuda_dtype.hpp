@@ -96,9 +96,7 @@ struct CudaDTypeOf<float> {
 };
 
 template <typename T>
-concept CudaStorageType = !std::is_volatile_v<T> && requires {
-  { CudaDTypeOf<std::remove_cv_t<T>>::VALUE } -> std::convertible_to<DType>;
-};
+concept CudaStorageType = !std::is_volatile_v<T> && requires { CudaDTypeOf<std::remove_cv_t<T>>::VALUE; };
 
 template <CudaStorageType T>
 // CUDA-mode clang-tidy misclassifies this dependent constexpr variable template as dynamically initialized.

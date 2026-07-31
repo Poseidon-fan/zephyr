@@ -25,6 +25,7 @@ class Scalar final {
   [[nodiscard]] auto IsBoolean() const noexcept -> bool;
   [[nodiscard]] auto IsIntegral() const noexcept -> bool;
   [[nodiscard]] auto IsFloating() const noexcept -> bool;
+  [[nodiscard]] auto ToDouble() const noexcept -> double;
 
   template <TensorStorageType T>
   [[nodiscard]] auto Cast(std::source_location location = std::source_location::current()) const

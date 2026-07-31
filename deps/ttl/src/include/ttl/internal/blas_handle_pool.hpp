@@ -46,11 +46,12 @@ class BlasHandleLease final {
  private:
   friend class BlasHandlePoolState;
 
-  BlasHandleLease(cublasHandle_t handle, std::shared_ptr<Storage> workspace, std::shared_ptr<StreamState> stream,
-                  std::shared_ptr<BlasHandlePoolState> pool) noexcept;
+  BlasHandleLease(cublasHandle_t handle, cublasLtHandle_t lt_handle, std::shared_ptr<Storage> workspace,
+                  std::shared_ptr<StreamState> stream, std::shared_ptr<BlasHandlePoolState> pool) noexcept;
   void Reset() noexcept;
 
   cublasHandle_t handle_;
+  cublasLtHandle_t lt_handle_;
   std::shared_ptr<Storage> workspace_;
   std::shared_ptr<StreamState> stream_;
   std::shared_ptr<BlasHandlePoolState> pool_;

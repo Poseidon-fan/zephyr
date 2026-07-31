@@ -9,7 +9,7 @@
 #include <string>
 #include <utility>
 
-#include <cuda_runtime_api.h>
+#include <driver_types.h>
 
 #include "ttl/device.hpp"
 #include "ttl/dtype.hpp"
@@ -68,6 +68,26 @@ namespace {
   message.append(GetDTypeName(dtype));
   message.append(" at iterator index ");
   message.append(std::to_string(record.linear_index_));
+  return message;
+}
+
+[[nodiscard]] auto FormatIndexError(const DeviceErrorRecord &record, DType dtype) -> std::string {
+  std::string message{"Indexing operation "};
+  message.append(std::to_string(record.operation_sequence_));
+  message.append(" encountered index ");
+  message.append(DecodeOffendingValue(dtype, record.offending_value_bits_));
+  message.append(" outside [0, ");
+  message.append(std::to_string(record.bound_));
+  message.append(") at output index ");
+  message.append(std::to_string(record.linear_index_));
+  return message;
+}
+
+[[nodiscard]] auto FormatRandomCounterError(const DeviceErrorRecord &record) -> std::string {
+  std::string message{"random operation "};
+  message.append(std::to_string(record.operation_sequence_));
+  message.append(" exhausted its Philox counter space at counter ");
+  message.append(std::to_string(record.offending_value_bits_));
   return message;
 }
 
@@ -194,8 +214,9 @@ void DeviceErrorState::ConsumeAndReset(cudaStream_t stream, std::source_location
     case DeviceErrorCode::INTEGER_DIVIDE_BY_ZERO:
       throw DeviceError(FormatIntegerDivisionError(record, source_dtype), location);
     case DeviceErrorCode::INDEX_OUT_OF_BOUNDS:
+      throw DeviceError(FormatIndexError(record, source_dtype), location);
     case DeviceErrorCode::RNG_COUNTER_OVERFLOW:
-      throw DeviceError("device kernel reported an unsupported asynchronous error code", location);
+      throw DeviceError(FormatRandomCounterError(record), location);
     case DeviceErrorCode::NONE:
       break;
   }

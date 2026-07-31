@@ -70,7 +70,7 @@ class Runtime final {
   [[nodiscard]] auto GetDeviceProperties(Device device,
                                          std::source_location location = std::source_location::current()) const
       -> const DeviceProperties &;
-  [[nodiscard]] auto CanAccessPeer(Device source, Device destination,
+  [[nodiscard]] auto CanAccessPeer(Device device, Device peer_device,
                                    std::source_location location = std::source_location::current()) const -> bool;
   [[nodiscard]] auto GetStatus() const noexcept -> RuntimeStatus;
 

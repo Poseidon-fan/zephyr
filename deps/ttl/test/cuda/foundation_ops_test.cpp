@@ -5,11 +5,13 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <vector>
 
 #include <cuda_runtime_api.h>
+#include <driver_types.h>
 #include <gtest/gtest.h>
 
 #include "ttl/device.hpp"
@@ -160,6 +162,98 @@ TEST_F(FoundationOpsTest, BuildsFunctionalCreationResultsWithCanonicalLayout) {
 
   EXPECT_THROW([[maybe_unused]] const auto invalid = Full(GetContext(), Shape{1}, Scalar{int64_t{256}}, DType::UINT8),
                OverflowError);
+}
+
+TEST_F(FoundationOpsTest, CreatesCheckedIntegerAndFloatingArangeSequences) {
+  const auto positive = Arange(GetContext(), Scalar{int64_t{-3}}, Scalar{int64_t{8}}, Scalar{int64_t{3}}, DType::INT32);
+  EXPECT_EQ(CopyToHost<int32_t>(GetContext(), positive), (std::vector<int32_t>{-3, 0, 3, 6}));
+
+  const auto negative =
+      Arange(GetContext(), Scalar{int64_t{7}}, Scalar{int64_t{-4}}, Scalar{int64_t{-4}}, DType::INT64);
+  EXPECT_EQ(CopyToHost<int64_t>(GetContext(), negative), (std::vector<int64_t>{7, 3, -1}));
+
+  const auto floating = Arange(GetContext(), Scalar{-0.5}, Scalar{1.0}, Scalar{0.5}, DType::FLOAT32);
+  EXPECT_EQ(CopyToHost<float>(GetContext(), floating), (std::vector<float>{-0.5F, 0.0F, 0.5F}));
+
+  const auto empty = Arange(GetContext(), Scalar{int64_t{4}}, Scalar{int64_t{1}}, Scalar{int64_t{2}}, DType::INT64);
+  EXPECT_EQ(empty.GetShape(), Shape{0});
+  EXPECT_THROW([[maybe_unused]] const auto result =
+                   Arange(GetContext(), Scalar{int64_t{0}}, Scalar{int64_t{4}}, Scalar{int64_t{0}}, DType::INT64),
+               InvalidArgumentError);
+  EXPECT_THROW(
+      [[maybe_unused]] const auto result = Arange(GetContext(), Scalar{0.0}, Scalar{4.0},
+                                                  Scalar{std::numeric_limits<double>::infinity()}, DType::FLOAT32),
+      InvalidArgumentError);
+  EXPECT_THROW([[maybe_unused]] const auto result =
+                   Arange(GetContext(), Scalar{int64_t{0}}, Scalar{int64_t{4}}, Scalar{int64_t{1}}, DType::FLOAT16),
+               InvalidArgumentError);
+  EXPECT_THROW([[maybe_unused]] const auto result =
+                   Arange(GetContext(), Scalar{int64_t{std::numeric_limits<int32_t>::max()} + 1},
+                          Scalar{int64_t{std::numeric_limits<int32_t>::max()} + 2}, Scalar{int64_t{1}}, DType::INT32),
+               OverflowError);
+}
+
+TEST_F(FoundationOpsTest, SplitsAndChunksWithMetadataOnlyViews) {
+  const auto input = Empty(GetContext(), Shape{2, 7}, DType::FLOAT32);
+  constexpr std::array<int64_t, 4> sizes{2, 0, 3, 2};
+  const auto splits = Split(input, sizes, -1);
+  ASSERT_EQ(splits.size(), sizes.size());
+  EXPECT_EQ(splits[0].GetShape(), Shape({2, 2}));
+  EXPECT_EQ(splits[1].GetShape(), Shape({2, 0}));
+  EXPECT_EQ(splits[2].GetShape(), Shape({2, 3}));
+  EXPECT_EQ(splits[3].GetShape(), Shape({2, 2}));
+  EXPECT_NE(ClassifyAlias(splits[0], input), AliasKind::DISJOINT);
+
+  const auto chunks = Chunk(input, 4, 1);
+  ASSERT_EQ(chunks.size(), 4);
+  EXPECT_EQ(chunks[0].GetShape(), Shape({2, 2}));
+  EXPECT_EQ(chunks[1].GetShape(), Shape({2, 2}));
+  EXPECT_EQ(chunks[2].GetShape(), Shape({2, 2}));
+  EXPECT_EQ(chunks[3].GetShape(), Shape({2, 1}));
+
+  const auto fewer_chunks = Chunk(Empty(GetContext(), Shape{6}, DType::INT32), 4, 0);
+  ASSERT_EQ(fewer_chunks.size(), 3);
+  EXPECT_EQ(fewer_chunks[0].GetShape(), Shape{2});
+  EXPECT_EQ(fewer_chunks[1].GetShape(), Shape{2});
+  EXPECT_EQ(fewer_chunks[2].GetShape(), Shape{2});
+
+  const auto empty_chunks = Chunk(Empty(GetContext(), Shape{0, 2}, DType::UINT8), 3, 0);
+  ASSERT_EQ(empty_chunks.size(), 3);
+  EXPECT_EQ(empty_chunks[0].GetShape(), Shape({0, 2}));
+  EXPECT_EQ(empty_chunks[1].GetShape(), Shape({0, 2}));
+  EXPECT_EQ(empty_chunks[2].GetShape(), Shape({0, 2}));
+
+  constexpr std::array<int64_t, 2> wrong_sizes{2, 4};
+  constexpr std::array<int64_t, 2> negative_sizes{8, -1};
+  EXPECT_THROW([[maybe_unused]] const auto invalid = Split(input, wrong_sizes, 1), InvalidArgumentError);
+  EXPECT_THROW([[maybe_unused]] const auto invalid = Split(input, negative_sizes, 1), InvalidArgumentError);
+  EXPECT_THROW([[maybe_unused]] const auto invalid = Chunk(input, 0, 1), InvalidArgumentError);
+}
+
+TEST_F(FoundationOpsTest, ReshapesAndFlattensWithMaterializationOnlyWhenRequired) {
+  auto input = Empty(GetContext(), Shape{2, 3}, DType::INT32);
+  constexpr std::array<int32_t, 6> values{0, 1, 2, 3, 4, 5};
+  CopyFromHost(GetContext(), input, values);
+
+  const auto viewed = Reshape(GetContext(), input, Shape{3, 2});
+  EXPECT_NE(ClassifyAlias(viewed, input), AliasKind::DISJOINT);
+  EXPECT_EQ(viewed.GetShape(), Shape({3, 2}));
+
+  const auto transposed = Transpose(input, 0, 1);
+  constexpr std::array<int64_t, 1> inferred_shape{-1};
+  const auto materialized = Reshape(GetContext(), transposed, inferred_shape);
+  EXPECT_EQ(materialized.GetShape(), Shape{6});
+  EXPECT_EQ(ClassifyAlias(materialized, transposed), AliasKind::DISJOINT);
+  EXPECT_EQ(CopyToHost<int32_t>(GetContext(), materialized), (std::vector<int32_t>{0, 3, 1, 4, 2, 5}));
+
+  auto three_dimensional = Empty(GetContext(), Shape{2, 3, 4}, DType::FLOAT32);
+  const auto flattened = Flatten(GetContext(), three_dimensional, 1, -1);
+  EXPECT_EQ(flattened.GetShape(), Shape({2, 12}));
+  EXPECT_NE(ClassifyAlias(flattened, three_dimensional), AliasKind::DISJOINT);
+
+  const auto scalar = Empty(GetContext(), Shape{}, DType::INT64);
+  EXPECT_EQ(Flatten(GetContext(), scalar).GetShape(), Shape{1});
+  EXPECT_THROW([[maybe_unused]] const auto invalid = Flatten(GetContext(), input, 1, 0), InvalidArgumentError);
 }
 
 TEST_F(FoundationOpsTest, FillsDenseStridedOutputsAndValidatesScalarBeforeEmptyReturn) {

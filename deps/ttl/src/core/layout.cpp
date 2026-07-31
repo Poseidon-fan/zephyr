@@ -10,11 +10,14 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include "ttl/error.hpp"
 #include "ttl/internal/checked_math.hpp"
 #include "ttl/internal/layout.hpp"
+#include "ttl/internal/op_guard.hpp"
 #include "ttl/internal/tensor_impl.hpp"
+#include "ttl/ops/copy.hpp"
 #include "ttl/shape.hpp"
 #include "ttl/tensor.hpp"
 
@@ -211,6 +214,70 @@ auto View(const Tensor &input, std::span<const int64_t> requested, std::source_l
   return View(input, InferReshape(input, requested, location), location);
 }
 
+auto Reshape(ExecutionContext &context, const Tensor &input, const Shape &shape, std::source_location location)
+    -> Tensor {
+  {
+    internal::OpGuard guard{context, "Reshape", location};
+    guard.ValidateTensor(input);
+  }
+  const auto &impl = internal::TensorAccess::GetImpl(input, location);
+  if (impl.GetNumElements() != shape.GetNumElements()) {
+    throw InvalidArgumentError("reshape must preserve the tensor element count", location);
+  }
+
+  const auto strides = internal::ComputeViewStrides(impl.GetShape(), impl.GetStrides(), shape, location);
+  if (strides.has_value()) {
+    return MakeView(input, shape, *strides, impl.GetStorageOffset(), location);
+  }
+  return View(Contiguous(context, input, location), shape, location);
+}
+
+auto Reshape(ExecutionContext &context, const Tensor &input, std::span<const int64_t> requested,
+             std::source_location location) -> Tensor {
+  return Reshape(context, input, InferReshape(input, requested, location), location);
+}
+
+auto Flatten(ExecutionContext &context, const Tensor &input, int64_t start_axis, int64_t end_axis,
+             std::source_location location) -> Tensor {
+  {
+    internal::OpGuard guard{context, "Flatten", location};
+    guard.ValidateTensor(input);
+  }
+  const auto &impl = internal::TensorAccess::GetImpl(input, location);
+  const auto rank = impl.GetShape().GetRank();
+  if (rank == 0) {
+    if ((start_axis != 0 && start_axis != -1) || (end_axis != 0 && end_axis != -1)) {
+      throw InvalidArgumentError("flatten axis out of range for a scalar tensor", location);
+    }
+    return Reshape(context, input, Shape{1}, location);
+  }
+
+  const auto normalized_start = NormalizeAxis(start_axis, rank, location);
+  const auto normalized_end = NormalizeAxis(end_axis, rank, location);
+  if (normalized_start > normalized_end) {
+    throw InvalidArgumentError("flatten start axis must not follow end axis", location);
+  }
+
+  std::array<int64_t, TTL_MAX_RANK> dimensions{};
+  size_t output_axis = 0;
+  for (size_t axis = 0; axis < normalized_start; ++axis) {
+    dimensions[output_axis] = impl.GetShape().GetDimensions()[axis];
+    output_axis++;
+  }
+  auto flattened_dimension = int64_t{1};
+  for (size_t axis = normalized_start; axis <= normalized_end; ++axis) {
+    flattened_dimension = internal::CheckedMultiply(flattened_dimension, impl.GetShape().GetDimensions()[axis],
+                                                    "flattened dimension", location);
+  }
+  dimensions[output_axis] = flattened_dimension;
+  output_axis++;
+  for (size_t axis = normalized_end + 1; axis < rank; ++axis) {
+    dimensions[output_axis] = impl.GetShape().GetDimensions()[axis];
+    output_axis++;
+  }
+  return Reshape(context, input, Shape{std::span<const int64_t>{dimensions.data(), output_axis}, location}, location);
+}
+
 auto Permute(const Tensor &input, std::span<const int64_t> axes, std::source_location location) -> Tensor {
   const auto &impl = internal::TensorAccess::GetImpl(input, location);
   const auto rank = impl.GetShape().GetRank();
@@ -347,6 +414,63 @@ auto Narrow(const Tensor &input, int64_t axis, int64_t start, int64_t length, st
       internal::CheckedAdd(impl.GetStorageOffset(), offset_delta, "narrow storage offset", location);
   return MakeView(input, Shape{std::span<const int64_t>{dimensions.data(), impl.GetShape().GetRank()}, location},
                   impl.GetStrides(), storage_offset, location);
+}
+
+auto Split(const Tensor &input, std::span<const int64_t> sizes, int64_t axis, std::source_location location)
+    -> std::vector<Tensor> {
+  const auto &impl = internal::TensorAccess::GetImpl(input, location);
+  const auto normalized_axis = NormalizeAxis(axis, impl.GetShape().GetRank(), location);
+  const auto dimension = impl.GetShape().GetDimensions()[normalized_axis];
+
+  auto total = int64_t{0};
+  for (const auto size : sizes) {
+    if (size < 0) {
+      throw InvalidArgumentError("split sizes must be non-negative", location);
+    }
+    total = internal::CheckedAdd(total, size, "split size sum", location);
+  }
+  if (total != dimension) {
+    throw InvalidArgumentError("split sizes must sum to the selected dimension", location);
+  }
+
+  std::vector<Tensor> outputs;
+  outputs.reserve(sizes.size());
+  auto start = int64_t{0};
+  for (const auto size : sizes) {
+    outputs.emplace_back(Narrow(input, static_cast<int64_t>(normalized_axis), start, size, location));
+    start = internal::CheckedAdd(start, size, "split offset", location);
+  }
+  return outputs;
+}
+
+auto Chunk(const Tensor &input, int64_t chunks, int64_t axis, std::source_location location) -> std::vector<Tensor> {
+  if (chunks <= 0) {
+    throw InvalidArgumentError("chunk count must be positive", location);
+  }
+  const auto &impl = internal::TensorAccess::GetImpl(input, location);
+  const auto normalized_axis = NormalizeAxis(axis, impl.GetShape().GetRank(), location);
+  const auto dimension = impl.GetShape().GetDimensions()[normalized_axis];
+
+  std::vector<Tensor> outputs;
+  if (dimension == 0) {
+    const auto output_count = internal::CheckedNarrow<size_t>(chunks, "chunk output count", location);
+    outputs.reserve(output_count);
+    for (auto index = int64_t{0}; index < chunks; ++index) {
+      outputs.emplace_back(Narrow(input, static_cast<int64_t>(normalized_axis), 0, 0, location));
+    }
+    return outputs;
+  }
+
+  const auto chunk_size = internal::CeilDivide(dimension, chunks, "chunk size", location);
+  const auto output_count = internal::CeilDivide(dimension, chunk_size, "chunk output count", location);
+  outputs.reserve(internal::CheckedNarrow<size_t>(output_count, "chunk output count", location));
+  auto start = int64_t{0};
+  while (start < dimension) {
+    const auto length = std::min(chunk_size, dimension - start);
+    outputs.emplace_back(Narrow(input, static_cast<int64_t>(normalized_axis), start, length, location));
+    start = internal::CheckedAdd(start, length, "chunk offset", location);
+  }
+  return outputs;
 }
 
 auto Slice(const Tensor &input, int64_t axis, std::optional<int64_t> start, std::optional<int64_t> stop, int64_t step,

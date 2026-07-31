@@ -9,6 +9,7 @@
 
 #include <driver_types.h>
 
+#include "ttl/device.hpp"
 #include "ttl/error_sink.hpp"
 #include "ttl/execution_context.hpp"
 #include "ttl/internal/device_allocator.hpp"
@@ -18,6 +19,7 @@
 
 namespace ttl {
 
+struct DeviceProperties;
 class Runtime;
 
 }  // namespace ttl
@@ -26,6 +28,7 @@ namespace ttl::internal {
 
 class DeviceContext;
 class DeviceErrorState;
+class MatmulAlgorithmCache;
 class RuntimeState;
 
 enum class ExecutionContextStatus : uint8_t {
@@ -93,6 +96,10 @@ class ContextAccess final {
       -> const std::shared_ptr<DeviceContext> &;
   [[nodiscard]] static auto GetAllocator(ExecutionContext &context, std::source_location location)
       -> const std::shared_ptr<DeviceAllocator> &;
+  [[nodiscard]] static auto GetDeviceProperties(ExecutionContext &context, std::source_location location)
+      -> const DeviceProperties &;
+  [[nodiscard]] static auto CanAccessPeer(ExecutionContext &context, Device peer_device, std::source_location location)
+      -> bool;
   [[nodiscard]] static auto GetErrorSink(ExecutionContext &context, std::source_location location)
       -> const std::shared_ptr<ErrorSink> &;
   [[nodiscard]] static auto GetStream(ExecutionContext &context, std::source_location location) -> const Stream &;
@@ -100,6 +107,8 @@ class ContextAccess final {
   [[nodiscard]] static auto GetPrimaryLane(ExecutionContext &context, std::source_location location) -> ExecutionLane &;
   [[nodiscard]] static auto GetDeviceErrorState(ExecutionContext &context, std::source_location location)
       -> DeviceErrorState &;
+  [[nodiscard]] static auto GetMatmulAlgorithmCache(ExecutionContext &context, std::source_location location)
+      -> MatmulAlgorithmCache &;
 };
 
 }  // namespace ttl::internal

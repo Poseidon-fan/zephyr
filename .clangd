@@ -1,5 +1,5 @@
 If:
-  PathMatch: .*\.cu
+  PathMatch: .*\.cuh?$
 
 CompileFlags:
   Remove:
@@ -7,12 +7,5 @@ CompileFlags:
     - --generate-code=*
     - -Xcompiler=*
 
----
-
-If:
-  PathMatch: .*\.cuh
-
-CompileFlags:
   Add:
-    - -x
-    - cuda
+    - -xcuda

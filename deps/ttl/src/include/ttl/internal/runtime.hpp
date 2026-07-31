@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <source_location>
@@ -14,6 +15,7 @@
 #include "ttl/internal/blas_handle_pool.hpp"
 #include "ttl/internal/device_allocator.hpp"
 #include "ttl/internal/event_pool.hpp"
+#include "ttl/internal/matmul_plan.hpp"
 #include "ttl/runtime.hpp"
 
 namespace ttl::internal {
@@ -33,12 +35,14 @@ class DeviceContext final {
   [[nodiscard]] auto GetEventPool() const noexcept -> const std::shared_ptr<EventPool> &;
   [[nodiscard]] auto GetAllocator() const noexcept -> const std::shared_ptr<DeviceAllocator> &;
   [[nodiscard]] auto GetBlasHandlePool() const noexcept -> const std::shared_ptr<BlasHandlePool> &;
+  [[nodiscard]] auto GetMatmulAlgorithmCache() noexcept -> MatmulAlgorithmCache &;
 
  private:
   DeviceProperties properties_;
   std::shared_ptr<EventPool> event_pool_;
   std::shared_ptr<DeviceAllocator> allocator_;
   std::shared_ptr<BlasHandlePool> blas_handle_pool_;
+  MatmulAlgorithmCache matmul_algorithm_cache_;
 };
 
 class RuntimeState final {
@@ -53,7 +57,7 @@ class RuntimeState final {
   [[nodiscard]] auto GetDevices() const noexcept -> std::span<const Device>;
   [[nodiscard]] auto GetDeviceContext(Device device, std::source_location location) const
       -> const std::shared_ptr<DeviceContext> &;
-  [[nodiscard]] auto CanAccessPeer(Device source, Device destination, std::source_location location) const -> bool;
+  [[nodiscard]] auto CanAccessPeer(Device device, Device peer_device, std::source_location location) const -> bool;
   [[nodiscard]] auto GetErrorSink() const noexcept -> const std::shared_ptr<ErrorSink> &;
   [[nodiscard]] auto GetStatus() const noexcept -> RuntimeStatus;
 

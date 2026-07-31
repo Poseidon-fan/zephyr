@@ -94,6 +94,10 @@ auto Scalar::IsIntegral() const noexcept -> bool { return std::holds_alternative
 
 auto Scalar::IsFloating() const noexcept -> bool { return std::holds_alternative<double>(value_); }
 
+auto Scalar::ToDouble() const noexcept -> double {
+  return std::visit([](const auto &stored) { return static_cast<double>(stored); }, value_);
+}
+
 auto Scalar::CastToBool() const noexcept -> bool {
   return std::visit([](const auto &stored) { return stored != 0; }, value_);
 }

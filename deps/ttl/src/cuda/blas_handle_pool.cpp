@@ -35,26 +35,30 @@ constexpr size_t MINIMUM_WORKSPACE_BYTES = 16U * 1024U;
 constexpr size_t WORKSPACE_ALIGNMENT = 256;
 
 struct BlasResource final {
-  BlasResource(cublasHandle_t handle, std::shared_ptr<Storage> workspace) noexcept
-      : handle_(handle), workspace_(std::move(workspace)) {}
+  BlasResource(cublasHandle_t handle, cublasLtHandle_t lt_handle, std::shared_ptr<Storage> workspace) noexcept
+      : handle_(handle), lt_handle_(lt_handle), workspace_(std::move(workspace)) {}
 
   BlasResource(const BlasResource &) = delete;
   auto operator=(const BlasResource &) -> BlasResource & = delete;
   BlasResource(BlasResource &&other) noexcept
-      : handle_(std::exchange(other.handle_, nullptr)), workspace_(std::move(other.workspace_)) {}
+      : handle_(std::exchange(other.handle_, nullptr)),
+        lt_handle_(std::exchange(other.lt_handle_, nullptr)),
+        workspace_(std::move(other.workspace_)) {}
 
   auto operator=(BlasResource &&other) noexcept -> BlasResource & {
     if (this != &other) {
-      if (handle_ != nullptr) {
+      if (handle_ != nullptr || lt_handle_ != nullptr) {
         std::terminate();
       }
       handle_ = std::exchange(other.handle_, nullptr);
+      lt_handle_ = std::exchange(other.lt_handle_, nullptr);
       workspace_ = std::move(other.workspace_);
     }
     return *this;
   }
 
   cublasHandle_t handle_;
+  cublasLtHandle_t lt_handle_;
   std::shared_ptr<Storage> workspace_;
 };
 
@@ -174,17 +178,17 @@ class BlasHandlePoolState final : public std::enable_shared_from_this<BlasHandle
     }
 
     outstanding_lease_count_++;
-    return BlasHandleLease{std::exchange(resource.handle_, nullptr), std::move(resource.workspace_),
-                           StreamAccess::GetState(stream), shared_from_this()};
+    return BlasHandleLease{std::exchange(resource.handle_, nullptr), std::exchange(resource.lt_handle_, nullptr),
+                           std::move(resource.workspace_), StreamAccess::GetState(stream), shared_from_this()};
   }
 
-  void Release(cublasHandle_t handle, std::shared_ptr<Storage> workspace,
+  void Release(cublasHandle_t handle, cublasLtHandle_t lt_handle, std::shared_ptr<Storage> workspace,
                std::shared_ptr<StreamState> stream) noexcept {
-    if (handle == nullptr) {
+    if (handle == nullptr || lt_handle == nullptr) {
       return;
     }
 
-    BlasResource resource{handle, std::move(workspace)};
+    BlasResource resource{handle, lt_handle, std::move(workspace)};
     std::optional<PooledEvent> completion_event;
     bool poisoned = false;
     const auto error_context = MakeErrorContext(device_, *stream, location_);
@@ -226,6 +230,7 @@ class BlasHandlePoolState final : public std::enable_shared_from_this<BlasHandle
       DestroyResourceNoexcept(pending.resource_);
     } else {
       pending.resource_.handle_ = nullptr;
+      pending.resource_.lt_handle_ = nullptr;
       pending.resource_.workspace_.reset();
     }
   }
@@ -299,7 +304,19 @@ class BlasHandlePoolState final : public std::enable_shared_from_this<BlasHandle
     if (handle == nullptr) {
       throw InternalError("cublasCreate returned a null handle", location);
     }
-    return BlasResource{handle, std::move(workspace)};
+    cublasLtHandle_t lt_handle = nullptr;
+    const auto lt_status = GetCublasApi().lt_create_(&lt_handle);
+    if (lt_status != CUBLAS_STATUS_SUCCESS) {
+      TryCublas(GetCublasApi().destroy_(handle), "cublasDestroy after failed cublasLtCreate", *error_sink_,
+                MakeErrorContext(device_, *StreamAccess::GetState(stream), location));
+      CheckCublas(lt_status, "cublasLtCreate", location);
+    }
+    if (lt_handle == nullptr) {
+      TryCublas(GetCublasApi().destroy_(handle), "cublasDestroy after null cublasLt handle", *error_sink_,
+                MakeErrorContext(device_, *StreamAccess::GetState(stream), location));
+      throw InternalError("cublasLtCreate returned a null handle", location);
+    }
+    return BlasResource{handle, lt_handle, std::move(workspace)};
   }
 
   [[nodiscard]] auto TakeCachedResource() -> BlasResource {
@@ -316,6 +333,7 @@ class BlasHandlePoolState final : public std::enable_shared_from_this<BlasHandle
     CheckCublas(cublas_api.set_workspace_(resource.handle_, resource.workspace_->GetBasePointer(),
                                           resource.workspace_->GetCapacityBytes()),
                 "cublasSetWorkspace", location);
+    resource.workspace_->RecordUsage(stream);
   }
 
   void PollReadyResources(std::source_location location) {
@@ -401,6 +419,10 @@ class BlasHandlePoolState final : public std::enable_shared_from_this<BlasHandle
   }
 
   void DestroyResource(BlasResource &resource, std::source_location location) {
+    if (resource.lt_handle_ != nullptr) {
+      CheckCublas(GetCublasApi().lt_destroy_(resource.lt_handle_), "cublasLtDestroy", location);
+      resource.lt_handle_ = nullptr;
+    }
     if (resource.handle_ != nullptr) {
       CheckCublas(GetCublasApi().destroy_(resource.handle_), "cublasDestroy", location);
       resource.handle_ = nullptr;
@@ -414,6 +436,10 @@ class BlasHandlePoolState final : public std::enable_shared_from_this<BlasHandle
         .device_ = device_,
         .stream_id_ = std::nullopt,
     };
+    if (resource.lt_handle_ != nullptr) {
+      TryCublas(GetCublasApi().lt_destroy_(resource.lt_handle_), "cublasLtDestroy", *error_sink_, error_context);
+      resource.lt_handle_ = nullptr;
+    }
     if (resource.handle_ != nullptr) {
       TryCublas(GetCublasApi().destroy_(resource.handle_), "cublasDestroy", *error_sink_, error_context);
       resource.handle_ = nullptr;
@@ -458,9 +484,11 @@ class BlasHandlePoolState final : public std::enable_shared_from_this<BlasHandle
     if (!device_guard) {
       for (auto &pending : pending_resources) {
         pending.resource_.handle_ = nullptr;
+        pending.resource_.lt_handle_ = nullptr;
       }
       for (auto &resource : cached_resources) {
         resource.handle_ = nullptr;
+        resource.lt_handle_ = nullptr;
       }
       return;
     }
@@ -469,6 +497,7 @@ class BlasHandlePoolState final : public std::enable_shared_from_this<BlasHandle
         DestroyResourceNoexcept(pending.resource_);
       } else {
         pending.resource_.handle_ = nullptr;
+        pending.resource_.lt_handle_ = nullptr;
         pending.resource_.workspace_.reset();
       }
     }
@@ -490,13 +519,18 @@ class BlasHandlePoolState final : public std::enable_shared_from_this<BlasHandle
   bool is_closed_{false};
 };
 
-BlasHandleLease::BlasHandleLease(cublasHandle_t handle, std::shared_ptr<Storage> workspace,
+BlasHandleLease::BlasHandleLease(cublasHandle_t handle, cublasLtHandle_t lt_handle, std::shared_ptr<Storage> workspace,
                                  std::shared_ptr<StreamState> stream,
                                  std::shared_ptr<BlasHandlePoolState> pool) noexcept
-    : handle_(handle), workspace_(std::move(workspace)), stream_(std::move(stream)), pool_(std::move(pool)) {}
+    : handle_(handle),
+      lt_handle_(lt_handle),
+      workspace_(std::move(workspace)),
+      stream_(std::move(stream)),
+      pool_(std::move(pool)) {}
 
 BlasHandleLease::BlasHandleLease(BlasHandleLease &&other) noexcept
     : handle_(std::exchange(other.handle_, nullptr)),
+      lt_handle_(std::exchange(other.lt_handle_, nullptr)),
       workspace_(std::move(other.workspace_)),
       stream_(std::move(other.stream_)),
       pool_(std::move(other.pool_)) {}
@@ -505,6 +539,7 @@ auto BlasHandleLease::operator=(BlasHandleLease &&other) noexcept -> BlasHandleL
   if (this != &other) {
     Reset();
     handle_ = std::exchange(other.handle_, nullptr);
+    lt_handle_ = std::exchange(other.lt_handle_, nullptr);
     workspace_ = std::move(other.workspace_);
     stream_ = std::move(other.stream_);
     pool_ = std::move(other.pool_);
@@ -516,9 +551,7 @@ BlasHandleLease::~BlasHandleLease() noexcept { Reset(); }
 
 auto BlasHandleLease::GetCublasHandle() const noexcept -> cublasHandle_t { return handle_; }
 
-auto BlasHandleLease::GetCublasLtHandle() const noexcept -> cublasLtHandle_t {
-  return reinterpret_cast<cublasLtHandle_t>(handle_);
-}
+auto BlasHandleLease::GetCublasLtHandle() const noexcept -> cublasLtHandle_t { return lt_handle_; }
 
 auto BlasHandleLease::GetWorkspace() const noexcept -> Storage & { return *workspace_; }
 
@@ -527,10 +560,11 @@ void BlasHandleLease::Reset() noexcept {
     return;
   }
   const auto handle = std::exchange(handle_, nullptr);
+  const auto lt_handle = std::exchange(lt_handle_, nullptr);
   auto workspace = std::move(workspace_);
   auto stream = std::move(stream_);
   auto pool = std::move(pool_);
-  pool->Release(handle, std::move(workspace), std::move(stream));
+  pool->Release(handle, lt_handle, std::move(workspace), std::move(stream));
 }
 
 BlasHandlePool::BlasHandlePool(Device device, size_t workspace_bytes, std::shared_ptr<ErrorSink> error_sink,

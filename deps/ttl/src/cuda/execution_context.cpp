@@ -23,6 +23,7 @@
 #include "ttl/internal/event_pool.hpp"
 #include "ttl/internal/execution_context.hpp"
 #include "ttl/internal/execution_lane.hpp"
+#include "ttl/internal/matmul_plan.hpp"
 #include "ttl/internal/runtime.hpp"
 #include "ttl/internal/stream.hpp"
 #include "ttl/runtime.hpp"
@@ -130,6 +131,16 @@ auto ContextAccess::GetAllocator(ExecutionContext &context, std::source_location
   return GetDeviceContext(context, location)->GetAllocator();
 }
 
+auto ContextAccess::GetDeviceProperties(ExecutionContext &context, std::source_location location)
+    -> const DeviceProperties & {
+  return GetDeviceContext(context, location)->GetProperties();
+}
+
+auto ContextAccess::CanAccessPeer(ExecutionContext &context, Device peer_device, std::source_location location)
+    -> bool {
+  return GetRuntimeState(context, location)->CanAccessPeer(context.GetDevice(), peer_device, location);
+}
+
 auto ContextAccess::GetErrorSink(ExecutionContext &context, std::source_location location)
     -> const std::shared_ptr<ErrorSink> & {
   return GetRuntimeState(context, location)->GetErrorSink();
@@ -145,6 +156,11 @@ auto ContextAccess::GetNativeStream(ExecutionContext &context, std::source_locat
 
 auto ContextAccess::GetPrimaryLane(ExecutionContext &context, std::source_location location) -> ExecutionLane & {
   return GetImpl(context, location).primary_lane_;
+}
+
+auto ContextAccess::GetMatmulAlgorithmCache(ExecutionContext &context, std::source_location location)
+    -> MatmulAlgorithmCache & {
+  return GetDeviceContext(context, location)->GetMatmulAlgorithmCache();
 }
 
 auto ContextAccess::GetDeviceErrorState(ExecutionContext &context, std::source_location location)
