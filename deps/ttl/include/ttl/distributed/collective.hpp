@@ -24,6 +24,16 @@ struct LocalCollectiveCall final {
   NcclCommunicator *communicator_;
 };
 
+/** One rank in a variable-size all-to-all submission. Counts are flat tensor elements in peer-rank order. */
+struct LocalAllToAllVCall final {
+  ExecutionContext *context_;
+  Tensor *output_;
+  const Tensor *input_;
+  std::span<const int64_t> send_counts_;
+  std::span<const int64_t> receive_counts_;
+  NcclCommunicator *communicator_;
+};
+
 /** Optional send and receive issued by one rank inside one process-local NCCL group. */
 struct LocalPointToPointCall final {
   ExecutionContext *context_;
@@ -66,6 +76,16 @@ void BroadcastOut(ExecutionContext &context, Tensor &output, const Tensor &input
 /** Exchange equal rank-ordered chunks between every pair of ranks. */
 void AllToAllOut(ExecutionContext &context, Tensor &output, const Tensor &input, NcclCommunicator &communicator,
                  std::source_location location = std::source_location::current());
+/**
+ * Exchange variable contiguous chunks in peer-rank order.
+ *
+ * Count lists contain one non-negative element count per peer rank. Every rank must submit a matching call:
+ * send_counts[peer] on this rank equals receive_counts[this_rank] on peer. The Local variant validates the complete
+ * matrix before enqueueing NCCL; rank-local callers are responsible for matching calls across their host threads.
+ */
+void AllToAllVOut(ExecutionContext &context, Tensor &output, const Tensor &input, std::span<const int64_t> send_counts,
+                  std::span<const int64_t> receive_counts, NcclCommunicator &communicator,
+                  std::source_location location = std::source_location::current());
 /** Concatenate equal input chunks at root; non-root output contents are unspecified. */
 void GatherOut(ExecutionContext &context, Tensor &output, const Tensor &input, NcclCommunicator &communicator,
                int32_t root, std::source_location location = std::source_location::current());
@@ -103,6 +123,9 @@ void BroadcastLocal(std::span<const LocalCollectiveCall> calls, int32_t root,
                     std::source_location location = std::source_location::current());
 void AllToAllLocal(std::span<const LocalCollectiveCall> calls,
                    std::source_location location = std::source_location::current());
+/** Validate the complete peer-count matrix, then issue every variable-size rank exchange in one NCCL group. */
+void AllToAllVLocal(std::span<const LocalAllToAllVCall> calls,
+                    std::source_location location = std::source_location::current());
 void GatherLocal(std::span<const LocalCollectiveCall> calls, int32_t root,
                  std::source_location location = std::source_location::current());
 void ScatterLocal(std::span<const LocalCollectiveCall> calls, int32_t root,

@@ -9,8 +9,10 @@
 #include "ttl/ops/indexing.hpp"
 #include "ttl/ops/normalization.hpp"
 #include "ttl/ops/reduction.hpp"
+#include "ttl/ops/scan.hpp"
 #include "ttl/ops/softmax.hpp"
 #include "ttl/ops/topk.hpp"
+#include "ttl/tensor/layout.hpp"
 
 namespace ttl {
 
@@ -83,6 +85,39 @@ TEST(IndexingTest, SurfacesDeviceSideBoundsFailureAtExplicitErrorBoundary) {
   auto invalid_index = test::Upload(context, Shape{1}, std::vector<int64_t>{2});
   static_cast<void>(IndexSelect(context, input, 0, invalid_index));
   EXPECT_THROW(context.CheckAsyncErrors(), DeviceError);
+}
+
+TEST(IndexingTest, ScattersElementsIntoCopiedAndInPlaceOutputs) {
+  test::RuntimeSession session;
+  auto &context = session.GetContext();
+  auto input = test::Upload(context, Shape{2, 4}, std::vector<int32_t>{0, 1, 2, 3, 10, 11, 12, 13});
+  auto indices = test::Upload(context, Shape{2, 2}, std::vector<int64_t>{3, 1, 0, 2});
+  auto source = test::Upload(context, Shape{2, 2}, std::vector<int32_t>{30, 10, 100, 120});
+
+  auto scattered = ScatterElements(context, input, 1, indices, source);
+  EXPECT_EQ(test::Download<int32_t>(context, scattered), (std::vector<int32_t>{0, 10, 2, 30, 100, 11, 120, 13}));
+  EXPECT_EQ(test::Download<int32_t>(context, input), (std::vector<int32_t>{0, 1, 2, 3, 10, 11, 12, 13}));
+
+  ScatterElementsOut(context, input, input, 1, indices, source);
+  EXPECT_EQ(test::Download<int32_t>(context, input), (std::vector<int32_t>{0, 10, 2, 30, 100, 11, 120, 13}));
+}
+
+TEST(ScanTest, ComputesStridedAndModularCumulativeSums) {
+  test::RuntimeSession session;
+  auto &context = session.GetContext();
+  auto input = test::Upload(context, Shape{2, 3}, std::vector<int32_t>{1, 2, 3, 4, 5, 6});
+  EXPECT_EQ(test::Download<int32_t>(context, CumulativeSum(context, input, 1)),
+            (std::vector<int32_t>{1, 3, 6, 4, 9, 15}));
+
+  auto transposed = Transpose(input, 0, 1);
+  EXPECT_EQ(test::Download<int32_t>(context, CumulativeSum(context, transposed, 0)),
+            (std::vector<int32_t>{1, 4, 3, 9, 6, 15}));
+
+  CumulativeSumOut(context, input, input, 1);
+  EXPECT_EQ(test::Download<int32_t>(context, input), (std::vector<int32_t>{1, 3, 6, 4, 9, 15}));
+
+  auto bytes = test::Upload(context, Shape{2}, std::vector<uint8_t>{250, 10});
+  EXPECT_EQ(test::Download<uint8_t>(context, CumulativeSum(context, bytes, 0)), (std::vector<uint8_t>{250, 4}));
 }
 
 TEST(TopKTest, ReturnsSortedValuesAndOriginalIndices) {

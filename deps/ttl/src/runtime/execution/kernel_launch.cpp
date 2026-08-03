@@ -2,14 +2,12 @@
 
 #include <algorithm>
 #include <bit>
-#include <cstddef>
 #include <memory>
 #include <optional>
 #include <source_location>
 #include <span>
 #include <string>
 #include <string_view>
-#include <utility>
 #include <vector>
 
 #include <driver_types.h>
@@ -133,5 +131,7 @@ auto CudaKernelLaunch::GetOutputDataAsDType(Tensor &tensor, DType dtype, std::so
 }
 
 void CudaKernelLaunch::CheckLaunch() const { impl_->guard_.CheckLaunch(); }
+
+void CudaKernelLaunch::FailAfterCallbackException() noexcept { impl_->guard_.FailExternalSubmissionNoexcept(); }
 
 }  // namespace ttl

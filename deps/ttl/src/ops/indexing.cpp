@@ -18,6 +18,7 @@
 #include "ttl/internal/ops/indexing.hpp"
 #include "ttl/internal/runtime/execution/op_guard.hpp"
 #include "ttl/internal/tensor/tensor_impl.hpp"
+#include "ttl/ops/copy.hpp"
 #include "ttl/runtime/execution_context.hpp"
 #include "ttl/tensor/dtype.hpp"
 #include "ttl/tensor/shape.hpp"
@@ -359,6 +360,96 @@ void GatherRowsOutImpl(ExecutionContext &context, Tensor &output, const Tensor &
   return output;
 }
 
+void ValidateScatterElementsInputs(const Tensor &input, const Tensor &index, const Tensor &source, size_t axis,
+                                   std::string_view operation, std::source_location location) {
+  ValidateIndexDType(index.GetDType(), operation, location);
+  if (source.GetDType() != input.GetDType()) {
+    throw InvalidArgumentError("ScatterElementsOut source and input dtypes must match", location);
+  }
+  if (index.GetRank() != input.GetRank() || source.GetRank() != input.GetRank()) {
+    throw InvalidArgumentError("ScatterElementsOut input, index, and source must have equal rank", location);
+  }
+  for (size_t current = 0; current < input.GetRank(); ++current) {
+    const auto index_extent = index.GetShape().GetDimension(current, location);
+    if (index_extent > source.GetShape().GetDimension(current, location)) {
+      throw InvalidArgumentError("ScatterElementsOut index shape exceeds source shape", location);
+    }
+    if (current != axis && index_extent > input.GetShape().GetDimension(current, location)) {
+      throw InvalidArgumentError("ScatterElementsOut index shape exceeds input on a non-indexed axis", location);
+    }
+  }
+}
+
+void ValidateScatterElementsOutput(Tensor &output, const Tensor &input, const Tensor &index, const Tensor &source,
+                                   std::source_location location) {
+  if (output.GetShape() != input.GetShape() || output.GetDType() != input.GetDType()) {
+    throw InvalidArgumentError("ScatterElementsOut output shape and dtype must match the input", location);
+  }
+  internal::ValidateWritableOutput(output, "ScatterElementsOut", location);
+  const auto input_alias = ClassifyAlias(output, input, location);
+  if (input_alias != AliasKind::DISJOINT && input_alias != AliasKind::EXACT) {
+    throw InvalidArgumentError("ScatterElementsOut supports only disjoint or exact input/output aliasing", location);
+  }
+  if (ClassifyAlias(output, index, location) != AliasKind::DISJOINT ||
+      ClassifyAlias(output, source, location) != AliasKind::DISJOINT) {
+    throw InvalidArgumentError("ScatterElementsOut output must not overlap index or source", location);
+  }
+}
+
+[[nodiscard]] auto BuildScatterElementsParameters(Tensor &output, const Tensor &index, const Tensor &source,
+                                                  size_t axis, std::source_location location)
+    -> internal::ScatterElementsParameters64 {
+  auto parameters = internal::ScatterElementsParameters64{
+      .output_ = static_cast<std::byte *>(internal::TensorAccess::GetMutableData(output, location)),
+      .source_ = static_cast<const std::byte *>(internal::TensorAccess::GetData(source, location)),
+      .indices_ = static_cast<const std::byte *>(internal::TensorAccess::GetData(index, location)),
+      .num_elements_ = static_cast<uint64_t>(index.GetNumElements()),
+      .axis_bound_ = output.GetShape().GetDimension(axis, location),
+      .rank_ = static_cast<uint8_t>(output.GetRank()),
+      .axis_ = static_cast<uint8_t>(axis),
+  };
+  const auto value_size = GetDTypeSize(output.GetDType(), location);
+  const auto index_size = GetDTypeSize(index.GetDType(), location);
+  for (size_t current = 0; current < output.GetRank(); ++current) {
+    parameters.shape_[current] = static_cast<uint64_t>(index.GetShape().GetDimension(current, location));
+    parameters.output_strides_bytes_[current] =
+        internal::CheckedBytes(output.GetStrides().GetStride(current, location), value_size, location);
+    parameters.source_strides_bytes_[current] =
+        internal::CheckedBytes(source.GetStrides().GetStride(current, location), value_size, location);
+    parameters.index_strides_bytes_[current] =
+        internal::CheckedBytes(index.GetStrides().GetStride(current, location), index_size, location);
+  }
+  return parameters;
+}
+
+[[nodiscard]] auto CanUse32BitIndexing(const internal::ScatterElementsParameters64 &parameters) noexcept -> bool {
+  constexpr auto maximum = uint64_t{std::numeric_limits<uint32_t>::max()};
+  if (parameters.num_elements_ > maximum) {
+    return false;
+  }
+  auto output_offset = uint64_t{0};
+  auto source_offset = uint64_t{0};
+  auto index_offset = uint64_t{0};
+  for (size_t axis = 0; axis < parameters.rank_; ++axis) {
+    if (parameters.shape_[axis] > maximum || parameters.output_strides_bytes_[axis] > maximum ||
+        parameters.source_strides_bytes_[axis] > maximum || parameters.index_strides_bytes_[axis] > maximum) {
+      return false;
+    }
+    source_offset = AddOffset(source_offset, parameters.shape_[axis], parameters.source_strides_bytes_[axis], maximum);
+    index_offset = AddOffset(index_offset, parameters.shape_[axis], parameters.index_strides_bytes_[axis], maximum);
+    if (axis != parameters.axis_) {
+      output_offset =
+          AddOffset(output_offset, parameters.shape_[axis], parameters.output_strides_bytes_[axis], maximum);
+    }
+    if (output_offset > maximum || source_offset > maximum || index_offset > maximum) {
+      return false;
+    }
+  }
+  output_offset = AddOffset(output_offset, static_cast<uint64_t>(parameters.axis_bound_),
+                            parameters.output_strides_bytes_[parameters.axis_], maximum);
+  return output_offset <= maximum;
+}
+
 }  // namespace
 
 void IndexSelectOut(ExecutionContext &context, Tensor &output, const Tensor &input, int64_t axis, const Tensor &index,
@@ -389,6 +480,56 @@ void TakeAlongDimensionOut(ExecutionContext &context, Tensor &output, const Tens
 auto TakeAlongDimension(ExecutionContext &context, const Tensor &input, const Tensor &index, int64_t axis,
                         std::source_location location) -> Tensor {
   return IndexingImpl(context, input, axis, index, IndexingKind::TAKE_ALONG_DIMENSION, location);
+}
+
+void ScatterElementsOut(ExecutionContext &context, Tensor &output, const Tensor &input, int64_t raw_axis,
+                        const Tensor &index, const Tensor &source, std::source_location location) {
+  size_t axis = 0;
+  AliasKind input_alias = AliasKind::DISJOINT;
+  {
+    internal::OpGuard guard{context, "ScatterElementsOut", location, internal::CapturePolicy::SAFE};
+    guard.ValidateTensor(output);
+    guard.ValidateTensor(input);
+    guard.ValidateTensor(index);
+    guard.ValidateTensor(source);
+    axis = NormalizeAxis(raw_axis, input.GetRank(), location);
+    ValidateScatterElementsInputs(input, index, source, axis, "ScatterElementsOut", location);
+    ValidateScatterElementsOutput(output, input, index, source, location);
+    input_alias = ClassifyAlias(output, input, location);
+  }
+  if (input_alias == AliasKind::DISJOINT) {
+    CopyOut(context, output, input, location);
+  }
+  if (index.GetNumElements() == 0) {
+    return;
+  }
+
+  internal::OpGuard guard{context, "ScatterElementsOut", location, internal::CapturePolicy::SAFE};
+  const auto parameters = BuildScatterElementsParameters(output, index, source, axis, location);
+  const auto index_width =
+      CanUse32BitIndexing(parameters) ? internal::IndexWidth::UINT32 : internal::IndexWidth::UINT64;
+  const auto error_context = guard.RegisterDeviceError(index.GetDType(), output.GetDType());
+  guard.RecordTensor(output);
+  guard.RecordTensor(index);
+  guard.RecordTensor(source);
+  internal::LaunchScatterElements(guard.GetNativeStream(), output.GetDType(), index.GetDType(), index_width, parameters,
+                                  error_context, location);
+  guard.CheckLaunch();
+}
+
+auto ScatterElements(ExecutionContext &context, const Tensor &input, int64_t axis, const Tensor &index,
+                     const Tensor &source, std::source_location location) -> Tensor {
+  {
+    internal::OpGuard guard{context, "ScatterElements", location};
+    guard.ValidateTensor(input);
+    guard.ValidateTensor(index);
+    guard.ValidateTensor(source);
+    const auto normalized_axis = NormalizeAxis(axis, input.GetRank(), location);
+    ValidateScatterElementsInputs(input, index, source, normalized_axis, "ScatterElements", location);
+  }
+  auto output = Empty(context, input.GetShape(), input.GetDType(), location);
+  ScatterElementsOut(context, output, input, axis, index, source, location);
+  return output;
 }
 
 void GatherRowsOut(ExecutionContext &context, Tensor &output, const Tensor &table, const Tensor &indices,

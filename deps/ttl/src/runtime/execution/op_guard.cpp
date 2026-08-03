@@ -1,6 +1,8 @@
 #include "ttl/internal/runtime/execution/op_guard.hpp"
 
+#include <atomic>
 #include <cstddef>
+#include <memory>
 #include <source_location>
 #include <string>
 #include <string_view>
@@ -96,6 +98,28 @@ void OpGuard::CheckLaunch() const {
     capture_state_->Invalidate();
   }
   CheckCuda(status, operation_, location_);
+}
+
+void OpGuard::FailExternalSubmissionNoexcept() noexcept {
+  if (capture_state_ != nullptr) {
+    capture_state_->Invalidate();
+  }
+  try {
+    auto &impl = ContextAccess::GetImpl(context_, location_);
+    impl.status_.store(ExecutionContextStatus::FAILED, std::memory_order_release);
+    const auto status = GetCudaApi().get_last_error_();
+    if (status == cudaSuccess) {
+      return;
+    }
+    const ErrorReportContext report_context{
+        .location_ = location_,
+        .device_ = context_.GetDevice(),
+        .stream_id_ = context_.GetStream().GetId(),
+    };
+    TryCuda(status, operation_, *ContextAccess::GetErrorSink(context_, location_), report_context);
+  } catch (...) {
+    return;
+  }
 }
 
 auto OpGuard::RegisterDeviceError(DType source_dtype, DType target_dtype) -> DeviceErrorLaunchContext {

@@ -21,7 +21,7 @@
 #include <utility>
 #include <vector>
 
-#include <cuda_runtime_api.h>
+#include <driver_types.h>
 
 #include "ttl/common/error.hpp"
 #include "ttl/common/error_sink.hpp"
@@ -700,11 +700,7 @@ class DeviceAllocatorImpl final {
 
   [[nodiscard]] auto GetOomTrimTarget(uint64_t requested_bytes) const noexcept -> uint64_t {
     const auto physical = physical_in_use_bytes_.load(std::memory_order_relaxed);
-    const auto live_before_request = physical >= requested_bytes ? physical - requested_bytes : 0;
-    if (options_.max_reserved_bytes_ == 0) {
-      return live_before_request;
-    }
-    return std::max(live_before_request, options_.max_reserved_bytes_);
+    return physical >= requested_bytes ? physical - requested_bytes : 0;
   }
 
   [[nodiscard]] auto FormatOutOfMemory(size_t bytes, size_t alignment, const AllocationContext &context)
@@ -764,8 +760,6 @@ class DeviceAllocatorImpl final {
     message.append(std::to_string(options_.release_threshold_bytes_));
     message.append(", max_live=");
     message.append(std::to_string(options_.max_live_bytes_));
-    message.append(", max_reserved=");
-    message.append(std::to_string(options_.max_reserved_bytes_));
     message.append(", cuda_free=");
     message.append(std::to_string(free_bytes));
     message.append(", cuda_total=");

@@ -49,6 +49,7 @@ class OpGuard final {
   void RetainStorage(const std::shared_ptr<Storage> &storage);
   void RetainCommunicator(const std::shared_ptr<CommunicatorGroupState> &communicator);
   void CheckLaunch() const;
+  void FailExternalSubmissionNoexcept() noexcept;
   [[nodiscard]] auto RegisterDeviceError(DType source_dtype, DType target_dtype) -> DeviceErrorLaunchContext;
 
   [[nodiscard]] auto GetStream() const noexcept -> const Stream &;

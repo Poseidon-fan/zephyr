@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <exception>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -63,11 +64,6 @@ void ValidateRuntimeOptions(const RuntimeOptions &options, std::source_location 
   if (options.blas_workspace_bytes_ != 0 && options.blas_workspace_bytes_ < MINIMUM_BLAS_WORKSPACE_BYTES) {
     throw InvalidArgumentError("runtime cuBLAS workspace must be zero or contain at least 16 KiB", location);
   }
-  if (options.device_memory_.max_live_bytes_ != 0 && options.device_memory_.max_reserved_bytes_ != 0 &&
-      options.device_memory_.max_live_bytes_ > options.device_memory_.max_reserved_bytes_) {
-    throw InvalidArgumentError("runtime device max live bytes cannot exceed max reserved bytes", location);
-  }
-
   for (size_t index = 0; index < options.devices_.size(); index++) {
     if (std::ranges::find(options.devices_.begin() + static_cast<ptrdiff_t>(index + 1), options.devices_.end(),
                           options.devices_[index]) != options.devices_.end()) {
@@ -88,7 +84,6 @@ void ValidateRuntimeOptions(const RuntimeOptions &options, std::source_location 
   return DeviceAllocatorOptions{
       .release_threshold_bytes_ = options.release_threshold_bytes_,
       .max_live_bytes_ = options.max_live_bytes_,
-      .max_reserved_bytes_ = options.max_reserved_bytes_,
       .enable_maintenance_thread_ = options.enable_maintenance_thread_,
   };
 }

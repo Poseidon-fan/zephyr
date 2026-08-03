@@ -91,6 +91,31 @@ auto ConvertGatherRowsParameters(const GatherRowsParameters64 &source, std::sour
   return destination;
 }
 
+template <typename Destination>
+auto ConvertScatterElementsParameters(const ScatterElementsParameters64 &source, std::source_location location)
+    -> Destination {
+  using Index = std::remove_cvref_t<decltype(Destination::num_elements_)>;
+  Destination destination{
+      .output_ = source.output_,
+      .source_ = source.source_,
+      .indices_ = source.indices_,
+      .num_elements_ = CheckedNarrow<Index>(source.num_elements_, "scatter element count", location),
+      .axis_bound_ = source.axis_bound_,
+      .rank_ = source.rank_,
+      .axis_ = source.axis_,
+  };
+  for (size_t axis = 0; axis < TTL_MAX_RANK; ++axis) {
+    destination.shape_[axis] = CheckedNarrow<Index>(source.shape_[axis], "scatter shape", location);
+    destination.output_strides_bytes_[axis] =
+        CheckedNarrow<Index>(source.output_strides_bytes_[axis], "scatter output stride", location);
+    destination.source_strides_bytes_[axis] =
+        CheckedNarrow<Index>(source.source_strides_bytes_[axis], "scatter source stride", location);
+    destination.index_strides_bytes_[axis] =
+        CheckedNarrow<Index>(source.index_strides_bytes_[axis], "scatter index stride", location);
+  }
+  return destination;
+}
+
 template <CudaStorageType T, CudaStorageType IndexValue, typename Parameters>
 __global__ void IndexingKernel(Parameters parameters, DeviceErrorLaunchContext error_context) {
   using Index = std::remove_cvref_t<decltype(parameters.num_elements_)>;
@@ -170,6 +195,44 @@ __global__ void GatherRowsKernel(Parameters parameters, DeviceErrorLaunchContext
 }
 
 template <CudaStorageType T, CudaStorageType IndexValue, typename Parameters>
+__global__ void ScatterElementsKernel(Parameters parameters, DeviceErrorLaunchContext error_context) {
+  using Index = std::remove_cvref_t<decltype(parameters.num_elements_)>;
+  auto linear_index =
+      (static_cast<Index>(blockIdx.x) * static_cast<Index>(blockDim.x)) + static_cast<Index>(threadIdx.x);
+  const auto step = static_cast<Index>(gridDim.x) * static_cast<Index>(blockDim.x);
+  while (linear_index < parameters.num_elements_) {
+    auto remaining = linear_index;
+    auto output_offset = Index{0};
+    auto source_offset = Index{0};
+    auto index_offset = Index{0};
+    for (size_t remaining_rank = parameters.rank_; remaining_rank > 0; --remaining_rank) {
+      const auto axis = remaining_rank - 1;
+      const auto coordinate = static_cast<Index>(remaining % parameters.shape_[axis]);
+      remaining = static_cast<Index>(remaining / parameters.shape_[axis]);
+      source_offset = static_cast<Index>(source_offset + (coordinate * parameters.source_strides_bytes_[axis]));
+      index_offset = static_cast<Index>(index_offset + (coordinate * parameters.index_strides_bytes_[axis]));
+      if (axis != parameters.axis_) {
+        output_offset = static_cast<Index>(output_offset + (coordinate * parameters.output_strides_bytes_[axis]));
+      }
+    }
+    const auto selected = *reinterpret_cast<const IndexValue *>(parameters.indices_ + index_offset);
+    if (selected < 0 || selected >= parameters.axis_bound_) {
+      ReportDeviceError(error_context, DeviceErrorCode::INDEX_OUT_OF_BOUNDS, static_cast<int64_t>(linear_index),
+                        GetIndexBits(selected), parameters.axis_bound_);
+    } else {
+      output_offset = static_cast<Index>(
+          output_offset + (static_cast<Index>(selected) * parameters.output_strides_bytes_[parameters.axis_]));
+      *reinterpret_cast<T *>(parameters.output_ + output_offset) =
+          *reinterpret_cast<const T *>(parameters.source_ + source_offset);
+    }
+    if (step >= parameters.num_elements_ - linear_index) {
+      break;
+    }
+    linear_index = static_cast<Index>(linear_index + step);
+  }
+}
+
+template <CudaStorageType T, CudaStorageType IndexValue, typename Parameters>
 void LaunchIndexingTyped(cudaStream_t stream, const Parameters &parameters,
                          const DeviceErrorLaunchContext &error_context) {
   IndexingKernel<T, IndexValue>
@@ -180,6 +243,13 @@ template <CudaStorageType T, CudaStorageType IndexValue, typename Parameters>
 void LaunchGatherRowsTyped(cudaStream_t stream, const Parameters &parameters,
                            const DeviceErrorLaunchContext &error_context) {
   GatherRowsKernel<T, IndexValue>
+      <<<GetBlockCount(parameters.num_elements_), INDEXING_THREADS_PER_BLOCK, 0, stream>>>(parameters, error_context);
+}
+
+template <CudaStorageType T, CudaStorageType IndexValue, typename Parameters>
+void LaunchScatterElementsTyped(cudaStream_t stream, const Parameters &parameters,
+                                const DeviceErrorLaunchContext &error_context) {
+  ScatterElementsKernel<T, IndexValue>
       <<<GetBlockCount(parameters.num_elements_), INDEXING_THREADS_PER_BLOCK, 0, stream>>>(parameters, error_context);
 }
 
@@ -242,6 +312,30 @@ void LaunchGatherRows(cudaStream_t stream, DType dtype, DType index_dtype, Index
           } else {
             LaunchGatherRowsTyped<T, IndexValue>(
                 stream, ConvertGatherRowsParameters<GatherRowsParameters64>(parameters, location), error_context);
+          }
+        },
+        location);
+  });
+}
+
+void LaunchScatterElements(cudaStream_t stream, DType dtype, DType index_dtype, IndexWidth index_width,
+                           const ScatterElementsParameters64 &parameters, const DeviceErrorLaunchContext &error_context,
+                           std::source_location location) {
+  if (stream == nullptr || parameters.num_elements_ == 0 || error_context.record_ == nullptr) {
+    throw InternalError("invalid scatter elements launch parameters", location);
+  }
+  DispatchCudaDType(dtype, "ScatterElementsOut", [&]<CudaStorageType T>(std::type_identity<T>) {
+    DispatchIndexType(
+        index_dtype,
+        [&]<CudaStorageType IndexValue>(std::type_identity<IndexValue>) {
+          if (index_width == IndexWidth::UINT32) {
+            LaunchScatterElementsTyped<T, IndexValue>(
+                stream, ConvertScatterElementsParameters<ScatterElementsParameters32>(parameters, location),
+                error_context);
+          } else {
+            LaunchScatterElementsTyped<T, IndexValue>(
+                stream, ConvertScatterElementsParameters<ScatterElementsParameters64>(parameters, location),
+                error_context);
           }
         },
         location);

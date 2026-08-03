@@ -11,35 +11,34 @@
 #include <utility>
 #include <vector>
 
-#include <cuda_runtime_api.h>
+#include <driver_types.h>
 #include <nccl.h>
 
 #include "ttl/common/error.hpp"
 #include "ttl/distributed/communicator.hpp"
 #include "ttl/internal/common/checked_math.hpp"
+#include "ttl/internal/distributed/collective_common.hpp"
 #include "ttl/internal/distributed/communicator.hpp"
 #include "ttl/internal/distributed/nccl_api.hpp"
 #include "ttl/internal/ops/elementwise_iterator.hpp"
 #include "ttl/internal/runtime/cuda_api.hpp"
 #include "ttl/internal/runtime/cuda_check.hpp"
-#include "ttl/internal/runtime/execution/execution_context.hpp"
-#include "ttl/internal/runtime/execution/execution_lane.hpp"
 #include "ttl/internal/runtime/execution/op_guard.hpp"
-#include "ttl/internal/runtime/execution/stream.hpp"
 #include "ttl/internal/runtime/graph/graph.hpp"
-#include "ttl/internal/runtime/memory/scratch_arena.hpp"
-#include "ttl/internal/runtime/runtime.hpp"
-#include "ttl/internal/tensor/storage.hpp"
 #include "ttl/internal/tensor/tensor_impl.hpp"
-#include "ttl/ops/copy.hpp"
-#include "ttl/runtime/device.hpp"
 #include "ttl/runtime/execution_context.hpp"
-#include "ttl/runtime/stream.hpp"
 #include "ttl/tensor/dtype.hpp"
 #include "ttl/tensor/tensor.hpp"
 
 namespace ttl {
 namespace {
+
+using internal::CollectiveByteOffset;
+using internal::MutableCollectiveByteOffset;
+using internal::ReportCollectiveCleanupErrors;
+using internal::ToNcclDType;
+using internal::ValidateCollectiveContext;
+using internal::ValidateCollectiveTensorDevice;
 
 enum class CollectiveKind : uint8_t {
   ALL_REDUCE,
@@ -52,26 +51,7 @@ enum class CollectiveKind : uint8_t {
   SCATTER,
 };
 
-struct PreparedCall final {
-  ExecutionContext *context_;
-  Tensor *output_;
-  const Tensor *input_;
-  std::optional<internal::ScratchArena::Scope> scratch_scope_;
-  std::optional<Tensor> contiguous_input_;
-  std::optional<Tensor> contiguous_output_;
-
-  [[nodiscard]] auto GetInput() const noexcept -> const Tensor & {
-    return contiguous_input_.has_value() ? *contiguous_input_ : *input_;
-  }
-
-  [[nodiscard]] auto GetOutput() noexcept -> Tensor & {
-    return contiguous_output_.has_value() ? *contiguous_output_ : *output_;
-  }
-
-  [[nodiscard]] auto GetOutput() const noexcept -> const Tensor & {
-    return contiguous_output_.has_value() ? *contiguous_output_ : *output_;
-  }
-};
+using PreparedCall = internal::PreparedCollectiveCall;
 
 [[nodiscard]] constexpr auto GetCollectiveName(CollectiveKind kind) noexcept -> std::string_view {
   switch (kind) {
@@ -109,25 +89,6 @@ struct PreparedCall final {
 
 [[nodiscard]] constexpr auto WritesOutput(CollectiveKind kind, size_t rank, size_t root) noexcept -> bool {
   return (kind != CollectiveKind::REDUCE && kind != CollectiveKind::GATHER) || rank == root;
-}
-
-[[nodiscard]] auto ToNcclDType(DType dtype, std::source_location location) -> ncclDataType_t {
-  switch (dtype) {
-    case DType::BOOL:
-    case DType::UINT8:
-      return ncclUint8;
-    case DType::INT32:
-      return ncclInt32;
-    case DType::INT64:
-      return ncclInt64;
-    case DType::FLOAT16:
-      return ncclFloat16;
-    case DType::BFLOAT16:
-      return ncclBfloat16;
-    case DType::FLOAT32:
-      return ncclFloat32;
-  }
-  throw InvalidArgumentError("invalid collective dtype", location);
 }
 
 [[nodiscard]] auto ToNcclReduceOp(ReduceOp operation, DType dtype, std::source_location location) -> ncclRedOp_t {
@@ -174,27 +135,6 @@ void ValidatePeer(int32_t peer, size_t rank, size_t world_size, std::source_loca
   }
 }
 
-void ValidateContext(ExecutionContext &context, const NcclCommunicator &communicator,
-                     const std::shared_ptr<internal::CommunicatorGroupState> &state, std::source_location location) {
-  const auto rank = internal::CommunicatorAccess::GetRank(communicator, location);
-  if (context.GetDevice() != state->GetDevice(rank)) {
-    throw InvalidArgumentError("execution context device does not match the communicator rank", location);
-  }
-  if (!state->BelongsTo(internal::ContextAccess::GetRuntimeState(context, location))) {
-    throw InvalidArgumentError("execution context and communicator belong to different runtimes", location);
-  }
-}
-
-void ValidateTensorDevice(const Tensor &tensor, Device device, std::string_view role, std::source_location location) {
-  if (tensor.GetDevice() == device) {
-    return;
-  }
-  std::string message{"collective "};
-  message.append(role);
-  message.append(" tensor is on the wrong CUDA device");
-  throw InvalidArgumentError(std::move(message), location);
-}
-
 [[nodiscard]] auto ExpectedScaledCount(int64_t count, size_t world_size, std::source_location location) -> int64_t {
   return internal::CheckedMultiply(count,
                                    internal::CheckedNarrow<int64_t>(world_size, "communicator world size", location),
@@ -239,14 +179,6 @@ void ValidateShapeAndDType(CollectiveKind kind, const Tensor &output, const Tens
   }
 }
 
-[[nodiscard]] auto ByteOffset(const void *pointer, size_t offset) noexcept -> const void * {
-  return static_cast<const std::byte *>(pointer) + offset;
-}
-
-[[nodiscard]] auto MutableByteOffset(void *pointer, size_t offset) noexcept -> void * {
-  return static_cast<std::byte *>(pointer) + offset;
-}
-
 void ValidateAlias(CollectiveKind kind, const Tensor &output, const Tensor &input, size_t rank, size_t world_size,
                    size_t root, std::source_location location) {
   const auto alias = ClassifyAlias(output, input, location);
@@ -273,14 +205,14 @@ void ValidateAlias(CollectiveKind kind, const Tensor &output, const Tensor &inpu
   if (kind == CollectiveKind::ALL_GATHER || (kind == CollectiveKind::GATHER && rank == root)) {
     const auto offset = internal::CheckedBytes(input.GetNumElements(), element_size, location);
     if (input_data ==
-        ByteOffset(output_data, internal::CheckedMultiply(rank, offset, "gather rank offset", location))) {
+        CollectiveByteOffset(output_data, internal::CheckedMultiply(rank, offset, "gather rank offset", location))) {
       return;
     }
   }
   if (kind == CollectiveKind::REDUCE_SCATTER || (kind == CollectiveKind::SCATTER && rank == root)) {
     const auto offset = internal::CheckedBytes(output.GetNumElements(), element_size, location);
     if (output_data ==
-        ByteOffset(input_data, internal::CheckedMultiply(rank, offset, "scatter rank offset", location))) {
+        CollectiveByteOffset(input_data, internal::CheckedMultiply(rank, offset, "scatter rank offset", location))) {
       return;
     }
   }
@@ -291,9 +223,9 @@ void ValidateCall(CollectiveKind kind, ExecutionContext &context, Tensor &output
                   NcclCommunicator &communicator, ReduceOp operation, int32_t root, std::source_location location) {
   const auto &state = internal::CommunicatorAccess::GetState(communicator, location);
   const auto rank = internal::CommunicatorAccess::GetRank(communicator, location);
-  ValidateContext(context, communicator, state, location);
-  ValidateTensorDevice(input, context.GetDevice(), "input", location);
-  ValidateTensorDevice(output, context.GetDevice(), "output", location);
+  ValidateCollectiveContext(context, communicator, state, location);
+  ValidateCollectiveTensorDevice(input, context.GetDevice(), "input", location);
+  ValidateCollectiveTensorDevice(output, context.GetDevice(), "output", location);
   internal::ValidateWritableOutput(output, GetCollectiveName(kind), location);
   ValidateShapeAndDType(kind, output, input, state->GetWorldSize(), location);
   if (UsesReduction(kind)) {
@@ -306,65 +238,20 @@ void ValidateCall(CollectiveKind kind, ExecutionContext &context, Tensor &output
   ValidateAlias(kind, output, input, rank, state->GetWorldSize(), static_cast<size_t>(root), location);
 }
 
-[[nodiscard]] auto CreateScratchTensor(ExecutionContext &context, internal::ScratchArena::Scope &scratch_scope,
-                                       const Tensor &prototype, std::source_location location) -> Tensor {
-  const auto element_size = GetDTypeSize(prototype.GetDType(), location);
-  const auto bytes = internal::CheckedBytes(prototype.GetNumElements(), element_size, location);
-  const auto allocation = scratch_scope.AllocateBytes(bytes, 256, location);
-  if (allocation.GetOffsetBytes() % element_size != 0) {
-    throw InternalError("collective scratch offset is not aligned to the tensor element size", location);
-  }
-  const auto &storage = internal::ContextAccess::GetPrimaryLane(context, location).GetScratchStorage();
-  if (storage == nullptr) {
-    throw InternalError("collective scratch allocation did not create backing storage", location);
-  }
-  return internal::TensorFactory::Create(
-      storage, prototype.GetDType(), prototype.GetShape(), GetContiguousStrides(prototype.GetShape(), location),
-      internal::CheckedNarrow<int64_t>(allocation.GetOffsetBytes() / element_size, "collective scratch element offset",
-                                       location),
-      location);
-}
-
 [[nodiscard]] auto PrepareCall(CollectiveKind kind, ExecutionContext &context, Tensor &output, const Tensor &input,
                                NcclCommunicator &communicator, int32_t root, std::source_location location)
     -> PreparedCall {
   const auto rank = internal::CommunicatorAccess::GetRank(communicator, location);
-  PreparedCall call{
-      .context_ = &context,
-      .output_ = &output,
-      .input_ = &input,
-      .scratch_scope_ = std::nullopt,
-      .contiguous_input_ = std::nullopt,
-      .contiguous_output_ = std::nullopt,
-  };
   const auto pack_input =
       input.GetNumElements() != 0 && ReadsInput(kind, rank, static_cast<size_t>(root)) && !input.IsContiguous();
   const auto unpack_output =
       output.GetNumElements() != 0 && WritesOutput(kind, rank, static_cast<size_t>(root)) && !output.IsContiguous();
-  if (!pack_input && !unpack_output) {
-    return call;
-  }
-
-  {
-    internal::OpGuard guard{context, GetCollectiveName(kind), location, internal::CapturePolicy::SAFE};
-    call.scratch_scope_.emplace(guard.MakeScratchScope());
-    if (pack_input) {
-      call.contiguous_input_.emplace(CreateScratchTensor(context, *call.scratch_scope_, input, location));
-    }
-    if (unpack_output) {
-      call.contiguous_output_.emplace(CreateScratchTensor(context, *call.scratch_scope_, output, location));
-    }
-  }
-  if (pack_input) {
-    CopyOut(context, *call.contiguous_input_, input, location);
-  }
-  return call;
+  return internal::PrepareCollectiveCall(context, output, input, GetCollectiveName(kind), pack_input, unpack_output,
+                                         location);
 }
 
 void CompleteCall(PreparedCall &call, std::source_location location) {
-  if (call.contiguous_output_.has_value()) {
-    CopyOut(*call.context_, *call.output_, *call.contiguous_output_, location);
-  }
+  internal::CompleteCollectiveCall(call, location);
 }
 
 void RecordCall(internal::OpGuard &guard, CollectiveKind kind, PreparedCall &call, size_t rank, size_t root) {
@@ -402,15 +289,17 @@ void SubmitSelfCopy(CollectiveKind kind, PreparedCall &call, size_t rank, size_t
   void *destination = nullptr;
   switch (kind) {
     case CollectiveKind::ALL_TO_ALL:
-      source = ByteOffset(internal::TensorAccess::GetData(call.GetInput(), location), offset);
-      destination = MutableByteOffset(internal::TensorAccess::GetMutableData(call.GetOutput(), location), offset);
+      source = CollectiveByteOffset(internal::TensorAccess::GetData(call.GetInput(), location), offset);
+      destination =
+          MutableCollectiveByteOffset(internal::TensorAccess::GetMutableData(call.GetOutput(), location), offset);
       break;
     case CollectiveKind::GATHER:
       source = internal::TensorAccess::GetData(call.GetInput(), location);
-      destination = MutableByteOffset(internal::TensorAccess::GetMutableData(call.GetOutput(), location), offset);
+      destination =
+          MutableCollectiveByteOffset(internal::TensorAccess::GetMutableData(call.GetOutput(), location), offset);
       break;
     case CollectiveKind::SCATTER:
-      source = ByteOffset(internal::TensorAccess::GetData(call.GetInput(), location), offset);
+      source = CollectiveByteOffset(internal::TensorAccess::GetData(call.GetInput(), location), offset);
       destination = internal::TensorAccess::GetMutableData(call.GetOutput(), location);
       break;
     default:
@@ -464,10 +353,10 @@ void IssueCollective(CollectiveKind kind, PreparedCall &call, ncclComm_t communi
         if (peer == rank) {
           continue;
         }
-        statuses.push_back(nccl_api.send_(ByteOffset(input, peer * chunk_bytes), chunk_count, dtype,
+        statuses.push_back(nccl_api.send_(CollectiveByteOffset(input, peer * chunk_bytes), chunk_count, dtype,
                                           static_cast<int>(peer), communicator, stream));
-        statuses.push_back(nccl_api.receive_(MutableByteOffset(output, peer * chunk_bytes), chunk_count, dtype,
-                                             static_cast<int>(peer), communicator, stream));
+        statuses.push_back(nccl_api.receive_(MutableCollectiveByteOffset(output, peer * chunk_bytes), chunk_count,
+                                             dtype, static_cast<int>(peer), communicator, stream));
       }
       return;
     }
@@ -477,8 +366,8 @@ void IssueCollective(CollectiveKind kind, PreparedCall &call, ncclComm_t communi
                                                         GetDTypeSize(call.GetInput().GetDType(), location), location);
         for (size_t peer = 0; peer < world_size; peer++) {
           if (peer != rank) {
-            statuses.push_back(nccl_api.receive_(MutableByteOffset(output, peer * chunk_bytes), input_count, dtype,
-                                                 static_cast<int>(peer), communicator, stream));
+            statuses.push_back(nccl_api.receive_(MutableCollectiveByteOffset(output, peer * chunk_bytes), input_count,
+                                                 dtype, static_cast<int>(peer), communicator, stream));
           }
         }
       } else {
@@ -491,7 +380,7 @@ void IssueCollective(CollectiveKind kind, PreparedCall &call, ncclComm_t communi
                                                         GetDTypeSize(call.GetOutput().GetDType(), location), location);
         for (size_t peer = 0; peer < world_size; peer++) {
           if (peer != rank) {
-            statuses.push_back(nccl_api.send_(ByteOffset(input, peer * chunk_bytes), output_count, dtype,
+            statuses.push_back(nccl_api.send_(CollectiveByteOffset(input, peer * chunk_bytes), output_count, dtype,
                                               static_cast<int>(peer), communicator, stream));
           }
         }
@@ -528,7 +417,9 @@ void SubmitRank(CollectiveKind kind, ExecutionContext &context, Tensor &output, 
                       operation, guard.GetNativeStream(), statuses, location);
     } catch (...) {
       if (UsesPointToPoint(kind)) {
-        internal::GetNcclApi().group_end_();
+        const auto cleanup_status = internal::GetNcclApi().group_end_();
+        ReportCollectiveCleanupErrors(context, cleanup_status, std::nullopt,
+                                      "ncclGroupEnd (collective exception cleanup)", {}, location);
         state->MarkFailed();
       }
       throw;
@@ -623,8 +514,11 @@ void SubmitLocal(CollectiveKind kind, std::span<const LocalCollectiveCall> calls
                         operation, guards[rank]->GetNativeStream(), statuses, location);
       }
     } catch (...) {
-      internal::GetNcclApi().group_end_();
-      cuda_api.set_device_(previous_device);
+      const auto cleanup_status = internal::GetNcclApi().group_end_();
+      const auto restore_status = cuda_api.set_device_(previous_device);
+      ReportCollectiveCleanupErrors(*calls.front().context_, cleanup_status, restore_status,
+                                    "ncclGroupEnd (local collective exception cleanup)",
+                                    "cudaSetDevice (local collective exception cleanup)", location);
       state->MarkFailed();
       throw;
     }
@@ -648,20 +542,20 @@ void SubmitPointToPoint(ExecutionContext &context, const Tensor *send, int32_t s
                         int32_t receive_peer, NcclCommunicator &communicator, std::source_location location) {
   const auto &state = internal::CommunicatorAccess::GetState(communicator, location);
   const auto rank = internal::CommunicatorAccess::GetRank(communicator, location);
-  ValidateContext(context, communicator, state, location);
+  ValidateCollectiveContext(context, communicator, state, location);
   if (send == nullptr && receive == nullptr) {
     throw InvalidArgumentError("point-to-point submission must send or receive a tensor", location);
   }
   if (send != nullptr) {
     ValidatePeer(send_peer, rank, state->GetWorldSize(), location);
-    ValidateTensorDevice(*send, context.GetDevice(), "send", location);
+    ValidateCollectiveTensorDevice(*send, context.GetDevice(), "send", location);
     if (!send->IsContiguous()) {
       throw InvalidArgumentError("Send requires a contiguous tensor", location);
     }
   }
   if (receive != nullptr) {
     ValidatePeer(receive_peer, rank, state->GetWorldSize(), location);
-    ValidateTensorDevice(*receive, context.GetDevice(), "receive", location);
+    ValidateCollectiveTensorDevice(*receive, context.GetDevice(), "receive", location);
     internal::ValidateWritableOutput(*receive, "ReceiveOut", location);
     if (!receive->IsContiguous()) {
       throw InvalidArgumentError("ReceiveOut requires a contiguous tensor", location);
@@ -700,7 +594,9 @@ void SubmitPointToPoint(ExecutionContext &context, const Tensor *send, int32_t s
     }
   } catch (...) {
     if (grouped) {
-      internal::GetNcclApi().group_end_();
+      const auto cleanup_status = internal::GetNcclApi().group_end_();
+      ReportCollectiveCleanupErrors(context, cleanup_status, std::nullopt,
+                                    "ncclGroupEnd (point-to-point exception cleanup)", {}, location);
       state->MarkFailed();
     }
     throw;
@@ -769,7 +665,7 @@ void SendReceiveOut(ExecutionContext &context, const Tensor &send, int32_t send_
 void Barrier(ExecutionContext &context, NcclCommunicator &communicator, std::source_location location) {
   const auto &state = internal::CommunicatorAccess::GetState(communicator, location);
   const auto rank = internal::CommunicatorAccess::GetRank(communicator, location);
-  ValidateContext(context, communicator, state, location);
+  ValidateCollectiveContext(context, communicator, state, location);
   internal::OpGuard guard{context, "Barrier", location, internal::CapturePolicy::SAFE};
   guard.RetainCommunicator(state);
   auto lease = state->AcquireRank(rank, location);
@@ -837,10 +733,10 @@ void SendReceiveLocal(std::span<const LocalPointToPointCall> calls, std::source_
         internal::CommunicatorAccess::GetRank(*call.communicator_, location) != rank) {
       throw InvalidArgumentError("local point-to-point calls must be ordered by rank from one group", location);
     }
-    ValidateContext(*call.context_, *call.communicator_, state, location);
+    ValidateCollectiveContext(*call.context_, *call.communicator_, state, location);
     if (call.send_ != nullptr) {
       ValidatePeer(call.send_peer_, rank, calls.size(), location);
-      ValidateTensorDevice(*call.send_, call.context_->GetDevice(), "send", location);
+      ValidateCollectiveTensorDevice(*call.send_, call.context_->GetDevice(), "send", location);
       if (!call.send_->IsContiguous()) {
         throw InvalidArgumentError("local point-to-point send tensor must be contiguous", location);
       }
@@ -853,7 +749,7 @@ void SendReceiveLocal(std::span<const LocalPointToPointCall> calls, std::source_
     }
     if (call.receive_ != nullptr) {
       ValidatePeer(call.receive_peer_, rank, calls.size(), location);
-      ValidateTensorDevice(*call.receive_, call.context_->GetDevice(), "receive", location);
+      ValidateCollectiveTensorDevice(*call.receive_, call.context_->GetDevice(), "receive", location);
       internal::ValidateWritableOutput(*call.receive_, "SendReceiveLocal", location);
       if (!call.receive_->IsContiguous()) {
         throw InvalidArgumentError("local point-to-point receive tensor must be contiguous", location);
@@ -907,8 +803,11 @@ void SendReceiveLocal(std::span<const LocalPointToPointCall> calls, std::source_
       }
     }
   } catch (...) {
-    internal::GetNcclApi().group_end_();
-    cuda_api.set_device_(previous_device);
+    const auto cleanup_status = internal::GetNcclApi().group_end_();
+    const auto restore_status = cuda_api.set_device_(previous_device);
+    ReportCollectiveCleanupErrors(*calls.front().context_, cleanup_status, restore_status,
+                                  "ncclGroupEnd (local point-to-point exception cleanup)",
+                                  "cudaSetDevice (local point-to-point exception cleanup)", location);
     state->MarkFailed();
     throw;
   }
@@ -943,7 +842,7 @@ void BarrierLocal(std::span<const LocalBarrierCall> calls, std::source_location 
         internal::CommunicatorAccess::GetRank(*call.communicator_, location) != rank) {
       throw InvalidArgumentError("local barrier calls must be ordered by rank from one group", location);
     }
-    ValidateContext(*call.context_, *call.communicator_, state, location);
+    ValidateCollectiveContext(*call.context_, *call.communicator_, state, location);
     guards.push_back(std::make_unique<internal::OpGuard>(*call.context_, "BarrierLocal", location));
   }
 

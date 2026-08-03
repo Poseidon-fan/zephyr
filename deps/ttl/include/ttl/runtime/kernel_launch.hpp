@@ -9,6 +9,7 @@
 #include <span>
 #include <string_view>
 #include <type_traits>
+#include <utility>
 
 #include <driver_types.h>
 
@@ -103,6 +104,7 @@ class CudaKernelLaunch final {
                    std::source_location location);
 
   void CheckLaunch() const;
+  void FailAfterCallbackException() noexcept;
 
   [[nodiscard]] auto GetInputDataAsDType(const Tensor &tensor, DType dtype, std::source_location location) const
       -> const void *;
@@ -115,7 +117,9 @@ class CudaKernelLaunch final {
  * Run one checked external CUDA submission.
  *
  * The callback receives the only valid access path to registered output pointers, the native stream, and scratch
- * workspace. A normal callback return is followed by cudaGetLastError through TTL's error translation layer.
+ * workspace. A normal callback return is followed by cudaGetLastError through TTL's error translation layer. If the
+ * callback throws, TTL invalidates the submission context, clears and reports any pending CUDA launch error, and then
+ * rethrows the original exception so partially submitted work cannot be followed by unrelated operations.
  */
 template <typename Function>
   requires std::invocable<Function, CudaKernelLaunch &>
@@ -123,7 +127,12 @@ void SubmitCudaKernel(ExecutionContext &context, std::string_view operation, std
                       std::span<Tensor *const> outputs, Function &&function, const CudaKernelLaunchOptions &options,
                       std::source_location location) {
   CudaKernelLaunch launch{context, operation, inputs, outputs, options, location};
-  std::invoke(std::forward<Function>(function), launch);
+  try {
+    std::invoke(std::forward<Function>(function), launch);
+  } catch (...) {
+    launch.FailAfterCallbackException();
+    throw;
+  }
   launch.CheckLaunch();
 }
 

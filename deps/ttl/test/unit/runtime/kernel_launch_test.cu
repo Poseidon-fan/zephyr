@@ -2,6 +2,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -108,6 +109,25 @@ TEST(CudaKernelLaunchTest, ClearsLaunchErrorBeforeTheNextSubmission) {
 
   SubmitAddOne(context, input, output, CudaCapturePolicy::FORBIDDEN);
   EXPECT_EQ(test::Download<float>(context, output), (std::vector<float>{5.0F}));
+}
+
+TEST(CudaKernelLaunchTest, FailsContextAndPreservesExceptionAfterPartialSubmission) {
+  test::RuntimeSession session;
+  auto &context = session.GetContext();
+  auto input = test::Upload(context, Shape{1}, std::vector<float>{4.0F});
+  auto output = Empty(context, Shape{1}, DType::FLOAT32);
+  const std::array inputs{input};
+  const std::array outputs{&output};
+
+  EXPECT_THROW(SubmitCudaKernel(context, "throwing submission", inputs, outputs,
+                                [&](CudaKernelLaunch &launch) {
+                                  AddOneKernel<<<1, 1, 0, launch.GetStream()>>>(
+                                      launch.GetInputDataAs<float>(input), launch.GetOutputDataAs<float>(output), 1);
+                                  throw std::runtime_error{"submission callback failed"};
+                                }),
+               std::runtime_error);
+  EXPECT_THROW(SubmitAddOne(context, input, output, CudaCapturePolicy::FORBIDDEN), InvalidArgumentError);
+  context.Synchronize();
 }
 
 TEST(CudaKernelLaunchTest, ReplaysCaptureSafeExternalKernel) {

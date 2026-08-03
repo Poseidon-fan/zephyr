@@ -31,7 +31,6 @@ class StreamState;
 struct DeviceAllocatorOptions final {
   uint64_t release_threshold_bytes_{std::numeric_limits<uint64_t>::max()};
   uint64_t max_live_bytes_{0};
-  uint64_t max_reserved_bytes_{0};
   bool enable_maintenance_thread_{true};
 };
 

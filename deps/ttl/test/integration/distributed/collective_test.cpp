@@ -126,6 +126,36 @@ TEST(CollectiveIntegrationTest, ExecutesProcessLocalCollectivesAndPointToPoint) 
     EXPECT_EQ(test::Download<float>(contexts[1], outputs[1]), (std::vector<float>{2, 3, 12, 13}));
 
     inputs = {
+        test::Upload(contexts[0], Shape{4}, std::vector<float>{0, 10, 11, 12}),
+        test::Upload(contexts[1], Shape{3}, std::vector<float>{20, 21, 1}),
+    };
+    outputs = {Empty(contexts[0], Shape{3}, DType::FLOAT32), Empty(contexts[1], Shape{4}, DType::FLOAT32)};
+    const std::array<std::array<int64_t, 2>, 2> send_counts{{{1, 3}, {2, 1}}};
+    const std::array<std::array<int64_t, 2>, 2> receive_counts{{{1, 2}, {3, 1}}};
+    const std::array variable_calls{
+        LocalAllToAllVCall{
+            .context_ = contexts.data(),
+            .output_ = outputs.data(),
+            .input_ = inputs.data(),
+            .send_counts_ = send_counts[0],
+            .receive_counts_ = receive_counts[0],
+            .communicator_ = &group.GetCommunicator(0),
+        },
+        LocalAllToAllVCall{
+            .context_ = &contexts[1],
+            .output_ = &outputs[1],
+            .input_ = &inputs[1],
+            .send_counts_ = send_counts[1],
+            .receive_counts_ = receive_counts[1],
+            .communicator_ = &group.GetCommunicator(1),
+        },
+    };
+    AllToAllVLocal(variable_calls);
+    Synchronize(contexts);
+    EXPECT_EQ(test::Download<float>(contexts[0], outputs[0]), (std::vector<float>{0, 20, 21}));
+    EXPECT_EQ(test::Download<float>(contexts[1], outputs[1]), (std::vector<float>{10, 11, 12, 1}));
+
+    inputs = {
         test::Upload(contexts[0], Shape{2}, std::vector<float>{5, 6}),
         test::Upload(contexts[1], Shape{2}, std::vector<float>{50, 60}),
     };
