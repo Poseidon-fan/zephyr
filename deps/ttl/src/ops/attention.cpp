@@ -118,6 +118,7 @@ void ValidateMask(const Tensor &mask, const Tensor &query, const Shape &score_sh
       .key_length_ = static_cast<uint64_t>(shape_info.key_length_),
       .head_dimension_ = static_cast<uint64_t>(shape_info.head_dimension_),
       .value_dimension_ = static_cast<uint64_t>(shape_info.value_dimension_),
+      .task_count_ = 0,
       .scale_ = options.scale_.value_or(1.0F / std::sqrt(static_cast<float>(shape_info.head_dimension_))),
       .mask_dtype_ = mask.has_value() ? mask->GetDType() : DType::BOOL,
       .has_mask_ = mask.has_value(),

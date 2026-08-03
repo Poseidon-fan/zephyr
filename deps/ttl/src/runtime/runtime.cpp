@@ -178,6 +178,9 @@ RuntimeState::RuntimeState(RuntimeOptions options, std::source_location location
   for (const auto &device_context : device_contexts_) {
     event_pools.push_back(device_context->GetEventPool());
   }
+  blas_shutdown_.assign(device_contexts_.size(), uint8_t{0});
+  allocator_shutdown_.assign(device_contexts_.size(), uint8_t{0});
+  event_pool_shutdown_.assign(device_contexts_.size(), uint8_t{0});
   pinned_allocator_ = PinnedAllocator::Create(error_sink_, event_pools, options.pinned_memory_, location);
 
   const auto peer_entry_count =
@@ -186,7 +189,9 @@ RuntimeState::RuntimeState(RuntimeOptions options, std::source_location location
   const auto &cuda_api = GetCudaApi();
   for (size_t source_index = 0; source_index < devices_.size(); source_index++) {
     for (size_t destination_index = 0; destination_index < devices_.size(); destination_index++) {
-      const auto matrix_index = (source_index * devices_.size()) + destination_index;
+      const auto matrix_index =
+          CheckedAdd(CheckedMultiply(source_index, devices_.size(), "runtime peer matrix row offset", location),
+                     destination_index, "runtime peer matrix index", location);
       if (source_index == destination_index) {
         peer_access_[matrix_index] = uint8_t{1};
         continue;
@@ -225,7 +230,10 @@ auto RuntimeState::GetDeviceContext(Device device, std::source_location location
 auto RuntimeState::CanAccessPeer(Device device, Device peer_device, std::source_location location) const -> bool {
   const auto device_index = FindDeviceIndex(device, location);
   const auto peer_device_index = FindDeviceIndex(peer_device, location);
-  return peer_access_[(device_index * devices_.size()) + peer_device_index] != 0;
+  const auto matrix_index =
+      CheckedAdd(CheckedMultiply(device_index, devices_.size(), "runtime peer matrix row offset", location),
+                 peer_device_index, "runtime peer matrix index", location);
+  return peer_access_[matrix_index] != 0;
 }
 
 auto RuntimeState::GetErrorSink() const noexcept -> const std::shared_ptr<ErrorSink> & { return error_sink_; }
@@ -261,6 +269,8 @@ auto RuntimeState::GetStatistics(std::source_location location) const -> Runtime
         .oom_count_ = allocator.oom_count_,
         .trim_count_ = allocator.trim_count_,
         .pending_retirement_count_ = allocator.pending_retirement_count_,
+        .quarantined_retirement_count_ = allocator.quarantined_retirement_count_,
+        .quarantined_bytes_ = allocator.quarantined_bytes_,
         .pool_used_bytes_ = allocator.pool_used_bytes_,
         .pool_reserved_bytes_ = allocator.pool_reserved_bytes_,
         .outstanding_storage_count_ = allocator.outstanding_storage_count_,
@@ -282,6 +292,8 @@ auto RuntimeState::GetStatistics(std::source_location location) const -> Runtime
       .cache_hit_count_ = pinned.cache_hit_count_,
       .retirement_count_ = pinned.retirement_count_,
       .pending_retirement_count_ = pinned.pending_retirement_count_,
+      .quarantined_retirement_count_ = pinned.quarantined_retirement_count_,
+      .quarantined_bytes_ = pinned.quarantined_bytes_,
       .outstanding_buffer_count_ = pinned.outstanding_buffer_count_,
   };
   return result;
@@ -426,15 +438,27 @@ void RuntimeState::Shutdown(std::source_location location) {
     throw InvalidArgumentError("cannot shut down runtime while an NCCL communicator group remains open", location);
   }
 
-  for (const auto &device_context : device_contexts_) {
-    device_context->GetBlasHandlePool()->Shutdown(location);
+  for (size_t index = 0; index < device_contexts_.size(); ++index) {
+    if (blas_shutdown_[index] == 0) {
+      device_contexts_[index]->GetBlasHandlePool()->Shutdown(location);
+      blas_shutdown_[index] = uint8_t{1};
+    }
   }
-  for (const auto &device_context : device_contexts_) {
-    device_context->GetAllocator()->Shutdown(location);
+  for (size_t index = 0; index < device_contexts_.size(); ++index) {
+    if (allocator_shutdown_[index] == 0) {
+      device_contexts_[index]->GetAllocator()->Shutdown(location);
+      allocator_shutdown_[index] = uint8_t{1};
+    }
   }
-  pinned_allocator_->Shutdown(location);
-  for (const auto &device_context : device_contexts_) {
-    device_context->GetEventPool()->Close();
+  if (!pinned_allocator_shutdown_) {
+    pinned_allocator_->Shutdown(location);
+    pinned_allocator_shutdown_ = true;
+  }
+  for (size_t index = 0; index < device_contexts_.size(); ++index) {
+    if (event_pool_shutdown_[index] == 0) {
+      device_contexts_[index]->GetEventPool()->Close();
+      event_pool_shutdown_[index] = uint8_t{1};
+    }
   }
   status_.store(RuntimeStatus::CLOSED, std::memory_order_release);
 }

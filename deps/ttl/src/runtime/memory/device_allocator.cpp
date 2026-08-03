@@ -466,6 +466,8 @@ class DeviceAllocatorImpl final {
         .oom_count_ = oom_count_.load(std::memory_order_relaxed),
         .trim_count_ = trim_count_.load(std::memory_order_relaxed),
         .pending_retirement_count_ = pending_retirement_count_.load(std::memory_order_relaxed),
+        .quarantined_retirement_count_ = quarantined_retirement_count_.load(std::memory_order_relaxed),
+        .quarantined_bytes_ = quarantined_bytes_.load(std::memory_order_relaxed),
         .pool_used_bytes_ = used_bytes,
         .pool_reserved_bytes_ = reserved_bytes,
         .outstanding_storage_count_ = outstanding_storage_count_.load(std::memory_order_relaxed),
@@ -548,8 +550,7 @@ class DeviceAllocatorImpl final {
             TryCuda(status, "cudaEventQuery", "allocation retirement completion", *error_sink_, context);
             iterator->completion_event_->Discard();
             iterator->completion_event_.reset();
-            iterator->poisoned_ = true;
-            status_.store(AllocatorStatus::FAILED, std::memory_order_release);
+            Quarantine(*iterator);
             continue;
           }
 
@@ -657,9 +658,17 @@ class DeviceAllocatorImpl final {
     maintenance_condition_.notify_one();
   }
 
-  void PoisonAndEnqueue(RetirementRecord record) noexcept {
-    record.poisoned_ = true;
+  void Quarantine(RetirementRecord &record) noexcept {
+    if (!record.poisoned_) {
+      record.poisoned_ = true;
+      quarantined_retirement_count_.fetch_add(1, std::memory_order_relaxed);
+      quarantined_bytes_.fetch_add(record.allocation_.capacity_bytes_, std::memory_order_relaxed);
+    }
     status_.store(AllocatorStatus::FAILED, std::memory_order_release);
+  }
+
+  void PoisonAndEnqueue(RetirementRecord record) noexcept {
+    Quarantine(record);
     Enqueue(std::move(record));
   }
 
@@ -836,6 +845,10 @@ class DeviceAllocatorImpl final {
         record.emplace(std::move(retirements_.back()));
         retirements_.pop_back();
         pending_retirement_count_.fetch_sub(1, std::memory_order_relaxed);
+        if (record->poisoned_) {
+          quarantined_retirement_count_.fetch_sub(1, std::memory_order_relaxed);
+          quarantined_bytes_.fetch_sub(record->allocation_.capacity_bytes_, std::memory_order_relaxed);
+        }
       }
 
       Finalize(std::move(*record));
@@ -959,6 +972,8 @@ class DeviceAllocatorImpl final {
   std::atomic<uint64_t> oom_count_{0};
   std::atomic<uint64_t> trim_count_{0};
   std::atomic<uint64_t> pending_retirement_count_{0};
+  std::atomic<uint64_t> quarantined_retirement_count_{0};
+  std::atomic<uint64_t> quarantined_bytes_{0};
   std::atomic<uint64_t> outstanding_storage_count_{0};
 
   mutable std::mutex retirement_latch_;

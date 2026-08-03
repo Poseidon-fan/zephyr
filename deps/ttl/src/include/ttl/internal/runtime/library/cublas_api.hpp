@@ -11,6 +11,9 @@ struct CublasApi final {
   decltype(&cublasDestroy) destroy_;
   decltype(&cublasLtCreate) lt_create_;
   decltype(&cublasLtDestroy) lt_destroy_;
+  decltype(&cublasLtMatmulDescInit) lt_matmul_desc_init_;
+  decltype(&cublasLtMatrixLayoutInit) lt_matrix_layout_init_;
+  decltype(&cublasLtMatmulPreferenceInit) lt_matmul_preference_init_;
   decltype(&cublasLtMatmulDescSetAttribute) lt_matmul_desc_set_attribute_;
   decltype(&cublasLtMatrixLayoutSetAttribute) lt_matrix_layout_set_attribute_;
   decltype(&cublasLtMatmulPreferenceSetAttribute) lt_matmul_preference_set_attribute_;

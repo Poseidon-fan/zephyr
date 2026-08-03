@@ -30,7 +30,7 @@ struct PinnedAllocation final {
   size_t capacity_bytes_;
 };
 
-/** Snapshot of process-wide pinned allocator counters. */
+/** Snapshot of process-wide pinned allocator counters, including fail-stop quarantine telemetry. */
 struct PinnedAllocatorStats final {
   uint64_t live_bytes_;
   uint64_t pending_bytes_;
@@ -42,6 +42,8 @@ struct PinnedAllocatorStats final {
   uint64_t cache_hit_count_;
   uint64_t retirement_count_;
   uint64_t pending_retirement_count_;
+  uint64_t quarantined_retirement_count_;
+  uint64_t quarantined_bytes_;
   uint64_t outstanding_buffer_count_;
 };
 

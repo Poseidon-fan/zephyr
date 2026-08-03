@@ -88,7 +88,9 @@ void ValidateTensorStorage(const Storage &storage, const TensorByteRange &byte_r
   return false;
 }
 
-[[nodiscard]] auto ComputeIsNonOverlappingDense(const Shape &shape, const Strides &strides) noexcept -> bool {
+[[nodiscard]] auto ComputeIsNonOverlappingDense(const Shape &shape, const Strides &strides,
+                                                std::source_location location = std::source_location::current())
+    -> bool {
   if (shape.GetNumElements() <= 1) {
     return true;
   }
@@ -111,7 +113,7 @@ void ValidateTensorStorage(const Storage &storage, const TensorByteRange &byte_r
     if (strides.GetValues()[axis] != expected_stride) {
       return false;
     }
-    expected_stride *= shape.GetDimensions()[axis];
+    expected_stride = CheckedMultiply(expected_stride, shape.GetDimensions()[axis], "dense stride extent", location);
   }
   return true;
 }
@@ -125,7 +127,7 @@ void ValidateTensorStorage(const Storage &storage, const TensorByteRange &byte_r
   if (HasZeroStride(shape, strides)) {
     flags.Set(TensorFlag::HAS_ZERO_STRIDE);
   }
-  if (ComputeIsNonOverlappingDense(shape, strides)) {
+  if (ComputeIsNonOverlappingDense(shape, strides, location)) {
     flags.Set(TensorFlag::NON_OVERLAPPING_DENSE);
   }
   return flags;
@@ -141,7 +143,7 @@ void ValidateTensorStorage(const Storage &storage, const TensorByteRange &byte_r
 
 }  // namespace
 
-auto IsNonOverlappingDenseLayout(const Shape &shape, const Strides &strides) noexcept -> bool {
+auto IsNonOverlappingDenseLayout(const Shape &shape, const Strides &strides) -> bool {
   return shape.GetRank() == strides.GetRank() && ComputeIsNonOverlappingDense(shape, strides);
 }
 

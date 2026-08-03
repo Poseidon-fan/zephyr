@@ -49,6 +49,8 @@ void ValidateCollectiveTensorDevice(const Tensor &tensor, Device device, std::st
                                          std::string_view operation, bool pack_input, bool unpack_output,
                                          std::source_location location) -> PreparedCollectiveCall;
 void CompleteCollectiveCall(PreparedCollectiveCall &call, std::source_location location);
+void CompleteCollectiveCallOrFail(PreparedCollectiveCall &call, const std::shared_ptr<CommunicatorGroupState> &state,
+                                  std::source_location location);
 void ReportCollectiveCleanupErrors(ExecutionContext &context, ncclResult_t group_end_status,
                                    std::optional<cudaError_t> restore_device_status,
                                    std::string_view group_end_operation, std::string_view restore_device_operation,

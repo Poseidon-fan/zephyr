@@ -51,6 +51,8 @@ struct DeviceAllocatorStats final {
   uint64_t oom_count_;
   uint64_t trim_count_;
   uint64_t pending_retirement_count_;
+  uint64_t quarantined_retirement_count_;
+  uint64_t quarantined_bytes_;
   uint64_t pool_used_bytes_;
   uint64_t pool_reserved_bytes_;
   uint64_t outstanding_storage_count_;

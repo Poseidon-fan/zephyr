@@ -101,6 +101,12 @@ class RuntimeState final : public std::enable_shared_from_this<RuntimeState> {
   std::vector<std::weak_ptr<CommunicatorGroupState>> communicator_groups_;
   std::source_location location_;
 
+  // Shutdown progress is retained after a component failure so a retry only resumes at the failed component.
+  std::vector<uint8_t> blas_shutdown_;
+  std::vector<uint8_t> allocator_shutdown_;
+  std::vector<uint8_t> event_pool_shutdown_;
+  bool pinned_allocator_shutdown_{false};
+
   mutable std::mutex lifecycle_latch_;
   std::atomic<RuntimeStatus> status_{RuntimeStatus::RUNNING};
   std::atomic<size_t> execution_context_count_{0};

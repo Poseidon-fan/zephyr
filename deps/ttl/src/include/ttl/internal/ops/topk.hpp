@@ -23,6 +23,8 @@ struct TopKParameters final {
   uint64_t slice_count_;
   uint64_t axis_size_;
   uint64_t k_;
+  uint64_t sort_item_count_;
+  uint64_t output_item_count_;
   uint8_t rank_;
   uint8_t axis_;
   bool largest_;

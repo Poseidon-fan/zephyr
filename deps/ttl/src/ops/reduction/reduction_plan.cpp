@@ -49,14 +49,16 @@ constexpr size_t INDEXED_VALUE_BYTES = 16;
   throw InternalError("invalid reduction operation while computing accumulator size", location);
 }
 
-[[nodiscard]] auto GetPartialCount(uint64_t output_count, uint64_t reduction_count,
-                                   const DeviceProperties &properties) noexcept -> uint32_t {
+[[nodiscard]] auto GetPartialCount(uint64_t output_count, uint64_t reduction_count, const DeviceProperties &properties,
+                                   std::source_location location) -> uint32_t {
   if (output_count == 0 || reduction_count <= TARGET_VALUES_PER_PARTIAL) {
     return 1;
   }
 
   const auto useful_partials = CeilDivide(reduction_count, TARGET_VALUES_PER_PARTIAL);
-  const auto target_blocks = static_cast<uint64_t>(properties.multiprocessor_count_) * TARGET_BLOCKS_PER_MULTIPROCESSOR;
+  const auto target_blocks =
+      CheckedMultiply(static_cast<uint64_t>(properties.multiprocessor_count_), TARGET_BLOCKS_PER_MULTIPROCESSOR,
+                      "reduction target block count", location);
   const auto occupancy_partials = CeilDivide(target_blocks, output_count);
   const auto partial_count =
       std::min({useful_partials, occupancy_partials, static_cast<uint64_t>(MAXIMUM_PARTIALS_PER_OUTPUT)});
@@ -64,15 +66,16 @@ constexpr size_t INDEXED_VALUE_BYTES = 16;
 }
 
 [[nodiscard]] auto GetLaunchBlockCount(ReductionPath path, uint64_t output_count, uint32_t partial_count,
-                                       const DeviceProperties &properties) noexcept -> uint32_t {
+                                       const DeviceProperties &properties, std::source_location location) -> uint32_t {
   auto task_count = output_count;
   if (path == ReductionPath::WARP) {
     task_count = CeilDivide(output_count, WARPS_PER_BLOCK);
   } else if (path == ReductionPath::TWO_STAGE) {
-    task_count = output_count * partial_count;
+    task_count = CheckedMultiply(output_count, static_cast<uint64_t>(partial_count), "reduction task count", location);
   }
   const auto occupancy_blocks =
-      static_cast<uint64_t>(properties.multiprocessor_count_) * TARGET_BLOCKS_PER_MULTIPROCESSOR;
+      CheckedMultiply(static_cast<uint64_t>(properties.multiprocessor_count_), TARGET_BLOCKS_PER_MULTIPROCESSOR,
+                      "reduction occupancy block count", location);
   const auto block_count =
       std::min({std::max(uint64_t{1}, task_count), std::max(uint64_t{1}, occupancy_blocks), MAXIMUM_LAUNCH_BLOCKS});
   return static_cast<uint32_t>(block_count);
@@ -278,7 +281,7 @@ auto BuildReductionPlan(Tensor &output, const Tensor &input, std::span<const siz
   parameters.reduction_count_ = reduction_count;
   parameters.contiguous_reduction_ = IsReductionContiguous(input, axes, element_size, location);
 
-  const auto partial_count = GetPartialCount(parameters.output_count_, reduction_count, properties);
+  const auto partial_count = GetPartialCount(parameters.output_count_, reduction_count, properties, location);
   parameters.partial_count_ = partial_count;
   if (reduction_count <= 32) {
     plan.path_ = ReductionPath::WARP;
@@ -294,7 +297,8 @@ auto BuildReductionPlan(Tensor &output, const Tensor &input, std::span<const siz
     plan.scratch_bytes_ =
         CheckedBytes(partial_values, GetAccumulatorSize(operation, input.GetDType(), location), location);
   }
-  plan.launch_block_count_ = GetLaunchBlockCount(plan.path_, parameters.output_count_, partial_count, properties);
+  plan.launch_block_count_ =
+      GetLaunchBlockCount(plan.path_, parameters.output_count_, partial_count, properties, location);
   plan.index_width_ = CanUse32BitIndexing(parameters) ? IndexWidth::UINT32 : IndexWidth::UINT64;
   return plan;
 }

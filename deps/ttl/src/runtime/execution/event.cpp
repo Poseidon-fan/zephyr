@@ -108,6 +108,9 @@ void EventAccess::Wait(const Stream &stream, const Event &event, std::source_loc
   if (event.state_ == nullptr) {
     throw InvalidArgumentError("event is in a moved-from state", location);
   }
+  if (stream.GetDevice() != event.state_->GetDevice()) {
+    throw InvalidArgumentError("stream and event must belong to the same CUDA device", location);
+  }
   if (stream.GetId() == event.state_->GetRecordingStreamId()) {
     return;
   }

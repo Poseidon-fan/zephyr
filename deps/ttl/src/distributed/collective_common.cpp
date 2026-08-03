@@ -151,6 +151,16 @@ void CompleteCollectiveCall(PreparedCollectiveCall &call, std::source_location l
   }
 }
 
+void CompleteCollectiveCallOrFail(PreparedCollectiveCall &call, const std::shared_ptr<CommunicatorGroupState> &state,
+                                  std::source_location location) {
+  try {
+    CompleteCollectiveCall(call, location);
+  } catch (...) {
+    state->MarkFailed();
+    throw;
+  }
+}
+
 void ReportCollectiveCleanupErrors(ExecutionContext &context, ncclResult_t group_end_status,
                                    std::optional<cudaError_t> restore_device_status,
                                    std::string_view group_end_operation, std::string_view restore_device_operation,

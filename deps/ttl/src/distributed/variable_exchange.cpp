@@ -257,7 +257,7 @@ void AllToAllVOut(ExecutionContext &context, Tensor &output, const Tensor &input
       state->CheckGroupedSubmission(lease.GetRanks(), statuses, end_status, "AllToAllVOut", location);
     }
   }
-  internal::CompleteCollectiveCall(call.tensors_, location);
+  internal::CompleteCollectiveCallOrFail(call.tensors_, state, location);
 }
 
 void AllToAllVLocal(std::span<const LocalAllToAllVCall> calls, std::source_location location) {
@@ -330,7 +330,7 @@ void AllToAllVLocal(std::span<const LocalAllToAllVCall> calls, std::source_locat
   }
   guards.clear();
   for (auto &call : prepared) {
-    internal::CompleteCollectiveCall(call.tensors_, location);
+    internal::CompleteCollectiveCallOrFail(call.tensors_, state, location);
   }
 }
 

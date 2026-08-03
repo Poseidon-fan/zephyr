@@ -469,9 +469,9 @@ void SetPreferenceAttribute(cublasLtMatmulPreference_t preference, cublasLtMatmu
 
 void InitializeLayout(cublasLtMatrixLayout_t descriptor, cudaDataType_t dtype, const MatrixInfo &matrix,
                       int32_t batch_count, std::source_location location) {
-  internal::CheckCublas(
-      cublasLtMatrixLayoutInit(descriptor, dtype, matrix.rows_, matrix.columns_, matrix.leading_dimension_),
-      "cublasLtMatrixLayoutInit", location);
+  internal::CheckCublas(internal::GetCublasApi().lt_matrix_layout_init_(descriptor, dtype, matrix.rows_,
+                                                                        matrix.columns_, matrix.leading_dimension_),
+                        "cublasLtMatrixLayoutInit", location);
   SetLayoutAttribute(descriptor, CUBLASLT_MATRIX_LAYOUT_ORDER, matrix.order_, location);
   if (batch_count > 1) {
     SetLayoutAttribute(descriptor, CUBLASLT_MATRIX_LAYOUT_BATCH_COUNT, batch_count, location);
@@ -521,8 +521,9 @@ void InitializeLayout(cublasLtMatrixLayout_t descriptor, cudaDataType_t dtype, c
   const auto data_type = GetCudaDataType(dtype, location);
   cublasLtMatmulDescOpaque_t operation_storage{};
   auto *operation = &operation_storage;
-  internal::CheckCublas(cublasLtMatmulDescInit(operation, GetComputeType(dtype, options), CUDA_R_32F),
-                        "cublasLtMatmulDescInit", location);
+  internal::CheckCublas(
+      internal::GetCublasApi().lt_matmul_desc_init_(operation, GetComputeType(dtype, options), CUDA_R_32F),
+      "cublasLtMatmulDescInit", location);
   SetMatmulAttribute(operation, CUBLASLT_MATMUL_DESC_TRANSA, lhs_operation, location);
   SetMatmulAttribute(operation, CUBLASLT_MATMUL_DESC_TRANSB, rhs_operation, location);
   SetMatmulAttribute(operation, CUBLASLT_MATMUL_DESC_EPILOGUE, epilogue, location);
@@ -543,7 +544,8 @@ void InitializeLayout(cublasLtMatrixLayout_t descriptor, cudaDataType_t dtype, c
 
   cublasLtMatmulPreferenceOpaque_t preference_storage{};
   auto *preference = &preference_storage;
-  internal::CheckCublas(cublasLtMatmulPreferenceInit(preference), "cublasLtMatmulPreferenceInit", location);
+  internal::CheckCublas(internal::GetCublasApi().lt_matmul_preference_init_(preference), "cublasLtMatmulPreferenceInit",
+                        location);
   const auto workspace_bytes = guard.GetBlasWorkspaceBytes();
   const auto lhs_alignment = GetPointerAlignment(lhs.data_);
   const auto rhs_alignment = GetPointerAlignment(rhs.data_);

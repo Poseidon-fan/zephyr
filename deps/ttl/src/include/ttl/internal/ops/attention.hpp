@@ -29,6 +29,7 @@ struct SdpaParameters final {
   uint64_t key_length_;
   uint64_t head_dimension_;
   uint64_t value_dimension_;
+  uint64_t task_count_;
   float scale_;
   DType mask_dtype_;
   bool has_mask_;

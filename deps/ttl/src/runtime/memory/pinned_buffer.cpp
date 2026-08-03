@@ -27,4 +27,8 @@ auto PinnedBuffer::AsBytes() const noexcept -> std::span<const std::byte> {
   return {static_cast<const std::byte *>(GetData()), GetSizeBytes()};
 }
 
+void PinnedBuffer::RecordUsage(const Stream &stream, std::source_location location) {
+  internal::PinnedBufferAccess::GetBlock(*this, location).RecordUsage(stream, location);
+}
+
 }  // namespace ttl

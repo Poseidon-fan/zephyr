@@ -221,8 +221,9 @@ class PinnedAllocatorImpl final {
         ReleaseInUse(capacity_bytes);
       } else {
         pending_bytes_.fetch_add(capacity_bytes, std::memory_order_relaxed);
-        status_.store(PinnedAllocatorStatus::FAILED, std::memory_order_release);
-        Enqueue(PinnedRetirement{*allocation, {}, {}, location, true});
+        auto retirement = PinnedRetirement{*allocation, {}, {}, location};
+        Quarantine(retirement);
+        Enqueue(std::move(retirement));
       }
       throw;
     }
@@ -248,8 +249,7 @@ class PinnedAllocatorImpl final {
         pending_bytes_.fetch_sub(capacity_bytes, std::memory_order_relaxed);
         ReleaseInUse(allocation.capacity_bytes_);
       } else {
-        retirement.poisoned_ = true;
-        status_.store(PinnedAllocatorStatus::FAILED, std::memory_order_release);
+        Quarantine(retirement);
         Enqueue(std::move(retirement));
       }
       return;
@@ -264,26 +264,23 @@ class PinnedAllocatorImpl final {
         if (!device_guard || !TryCuda(GetCudaApi().record_event_(event.GetNative(), stream->GetNative()),
                                       "cudaEventRecord", "pinned-buffer retirement", *error_sink_, context)) {
           event.Discard();
-          retirement.poisoned_ = true;
+          Quarantine(retirement);
           break;
         }
         retirement.events_.push_back(std::move(event));
       }
     } catch (const Error &error) {
       ReportError(error.GetCode(), error.GetMessage(), *error_sink_, MakeContext(location));
-      retirement.poisoned_ = true;
+      Quarantine(retirement);
     } catch (const std::exception &error) {
       ReportError(ErrorCode::INTERNAL, error.what(), *error_sink_, MakeContext(location));
-      retirement.poisoned_ = true;
+      Quarantine(retirement);
     } catch (...) {
       ReportError(ErrorCode::INTERNAL, "unknown failure while retiring a pinned host allocation", *error_sink_,
                   MakeContext(location));
-      retirement.poisoned_ = true;
+      Quarantine(retirement);
     }
 
-    if (retirement.poisoned_) {
-      status_.store(PinnedAllocatorStatus::FAILED, std::memory_order_release);
-    }
     Enqueue(std::move(retirement));
   }
 
@@ -344,6 +341,8 @@ class PinnedAllocatorImpl final {
         .cache_hit_count_ = cache_hit_count_.load(std::memory_order_relaxed),
         .retirement_count_ = retirement_count_.load(std::memory_order_relaxed),
         .pending_retirement_count_ = pending_retirement_count_.load(std::memory_order_relaxed),
+        .quarantined_retirement_count_ = quarantined_retirement_count_.load(std::memory_order_relaxed),
+        .quarantined_bytes_ = quarantined_bytes_.load(std::memory_order_relaxed),
         .outstanding_buffer_count_ = outstanding_buffer_count_.load(std::memory_order_relaxed),
     };
   }
@@ -422,6 +421,15 @@ class PinnedAllocatorImpl final {
     retirements_.push_back(std::move(retirement));
     pending_retirement_count_.fetch_add(1, std::memory_order_relaxed);
     retirement_count_.fetch_add(1, std::memory_order_relaxed);
+  }
+
+  void Quarantine(PinnedRetirement &retirement) noexcept {
+    if (!retirement.poisoned_) {
+      retirement.poisoned_ = true;
+      quarantined_retirement_count_.fetch_add(1, std::memory_order_relaxed);
+      quarantined_bytes_.fetch_add(retirement.allocation_.capacity_bytes_, std::memory_order_relaxed);
+    }
+    status_.store(PinnedAllocatorStatus::FAILED, std::memory_order_release);
   }
 
   [[nodiscard]] auto TakeCached(size_t capacity_bytes) -> std::optional<PinnedAllocation> {
@@ -528,8 +536,7 @@ class PinnedAllocatorImpl final {
       CleanupDeviceGuard device_guard{stream->GetDevice(), *error_sink_, context, "query pinned-buffer retirement",
                                       "restore after pinned-buffer retirement query"};
       if (!device_guard) {
-        retirement.poisoned_ = true;
-        status_.store(PinnedAllocatorStatus::FAILED, std::memory_order_release);
+        Quarantine(retirement);
         return false;
       }
       const auto status = GetCudaApi().query_event_(retirement.events_[index].GetNative());
@@ -539,8 +546,7 @@ class PinnedAllocatorImpl final {
       if (status != cudaSuccess) {
         TryCuda(status, "cudaEventQuery", "pinned-buffer retirement", *error_sink_, context);
         retirement.events_[index].Discard();
-        retirement.poisoned_ = true;
-        status_.store(PinnedAllocatorStatus::FAILED, std::memory_order_release);
+        Quarantine(retirement);
         return false;
       }
     }
@@ -561,8 +567,7 @@ class PinnedAllocatorImpl final {
           continue;
         }
         if (!CacheOrFreeNoexcept(retirements_[index].allocation_, retirements_[index].location_)) {
-          retirements_[index].poisoned_ = true;
-          status_.store(PinnedAllocatorStatus::FAILED, std::memory_order_release);
+          Quarantine(retirements_[index]);
           index++;
           continue;
         }
@@ -613,6 +618,10 @@ class PinnedAllocatorImpl final {
       host_free_count_.fetch_add(1, std::memory_order_relaxed);
       pending_bytes_.fetch_sub(allocation.capacity_bytes_, std::memory_order_relaxed);
       ReleaseInUse(allocation.capacity_bytes_);
+      if (retirement.poisoned_) {
+        quarantined_retirement_count_.fetch_sub(1, std::memory_order_relaxed);
+        quarantined_bytes_.fetch_sub(allocation.capacity_bytes_, std::memory_order_relaxed);
+      }
       retirements_.pop_back();
       pending_retirement_count_.fetch_sub(1, std::memory_order_relaxed);
     }
@@ -674,6 +683,8 @@ class PinnedAllocatorImpl final {
   std::atomic<uint64_t> cache_hit_count_{0};
   std::atomic<uint64_t> retirement_count_{0};
   std::atomic<uint64_t> pending_retirement_count_{0};
+  std::atomic<uint64_t> quarantined_retirement_count_{0};
+  std::atomic<uint64_t> quarantined_bytes_{0};
   std::atomic<uint64_t> outstanding_buffer_count_{0};
 
   std::mutex retirement_latch_;
@@ -698,9 +709,12 @@ auto PinnedBlock::GetSizeBytes() const noexcept -> size_t { return size_bytes_; 
 
 void PinnedBlock::RecordUsage(const Stream &stream, std::source_location location) {
   const auto stream_state = StreamAccess::GetState(stream);
+  const auto stream_device = stream_state->GetDevice();
   const auto stream_id = stream_state->GetId();
   std::scoped_lock lock{usage_latch_};
-  if (std::ranges::any_of(streams_, [stream_id](const auto &recorded) { return recorded->GetId() == stream_id; })) {
+  if (std::ranges::any_of(streams_, [stream_device, stream_id](const auto &recorded) {
+        return recorded->GetDevice() == stream_device && recorded->GetId() == stream_id;
+      })) {
     return;
   }
   const auto required = CheckedAdd(streams_.size(), size_t{1}, "pinned-buffer stream count", location);

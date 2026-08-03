@@ -28,28 +28,30 @@ constexpr uint64_t TARGET_BLOCKS_PER_MULTIPROCESSOR = 4;
 constexpr uint64_t WARPS_PER_BLOCK = ROWWISE_THREADS_PER_BLOCK / 32;
 constexpr uint64_t MAXIMUM_LAUNCH_BLOCKS = 65535;
 
-[[nodiscard]] auto GetPartialCount(uint64_t group_count, uint64_t reduction_count,
-                                   const DeviceProperties &properties) noexcept -> uint32_t {
+[[nodiscard]] auto GetPartialCount(uint64_t group_count, uint64_t reduction_count, const DeviceProperties &properties,
+                                   std::source_location location) -> uint32_t {
   if (group_count == 0 || reduction_count <= TARGET_VALUES_PER_PARTIAL) {
     return 1;
   }
   const auto useful_partials =
       (reduction_count / TARGET_VALUES_PER_PARTIAL) + (reduction_count % TARGET_VALUES_PER_PARTIAL != 0 ? 1 : 0);
-  const auto target_blocks = static_cast<uint64_t>(properties.multiprocessor_count_) * TARGET_BLOCKS_PER_MULTIPROCESSOR;
+  const auto target_blocks = CheckedMultiply(static_cast<uint64_t>(properties.multiprocessor_count_),
+                                             TARGET_BLOCKS_PER_MULTIPROCESSOR, "row-wise target block count", location);
   const auto occupancy_partials = (target_blocks / group_count) + (target_blocks % group_count != 0 ? 1 : 0);
   return static_cast<uint32_t>(std::max(
       uint64_t{1}, std::min({useful_partials, occupancy_partials, static_cast<uint64_t>(MAXIMUM_PARTIALS_PER_GROUP)})));
 }
 
 [[nodiscard]] auto GetLaunchBlockCount(RowwisePath path, uint64_t group_count, uint32_t partial_count,
-                                       const DeviceProperties &properties) noexcept -> uint32_t {
+                                       const DeviceProperties &properties, std::source_location location) -> uint32_t {
   auto tasks = group_count;
   if (path == RowwisePath::WARP) {
     tasks = (group_count / WARPS_PER_BLOCK) + (group_count % WARPS_PER_BLOCK != 0 ? 1 : 0);
   } else if (path == RowwisePath::TWO_STAGE) {
-    tasks = group_count * partial_count;
+    tasks = CheckedMultiply(group_count, static_cast<uint64_t>(partial_count), "row-wise task count", location);
   }
-  const auto occupancy = static_cast<uint64_t>(properties.multiprocessor_count_) * TARGET_BLOCKS_PER_MULTIPROCESSOR;
+  const auto occupancy = CheckedMultiply(static_cast<uint64_t>(properties.multiprocessor_count_),
+                                         TARGET_BLOCKS_PER_MULTIPROCESSOR, "row-wise occupancy block count", location);
   return static_cast<uint32_t>(
       std::min({std::max(uint64_t{1}, tasks), std::max(uint64_t{1}, occupancy), MAXIMUM_LAUNCH_BLOCKS}));
 }
@@ -208,7 +210,7 @@ auto BuildRowwisePlan(Tensor &output, const Tensor &input, std::span<const size_
   parameters.contiguous_output_reduction_ =
       IsContiguousReduction(output.GetShape(), output.GetStrides(), axes, output_element_size, location);
 
-  parameters.partial_count_ = GetPartialCount(group_count, reduction_count, properties);
+  parameters.partial_count_ = GetPartialCount(group_count, reduction_count, properties, location);
   if (reduction_count <= 32) {
     plan.path_ = RowwisePath::WARP;
   } else if (parameters.partial_count_ > 1) {
@@ -221,7 +223,8 @@ auto BuildRowwisePlan(Tensor &output, const Tensor &input, std::span<const size_
                                           "row-wise partial count", location);
     plan.scratch_bytes_ = CheckedBytes(partials, accumulator_size, location);
   }
-  plan.launch_block_count_ = GetLaunchBlockCount(plan.path_, group_count, parameters.partial_count_, properties);
+  plan.launch_block_count_ =
+      GetLaunchBlockCount(plan.path_, group_count, parameters.partial_count_, properties, location);
   plan.index_width_ = CanUse32BitIndexing(parameters) ? IndexWidth::UINT32 : IndexWidth::UINT64;
   return plan;
 }

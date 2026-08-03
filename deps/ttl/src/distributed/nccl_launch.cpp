@@ -111,6 +111,7 @@ void SubmitNcclKernel(ExecutionContext &context, NcclCommunicator &communicator,
     launch.Finish();
   } catch (...) {
     launch_error = std::current_exception();
+    state->MarkFailed();
   }
   try {
     const auto statuses = std::span<const ncclResult_t>{&submission_status, 1};
@@ -194,15 +195,20 @@ void SubmitNcclKernelsLocal(std::span<const LocalNcclKernelCall> calls, std::str
 
   const auto end_status = internal::GetNcclApi().group_end_();
   std::exception_ptr launch_error;
+  auto finish_failed = false;
   for (auto &launch : std::views::reverse(launches)) {
     try {
       launch->Finish();
     } catch (...) {
+      finish_failed = true;
       if (launch_error == nullptr) {
         launch_error = std::current_exception();
       }
     }
     launch.reset();
+  }
+  if (finish_failed) {
+    state->MarkFailed();
   }
   try {
     state->CheckGroupedSubmission(lease.GetRanks(), statuses, end_status, operation, location);

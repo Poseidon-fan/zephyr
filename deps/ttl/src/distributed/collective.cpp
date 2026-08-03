@@ -250,8 +250,9 @@ void ValidateCall(CollectiveKind kind, ExecutionContext &context, Tensor &output
                                          location);
 }
 
-void CompleteCall(PreparedCall &call, std::source_location location) {
-  internal::CompleteCollectiveCall(call, location);
+void CompleteCall(PreparedCall &call, const std::shared_ptr<internal::CommunicatorGroupState> &state,
+                  std::source_location location) {
+  internal::CompleteCollectiveCallOrFail(call, state, location);
 }
 
 void RecordCall(internal::OpGuard &guard, CollectiveKind kind, PreparedCall &call, size_t rank, size_t root) {
@@ -427,7 +428,7 @@ void SubmitRank(CollectiveKind kind, ExecutionContext &context, Tensor &output, 
     const auto end_status = UsesPointToPoint(kind) ? internal::GetNcclApi().group_end_() : ncclSuccess;
     state->CheckGroupedSubmission(lease.GetRanks(), statuses, end_status, GetCollectiveName(kind), location);
   }
-  CompleteCall(call, location);
+  CompleteCall(call, state, location);
 }
 
 [[nodiscard]] auto ValidateLocalCalls(CollectiveKind kind, std::span<const LocalCollectiveCall> calls,
@@ -534,7 +535,7 @@ void SubmitLocal(CollectiveKind kind, std::span<const LocalCollectiveCall> calls
   }
 
   for (auto &call : prepared) {
-    CompleteCall(call, location);
+    CompleteCall(call, state, location);
   }
 }
 

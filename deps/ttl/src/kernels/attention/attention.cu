@@ -10,6 +10,7 @@
 #include <math_constants.h>
 
 #include "ttl/common/error.hpp"
+#include "ttl/internal/common/checked_math.hpp"
 #include "ttl/internal/kernels/elementwise/elementwise_math.cuh"
 #include "ttl/internal/runtime/library/cuda_dtype.hpp"
 #include "ttl/tensor/dtype.hpp"
@@ -64,8 +65,7 @@ __global__ void SdpaKernel(SdpaParameters parameters) {
   __shared__ bool process_score;
 
   const auto value_tiles = (parameters.value_dimension_ + block_size - 1U) / block_size;
-  const auto row_count = parameters.batch_size_ * parameters.query_head_count_ * parameters.query_length_;
-  const auto task_count = row_count * value_tiles;
+  const auto task_count = parameters.task_count_;
   for (auto task = static_cast<uint64_t>(blockIdx.x); task < task_count; task += gridDim.x) {
     const auto row = task / value_tiles;
     const auto value_tile = task % value_tiles;
@@ -168,11 +168,19 @@ __global__ void SdpaKernel(SdpaParameters parameters) {
 }
 
 template <CudaStorageType T, uint32_t block_size>
-void LaunchTyped(cudaStream_t stream, const SdpaParameters &parameters) {
-  const auto value_tiles = (parameters.value_dimension_ + block_size - 1U) / block_size;
-  const auto tasks = parameters.batch_size_ * parameters.query_head_count_ * parameters.query_length_ * value_tiles;
+void LaunchTyped(cudaStream_t stream, const SdpaParameters &parameters, std::source_location location) {
+  const auto value_tiles =
+      internal::CeilDivide(internal::CheckedAdd(parameters.value_dimension_, static_cast<uint64_t>(block_size - 1),
+                                                "SDPA value tile extent", location),
+                           static_cast<uint64_t>(block_size), "SDPA value tile count", location);
+  const auto row_count = internal::CheckedMultiply(
+      internal::CheckedMultiply(parameters.batch_size_, parameters.query_head_count_, "SDPA row count", location),
+      parameters.query_length_, "SDPA row count", location);
+  auto launch_parameters = parameters;
+  launch_parameters.task_count_ = internal::CheckedMultiply(row_count, value_tiles, "SDPA task count", location);
+  const auto tasks = launch_parameters.task_count_;
   const auto blocks = static_cast<uint32_t>(tasks < MAXIMUM_SDPA_BLOCKS ? tasks : MAXIMUM_SDPA_BLOCKS);
-  SdpaKernel<T, block_size><<<blocks, block_size, 0, stream>>>(parameters);
+  SdpaKernel<T, block_size><<<blocks, block_size, 0, stream>>>(launch_parameters);
 }
 
 }  // namespace
@@ -187,9 +195,9 @@ void LaunchSdpa(cudaStream_t stream, DType dtype, const SdpaParameters &paramete
       dtype, "ScaledDotProductAttentionOut",
       [&]<CudaStorageType T>(std::type_identity<T>) {
         if (parameters.head_dimension_ <= 128 && parameters.value_dimension_ <= 128) {
-          LaunchTyped<T, 128>(stream, parameters);
+          LaunchTyped<T, 128>(stream, parameters, location);
         } else {
-          LaunchTyped<T, 256>(stream, parameters);
+          LaunchTyped<T, 256>(stream, parameters, location);
         }
       },
       location);

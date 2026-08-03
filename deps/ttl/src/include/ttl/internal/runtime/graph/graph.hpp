@@ -115,6 +115,8 @@ class CapturedGraphState final {
   [[nodiscard]] auto GetName() const noexcept -> std::string_view;
 
  private:
+  void FailLaunchNoexcept(ExecutionContextImpl &context) noexcept;
+
   Device device_;
   uint64_t stream_id_;
   cudaGraph_t graph_;
@@ -129,6 +131,7 @@ class CapturedGraphState final {
   size_t node_count_;
   std::source_location location_;
   std::atomic<uint64_t> launch_count_{0};
+  std::atomic<bool> failed_{false};
 };
 
 /** Return the active capture state or null when the context is executing eagerly. */

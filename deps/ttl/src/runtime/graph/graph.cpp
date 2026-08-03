@@ -460,9 +460,20 @@ CapturedGraphState::~CapturedGraphState() noexcept {
   runtime_state_->UnregisterGraph();
 }
 
+void CapturedGraphState::FailLaunchNoexcept(ExecutionContextImpl &context) noexcept {
+  failed_.store(true, std::memory_order_release);
+  context.status_.store(ExecutionContextStatus::FAILED, std::memory_order_release);
+  for (const auto &communicator : communicators_) {
+    communicator->MarkFailed();
+  }
+}
+
 void CapturedGraphState::Launch(ExecutionContext &context, std::source_location location) {
   ContextUseGuard use_guard{context, ContextUseMode::SUBMIT, location};
   auto &impl = ContextAccess::GetImpl(context, location);
+  if (failed_.load(std::memory_order_acquire)) {
+    throw CaptureError("captured CUDA graph is in a failed state and cannot be replayed", location);
+  }
   if (impl.status_.load(std::memory_order_acquire) != ExecutionContextStatus::READY) {
     throw CaptureError("captured graph launch requires a ready execution context", location);
   }
@@ -481,8 +492,13 @@ void CapturedGraphState::Launch(ExecutionContext &context, std::source_location 
   for (const auto &storage : storage_) {
     storage->RecordUsage(context.GetStream());
   }
-  CheckCuda(GetCudaApi().launch_graph_(executable_, primary_stream_->GetNative()), "cudaGraphLaunch", location);
-  CheckCuda(GetCudaApi().get_last_error_(), "cudaGraphLaunch", location);
+  try {
+    CheckCuda(GetCudaApi().launch_graph_(executable_, primary_stream_->GetNative()), "cudaGraphLaunch", location);
+    CheckCuda(GetCudaApi().get_last_error_(), "cudaGraphLaunch", location);
+  } catch (...) {
+    FailLaunchNoexcept(impl);
+    throw;
+  }
   launch_count_.fetch_add(1, std::memory_order_relaxed);
 }
 

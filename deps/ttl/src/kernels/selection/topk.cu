@@ -15,6 +15,7 @@
 #include <cub/iterator/transform_input_iterator.cuh>
 
 #include "ttl/common/error.hpp"
+#include "ttl/internal/common/checked_math.hpp"
 #include "ttl/internal/kernels/elementwise/elementwise_math.cuh"
 #include "ttl/internal/runtime/cuda_check.hpp"
 #include "ttl/internal/runtime/library/cuda_dtype.hpp"
@@ -153,7 +154,7 @@ __global__ void SmallTopKKernel(TopKParameters parameters) {
 template <CudaStorageType T>
 __global__ void InitializeSortInputKernel(TopKParameters parameters, uint64_t *keys, int64_t *indices) {
   auto linear_index = (static_cast<uint64_t>(blockIdx.x) * blockDim.x) + threadIdx.x;
-  const auto num_items = parameters.slice_count_ * parameters.axis_size_;
+  const auto num_items = parameters.sort_item_count_;
   const auto step = static_cast<uint64_t>(gridDim.x) * blockDim.x;
   while (linear_index < num_items) {
     const auto slice = linear_index / parameters.axis_size_;
@@ -169,7 +170,7 @@ __global__ void InitializeSortInputKernel(TopKParameters parameters, uint64_t *k
 template <CudaStorageType T>
 __global__ void GatherSortedTopKKernel(TopKParameters parameters, const int64_t *sorted_indices) {
   auto linear_index = (static_cast<uint64_t>(blockIdx.x) * blockDim.x) + threadIdx.x;
-  const auto output_items = parameters.slice_count_ * parameters.k_;
+  const auto output_items = parameters.output_item_count_;
   const auto step = static_cast<uint64_t>(gridDim.x) * blockDim.x;
   while (linear_index < output_items) {
     const auto slice = linear_index / parameters.k_;
@@ -216,8 +217,9 @@ __global__ void SerialTopKKernel(TopKParameters parameters) {
   }
 }
 
-[[nodiscard]] auto GetBlockCount(uint64_t work_items) noexcept -> uint32_t {
-  const auto blocks = (work_items + TOPK_THREADS_PER_BLOCK - 1) / TOPK_THREADS_PER_BLOCK;
+[[nodiscard]] auto GetBlockCount(uint64_t work_items, std::source_location location) -> uint32_t {
+  const auto blocks =
+      CeilDivide(work_items, static_cast<uint64_t>(TOPK_THREADS_PER_BLOCK), "TopK block count", location);
   return static_cast<uint32_t>(blocks < MAXIMUM_TOPK_BLOCKS ? blocks : MAXIMUM_TOPK_BLOCKS);
 }
 
@@ -232,12 +234,17 @@ template <CudaStorageType T>
 void LaunchSortTyped(cudaStream_t stream, const TopKParameters &parameters, uint64_t *keys_input, uint64_t *keys_output,
                      int64_t *indices_input, int64_t *indices_output, void *workspace, size_t workspace_bytes,
                      std::source_location location) {
-  const auto num_items = parameters.slice_count_ * parameters.axis_size_;
-  InitializeSortInputKernel<T>
-      <<<GetBlockCount(num_items), TOPK_THREADS_PER_BLOCK, 0, stream>>>(parameters, keys_input, indices_input);
-  const auto narrowed_num_items = static_cast<int32_t>(num_items);
-  const auto narrowed_segments = static_cast<int32_t>(parameters.slice_count_);
-  const auto narrowed_axis_size = static_cast<int32_t>(parameters.axis_size_);
+  auto launch_parameters = parameters;
+  launch_parameters.sort_item_count_ =
+      CheckedMultiply(parameters.slice_count_, parameters.axis_size_, "TopK sort item count", location);
+  launch_parameters.output_item_count_ =
+      CheckedMultiply(parameters.slice_count_, parameters.k_, "TopK output item count", location);
+  const auto num_items = launch_parameters.sort_item_count_;
+  const auto narrowed_num_items = CheckedNarrow<int32_t>(num_items, "TopK item count", location);
+  const auto narrowed_segments = CheckedNarrow<int32_t>(parameters.slice_count_, "TopK segment count", location);
+  const auto narrowed_axis_size = CheckedNarrow<int32_t>(parameters.axis_size_, "TopK axis size", location);
+  InitializeSortInputKernel<T><<<GetBlockCount(num_items, location), TOPK_THREADS_PER_BLOCK, 0, stream>>>(
+      launch_parameters, keys_input, indices_input);
   const auto begin_offsets = MakeSegmentOffsetIterator(0, narrowed_axis_size);
   const auto end_offsets = MakeSegmentOffsetIterator(1, narrowed_axis_size);
   auto required_bytes = workspace_bytes;
@@ -250,14 +257,15 @@ void LaunchSortTyped(cudaStream_t stream, const TopKParameters &parameters, uint
                                                      indices_output, narrowed_num_items, narrowed_segments,
                                                      begin_offsets, end_offsets, 0, sizeof(uint64_t) * 8, stream);
   CheckCuda(status, "cub::DeviceSegmentedRadixSort::SortPairs", location);
-  const auto output_items = parameters.slice_count_ * parameters.k_;
+  const auto output_items = launch_parameters.output_item_count_;
   GatherSortedTopKKernel<T>
-      <<<GetBlockCount(output_items), TOPK_THREADS_PER_BLOCK, 0, stream>>>(parameters, indices_output);
+      <<<GetBlockCount(output_items, location), TOPK_THREADS_PER_BLOCK, 0, stream>>>(launch_parameters, indices_output);
 }
 
 template <CudaStorageType T>
-void LaunchSerialTyped(cudaStream_t stream, const TopKParameters &parameters) {
-  SerialTopKKernel<T><<<GetBlockCount(parameters.slice_count_), TOPK_THREADS_PER_BLOCK, 0, stream>>>(parameters);
+void LaunchSerialTyped(cudaStream_t stream, const TopKParameters &parameters, std::source_location location) {
+  SerialTopKKernel<T>
+      <<<GetBlockCount(parameters.slice_count_, location), TOPK_THREADS_PER_BLOCK, 0, stream>>>(parameters);
 }
 
 }  // namespace
@@ -298,7 +306,8 @@ void LaunchTopKSort(cudaStream_t stream, DType dtype, const TopKParameters &para
                     uint64_t *keys_output, int64_t *indices_input, int64_t *indices_output, void *workspace,
                     size_t workspace_bytes, std::source_location location) {
   if (stream == nullptr || keys_input == nullptr || keys_output == nullptr || indices_input == nullptr ||
-      indices_output == nullptr || workspace == nullptr || workspace_bytes == 0 || parameters.k_ == 0) {
+      indices_output == nullptr || workspace == nullptr || workspace_bytes == 0 || parameters.slice_count_ == 0 ||
+      parameters.axis_size_ == 0 || parameters.k_ == 0 || parameters.k_ > parameters.axis_size_) {
     throw InternalError("invalid sorted TopK launch parameters", location);
   }
   DispatchCudaNumericDType(
@@ -316,8 +325,8 @@ void LaunchTopKSerial(cudaStream_t stream, DType dtype, const TopKParameters &pa
     throw InternalError("invalid serial TopK launch parameters", location);
   }
   DispatchCudaNumericDType(
-      dtype, "TopKOut", [&]<CudaStorageType T>(std::type_identity<T>) { LaunchSerialTyped<T>(stream, parameters); },
-      location);
+      dtype, "TopKOut",
+      [&]<CudaStorageType T>(std::type_identity<T>) { LaunchSerialTyped<T>(stream, parameters, location); }, location);
 }
 
 }  // namespace ttl::internal

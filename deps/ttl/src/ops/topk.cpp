@@ -81,6 +81,8 @@ void ValidateTopKOutputs(Tensor &values, Tensor &indices, const Tensor &input, c
       .slice_count_ = static_cast<uint64_t>(shape_info.slice_count_),
       .axis_size_ = static_cast<uint64_t>(shape_info.axis_size_),
       .k_ = static_cast<uint64_t>(options.k_),
+      .sort_item_count_ = 0,
+      .output_item_count_ = 0,
       .rank_ = static_cast<uint8_t>(input.GetRank()),
       .axis_ = static_cast<uint8_t>(shape_info.axis_),
       .largest_ = options.largest_,
