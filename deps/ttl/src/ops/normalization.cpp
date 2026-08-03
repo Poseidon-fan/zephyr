@@ -12,19 +12,19 @@
 #include <utility>
 #include <vector>
 
-#include "ttl/dtype.hpp"
-#include "ttl/error.hpp"
-#include "ttl/execution_context.hpp"
-#include "ttl/internal/checked_math.hpp"
-#include "ttl/internal/elementwise_iterator.hpp"
-#include "ttl/internal/execution_context.hpp"
-#include "ttl/internal/normalization.hpp"
-#include "ttl/internal/op_guard.hpp"
-#include "ttl/internal/rowwise.hpp"
-#include "ttl/internal/scratch_arena.hpp"
-#include "ttl/internal/tensor_impl.hpp"
-#include "ttl/shape.hpp"
-#include "ttl/tensor.hpp"
+#include "ttl/common/error.hpp"
+#include "ttl/internal/common/checked_math.hpp"
+#include "ttl/internal/ops/elementwise_iterator.hpp"
+#include "ttl/internal/ops/normalization.hpp"
+#include "ttl/internal/ops/rowwise.hpp"
+#include "ttl/internal/runtime/execution/execution_context.hpp"
+#include "ttl/internal/runtime/execution/op_guard.hpp"
+#include "ttl/internal/runtime/memory/scratch_arena.hpp"
+#include "ttl/internal/tensor/tensor_impl.hpp"
+#include "ttl/runtime/execution_context.hpp"
+#include "ttl/tensor/dtype.hpp"
+#include "ttl/tensor/shape.hpp"
+#include "ttl/tensor/tensor.hpp"
 
 namespace ttl {
 namespace {

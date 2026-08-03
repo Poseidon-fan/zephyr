@@ -1,0 +1,119 @@
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <utility>
+#include <vector>
+
+#include <gtest/gtest.h>
+
+#include "support/tensor_test_utils.hpp"
+#include "ttl/common/error.hpp"
+#include "ttl/ops/creation.hpp"
+#include "ttl/runtime/device.hpp"
+#include "ttl/runtime/event.hpp"
+#include "ttl/runtime/generator.hpp"
+#include "ttl/runtime/runtime.hpp"
+#include "ttl/runtime/stream.hpp"
+#include "ttl/tensor/layout.hpp"
+#include "ttl/tensor/shape.hpp"
+#include "ttl/tensor/tensor.hpp"
+
+namespace ttl {
+
+TEST(RuntimeTest, ValidatesOptionsBeforeCreatingNativeResources) {
+  EXPECT_THROW(static_cast<void>(Runtime(RuntimeOptions{})), InvalidArgumentError);
+  auto sink = std::make_shared<test::RecordingErrorSink>();
+  EXPECT_THROW(static_cast<void>(Runtime(test::MakeRuntimeOptions({}, sink))), InvalidArgumentError);
+  EXPECT_THROW(static_cast<void>(Runtime(test::MakeRuntimeOptions({Device{0}, Device{0}}, sink))),
+               InvalidArgumentError);
+}
+
+TEST(RuntimeTest, OwnsDeviceContextAndRequiresExplicitCleanShutdown) {
+  test::RuntimeSession session;
+  const auto &properties = session.GetRuntime().GetDeviceProperties(Device{0});
+  EXPECT_EQ(properties.device_, Device{0});
+  EXPECT_GE(properties.compute_capability_.GetSmVersion(), 80);
+  EXPECT_EQ(session.GetRuntime().GetStatus(), RuntimeStatus::RUNNING);
+  EXPECT_TRUE(session.GetRuntime().CanAccessPeer(Device{0}, Device{0}));
+  session.Close();
+  EXPECT_EQ(session.GetRuntime().GetStatus(), RuntimeStatus::CLOSED);
+  EXPECT_TRUE(session.GetErrorSink()->GetRecords().empty());
+}
+
+TEST(TensorTest, AllocatesCopiesAndClassifiesViews) {
+  test::RuntimeSession session;
+  auto &context = session.GetContext();
+  const std::vector<int32_t> host{0, 1, 2, 3, 4, 5};
+  auto tensor = test::Upload(context, Shape{2, 3}, host);
+  EXPECT_EQ(test::Download<int32_t>(context, tensor), host);
+  EXPECT_TRUE(tensor.IsContiguous());
+  EXPECT_TRUE(tensor.IsNonOverlappingDense());
+
+  auto transposed = Transpose(tensor, 0, 1);
+  EXPECT_FALSE(transposed.IsContiguous());
+  EXPECT_TRUE(transposed.IsNonOverlappingDense());
+  EXPECT_EQ(ClassifyAlias(tensor, transposed), AliasKind::MAY_OVERLAP);
+
+  auto first_row = Narrow(tensor, 0, 0, 1);
+  auto second_row = Narrow(tensor, 0, 1, 1);
+  EXPECT_EQ(ClassifyAlias(first_row, second_row), AliasKind::DISJOINT);
+  EXPECT_EQ(ClassifyAlias(tensor, tensor), AliasKind::EXACT);
+}
+
+TEST(TensorTest, HandlesScalarAndEmptyStorage) {
+  test::RuntimeSession session;
+  auto &context = session.GetContext();
+  auto scalar = Full(context, Shape{}, Scalar{int64_t{7}}, DType::INT64);
+  EXPECT_EQ(test::Download<int64_t>(context, scalar), (std::vector<int64_t>{7}));
+
+  auto empty = Empty(context, Shape{2, 0, 4}, DType::FLOAT32);
+  EXPECT_EQ(empty.GetNumElements(), 0);
+  EXPECT_EQ(empty.GetData<float>(), nullptr);
+  EXPECT_TRUE(test::Download<float>(context, empty).empty());
+}
+
+TEST(RuntimeHandleTest, MovedFromHandlesFailDeterministically) {
+  auto sink = std::make_shared<test::RecordingErrorSink>();
+  Runtime runtime{test::MakeRuntimeOptions({Device{0}}, sink)};
+  {
+    auto context = runtime.CreateExecutionContext(Device{0});
+
+    auto tensor = Empty(context, Shape{1}, DType::FLOAT32);
+    auto moved_tensor = std::move(tensor);
+    // NOLINTNEXTLINE(bugprone-use-after-move, clang-analyzer-cplusplus.Move): moved-from is the contract under test.
+    EXPECT_THROW(static_cast<void>(tensor.GetDType()), InvalidArgumentError);
+
+    auto stream = context.GetStream();
+    auto moved_stream = std::move(stream);
+    // NOLINTNEXTLINE(bugprone-use-after-move, clang-analyzer-cplusplus.Move): moved-from is the contract under test.
+    EXPECT_THROW(static_cast<void>(stream.GetDevice()), InvalidArgumentError);
+
+    auto event = context.RecordEvent();
+    auto moved_event = std::move(event);
+    // NOLINTNEXTLINE(bugprone-use-after-move, clang-analyzer-cplusplus.Move): moved-from is the contract under test.
+    EXPECT_THROW(static_cast<void>(event.Query()), InvalidArgumentError);
+    // NOLINTNEXTLINE(bugprone-use-after-move, clang-analyzer-cplusplus.Move): moved-from is the contract under test.
+    EXPECT_THROW(context.Wait(event), InvalidArgumentError);
+
+    Generator generator{context, 7};
+    auto moved_generator = std::move(generator);
+    // NOLINTNEXTLINE(bugprone-use-after-move, clang-analyzer-cplusplus.Move): moved-from is the contract under test.
+    EXPECT_THROW(static_cast<void>(generator.GetSeed()), InvalidArgumentError);
+
+    auto moved_context = std::move(context);
+    // NOLINTNEXTLINE(bugprone-use-after-move, clang-analyzer-cplusplus.Move): moved-from is the contract under test.
+    EXPECT_THROW(static_cast<void>(context.GetDevice()), InvalidArgumentError);
+    // NOLINTNEXTLINE(bugprone-use-after-move, clang-analyzer-cplusplus.Move): moved-from is the contract under test.
+    EXPECT_THROW(context.Synchronize(), InvalidArgumentError);
+    moved_context.Synchronize();
+
+    EXPECT_EQ(moved_tensor.GetDType(), DType::FLOAT32);
+    EXPECT_EQ(moved_stream.GetDevice(), Device{0});
+    EXPECT_EQ(moved_event.GetDevice(), Device{0});
+    EXPECT_EQ(moved_generator.GetSeed(), 7);
+  }
+  runtime.Shutdown();
+  EXPECT_TRUE(sink->GetRecords().empty());
+}
+
+}  // namespace ttl

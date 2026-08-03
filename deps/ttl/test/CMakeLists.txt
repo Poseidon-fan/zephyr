@@ -1,5 +1,7 @@
 include(GoogleTest)
 
+file(GLOB_RECURSE TTL_PUBLIC_HEADERS CONFIGURE_DEPENDS "${CMAKE_CURRENT_LIST_DIR}/../include/ttl/*.hpp")
+
 file(
     GLOB_RECURSE TTL_TEST_SOURCES
     CONFIGURE_DEPENDS
@@ -8,6 +10,23 @@ file(
 )
 
 add_custom_target(ttl_build_tests)
+add_custom_target(ttl_public_headers)
+add_dependencies(ttl_build_tests ttl_public_headers)
+
+foreach(ttl_public_header IN LISTS TTL_PUBLIC_HEADERS)
+    file(RELATIVE_PATH ttl_public_header_relative "${CMAKE_CURRENT_LIST_DIR}/../include" "${ttl_public_header}")
+    string(REPLACE "/" "_" ttl_public_header_target "${ttl_public_header_relative}")
+    string(REPLACE ".hpp" "" ttl_public_header_target "${ttl_public_header_target}")
+    set(ttl_public_header_target "header_${ttl_public_header_target}")
+    set(ttl_public_header_source "${CMAKE_CURRENT_BINARY_DIR}/header_check/${ttl_public_header_target}.cpp")
+    file(GENERATE OUTPUT "${ttl_public_header_source}" CONTENT "#include <${ttl_public_header_relative}>\n")
+
+    add_library(${ttl_public_header_target} OBJECT EXCLUDE_FROM_ALL "${ttl_public_header_source}")
+    add_dependencies(ttl_public_headers ${ttl_public_header_target})
+    target_compile_features(${ttl_public_header_target} PRIVATE cxx_std_20)
+    ttl_enable_warnings(${ttl_public_header_target})
+    target_link_libraries(${ttl_public_header_target} PRIVATE ttl::ttl)
+endforeach()
 
 add_custom_target(
     ttl_check_tests
@@ -32,7 +51,12 @@ foreach(ttl_test_source IN LISTS TTL_TEST_SOURCES)
     target_compile_features(${ttl_test_name} PRIVATE cxx_std_20 cuda_std_20)
     ttl_enable_warnings(${ttl_test_name})
     target_link_libraries(${ttl_test_name} PRIVATE ttl::ttl GTest::gmock_main)
-    target_include_directories(${ttl_test_name} PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../src/include")
+    target_include_directories(
+        ${ttl_test_name}
+        PRIVATE
+            "${CMAKE_CURRENT_LIST_DIR}"
+            "${CMAKE_CURRENT_LIST_DIR}/../src/include"
+    )
 
     set_target_properties(
         ${ttl_test_name}

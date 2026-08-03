@@ -4,8 +4,8 @@
 #include <source_location>
 #include <vector>
 
-#include "ttl/execution_context.hpp"
-#include "ttl/tensor.hpp"
+#include "ttl/runtime/execution_context.hpp"
+#include "ttl/tensor/tensor.hpp"
 
 namespace ttl {
 

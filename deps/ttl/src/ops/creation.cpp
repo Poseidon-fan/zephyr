@@ -6,19 +6,19 @@
 #include <limits>
 #include <source_location>
 
-#include "ttl/dtype.hpp"
-#include "ttl/execution_context.hpp"
-#include "ttl/internal/checked_math.hpp"
-#include "ttl/internal/creation.hpp"
-#include "ttl/internal/cuda_api.hpp"
-#include "ttl/internal/cuda_check.hpp"
-#include "ttl/internal/elementwise_iterator.hpp"
-#include "ttl/internal/elementwise_launch.hpp"
-#include "ttl/internal/op_guard.hpp"
-#include "ttl/internal/tensor_impl.hpp"
-#include "ttl/scalar.hpp"
-#include "ttl/shape.hpp"
-#include "ttl/tensor.hpp"
+#include "ttl/internal/common/checked_math.hpp"
+#include "ttl/internal/ops/creation.hpp"
+#include "ttl/internal/ops/elementwise_iterator.hpp"
+#include "ttl/internal/ops/elementwise_launch.hpp"
+#include "ttl/internal/runtime/cuda_api.hpp"
+#include "ttl/internal/runtime/cuda_check.hpp"
+#include "ttl/internal/runtime/execution/op_guard.hpp"
+#include "ttl/internal/tensor/tensor_impl.hpp"
+#include "ttl/runtime/execution_context.hpp"
+#include "ttl/tensor/dtype.hpp"
+#include "ttl/tensor/scalar.hpp"
+#include "ttl/tensor/shape.hpp"
+#include "ttl/tensor/tensor.hpp"
 
 namespace ttl {
 namespace {

@@ -4,10 +4,10 @@
 #include <source_location>
 #include <span>
 
-#include "ttl/event.hpp"
-#include "ttl/execution_context.hpp"
-#include "ttl/pinned_buffer.hpp"
-#include "ttl/tensor.hpp"
+#include "ttl/runtime/event.hpp"
+#include "ttl/runtime/execution_context.hpp"
+#include "ttl/runtime/pinned_buffer.hpp"
+#include "ttl/tensor/tensor.hpp"
 
 namespace ttl {
 

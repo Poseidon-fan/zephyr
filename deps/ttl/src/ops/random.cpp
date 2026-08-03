@@ -11,23 +11,23 @@
 #include <string_view>
 #include <utility>
 
-#include "ttl/device.hpp"
-#include "ttl/dtype.hpp"
-#include "ttl/error.hpp"
-#include "ttl/execution_context.hpp"
-#include "ttl/generator.hpp"
-#include "ttl/internal/checked_math.hpp"
-#include "ttl/internal/device_allocator.hpp"
-#include "ttl/internal/elementwise_iterator.hpp"
-#include "ttl/internal/execution_context.hpp"
-#include "ttl/internal/op_guard.hpp"
-#include "ttl/internal/random.hpp"
-#include "ttl/internal/scratch_arena.hpp"
-#include "ttl/internal/storage.hpp"
-#include "ttl/internal/tensor_impl.hpp"
-#include "ttl/shape.hpp"
-#include "ttl/stream.hpp"
-#include "ttl/tensor.hpp"
+#include "ttl/common/error.hpp"
+#include "ttl/internal/common/checked_math.hpp"
+#include "ttl/internal/ops/elementwise_iterator.hpp"
+#include "ttl/internal/ops/random.hpp"
+#include "ttl/internal/runtime/execution/execution_context.hpp"
+#include "ttl/internal/runtime/execution/op_guard.hpp"
+#include "ttl/internal/runtime/memory/device_allocator.hpp"
+#include "ttl/internal/runtime/memory/scratch_arena.hpp"
+#include "ttl/internal/tensor/storage.hpp"
+#include "ttl/internal/tensor/tensor_impl.hpp"
+#include "ttl/runtime/device.hpp"
+#include "ttl/runtime/execution_context.hpp"
+#include "ttl/runtime/generator.hpp"
+#include "ttl/runtime/stream.hpp"
+#include "ttl/tensor/dtype.hpp"
+#include "ttl/tensor/shape.hpp"
+#include "ttl/tensor/tensor.hpp"
 
 namespace ttl::internal {
 
@@ -194,8 +194,11 @@ auto Generator::operator=(Generator &&) noexcept -> Generator & = default;
 
 Generator::~Generator() noexcept = default;
 
-auto Generator::GetSeed() const noexcept -> uint64_t {
-  return impl_ == nullptr ? uint64_t{0} : impl_->seed_.load(std::memory_order_acquire);
+auto Generator::GetSeed(std::source_location location) const -> uint64_t {
+  if (impl_ == nullptr) {
+    throw InvalidArgumentError("Generator is in a moved-from state", location);
+  }
+  return impl_->seed_.load(std::memory_order_acquire);
 }
 
 void Generator::SetSeed(ExecutionContext &context, uint64_t seed, std::source_location location) {

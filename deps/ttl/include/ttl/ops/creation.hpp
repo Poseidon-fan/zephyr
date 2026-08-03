@@ -2,11 +2,11 @@
 
 #include <source_location>
 
-#include "ttl/dtype.hpp"
-#include "ttl/execution_context.hpp"
-#include "ttl/scalar.hpp"
-#include "ttl/shape.hpp"
-#include "ttl/tensor.hpp"
+#include "ttl/runtime/execution_context.hpp"
+#include "ttl/tensor/dtype.hpp"
+#include "ttl/tensor/scalar.hpp"
+#include "ttl/tensor/shape.hpp"
+#include "ttl/tensor/tensor.hpp"
 
 namespace ttl {
 
