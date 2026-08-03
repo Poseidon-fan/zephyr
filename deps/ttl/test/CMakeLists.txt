@@ -29,21 +29,17 @@ foreach(ttl_test_source IN LISTS TTL_TEST_SOURCES)
     add_executable(${ttl_test_name} EXCLUDE_FROM_ALL "${ttl_test_source}")
     add_dependencies(ttl_build_tests ${ttl_test_name})
 
-    target_link_libraries(
-        ${ttl_test_name}
-        PRIVATE
-            ttl::ttl
-            zephyr::project_warnings
-            CUDA::cudart
-            GTest::gtest
-            GTest::gmock_main
-    )
+    target_compile_features(${ttl_test_name} PRIVATE cxx_std_20 cuda_std_20)
+    ttl_enable_warnings(${ttl_test_name})
+    target_link_libraries(${ttl_test_name} PRIVATE ttl::ttl GTest::gmock_main)
     target_include_directories(${ttl_test_name} PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../src/include")
 
     set_target_properties(
         ${ttl_test_name}
         PROPERTIES
-            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/test/ttl"
+            CXX_EXTENSIONS OFF
+            CUDA_EXTENSIONS OFF
+            RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}/test"
     )
 
     gtest_discover_tests(
