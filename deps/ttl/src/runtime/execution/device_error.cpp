@@ -91,6 +91,20 @@ namespace {
   return message;
 }
 
+[[nodiscard]] auto FormatExternalError(const DeviceErrorRecord &record) -> std::string {
+  std::string message{"external CUDA operation "};
+  message.append(std::to_string(record.operation_sequence_));
+  message.append(" reported device error code ");
+  message.append(std::to_string(record.code_));
+  message.append(" at linear index ");
+  message.append(std::to_string(record.linear_index_));
+  message.append(" with value bits ");
+  message.append(std::to_string(record.offending_value_bits_));
+  message.append(" and bound ");
+  message.append(std::to_string(record.bound_));
+  return message;
+}
+
 }  // namespace
 
 class PinnedDeviceErrorRecord final {
@@ -217,8 +231,14 @@ void DeviceErrorState::ConsumeAndReset(cudaStream_t stream, std::source_location
       throw DeviceError(FormatIndexError(record, source_dtype), location);
     case DeviceErrorCode::RNG_COUNTER_OVERFLOW:
       throw DeviceError(FormatRandomCounterError(record), location);
+    case DeviceErrorCode::INVALID_VALUE:
+    case DeviceErrorCode::USER_DEFINED:
+      throw DeviceError(FormatExternalError(record), location);
     case DeviceErrorCode::NONE:
       break;
+  }
+  if (record.code_ > static_cast<uint32_t>(DeviceErrorCode::USER_DEFINED)) {
+    throw DeviceError(FormatExternalError(record), location);
   }
   throw InternalError("device error record contains an invalid error code", location);
 }

@@ -7,6 +7,7 @@
 #include <type_traits>
 
 #include <cuda_runtime.h>
+#include <cuda/std/type_traits>
 
 #include "ttl/common/error.hpp"
 #include "ttl/internal/kernels/elementwise/elementwise_apply.cuh"
@@ -31,31 +32,54 @@ namespace {
 template <CudaStorageType T, UnaryElementwiseOp operation>
 struct UnaryOperation final {
   __device__ auto operator()(T input, int64_t /*index*/) const -> ElementwiseResult<T> {
-    const auto value = ToElementwiseFloat(input);
     if constexpr (operation == UnaryElementwiseOp::NEGATE) {
-      return {.value_ = FromElementwiseFloat<T>(-value)};
+      if constexpr (IsCudaFloatingType<T>()) {
+        return {.value_ = FromElementwiseFloat<T>(-ToElementwiseFloat(input))};
+      } else {
+        using Unsigned = cuda::std::make_unsigned_t<T>;
+        const auto bits = Unsigned{0} - static_cast<Unsigned>(input);
+        return {.value_ = __builtin_bit_cast(T, bits)};
+      }
     } else if constexpr (operation == UnaryElementwiseOp::ABS) {
-      return {.value_ = FromElementwiseFloat<T>(fabsf(value))};
+      if constexpr (IsCudaFloatingType<T>()) {
+        return {.value_ = FromElementwiseFloat<T>(fabsf(ToElementwiseFloat(input)))};
+      } else {
+        using Unsigned = cuda::std::make_unsigned_t<T>;
+        const auto bits = input < 0 ? Unsigned{0} - static_cast<Unsigned>(input) : static_cast<Unsigned>(input);
+        return {.value_ = __builtin_bit_cast(T, bits)};
+      }
+    } else if constexpr (operation == UnaryElementwiseOp::RELU && !IsCudaFloatingType<T>()) {
+      return {.value_ = input > 0 ? input : T{0}};
     } else if constexpr (operation == UnaryElementwiseOp::EXP) {
+      const auto value = ToElementwiseFloat(input);
       return {.value_ = FromElementwiseFloat<T>(expf(value))};
     } else if constexpr (operation == UnaryElementwiseOp::LOG) {
+      const auto value = ToElementwiseFloat(input);
       return {.value_ = FromElementwiseFloat<T>(logf(value))};
     } else if constexpr (operation == UnaryElementwiseOp::SQRT) {
+      const auto value = ToElementwiseFloat(input);
       return {.value_ = FromElementwiseFloat<T>(sqrtf(value))};
     } else if constexpr (operation == UnaryElementwiseOp::RSQRT) {
+      const auto value = ToElementwiseFloat(input);
       return {.value_ = FromElementwiseFloat<T>(rsqrtf(value))};
     } else if constexpr (operation == UnaryElementwiseOp::SIN) {
+      const auto value = ToElementwiseFloat(input);
       return {.value_ = FromElementwiseFloat<T>(sinf(value))};
     } else if constexpr (operation == UnaryElementwiseOp::COS) {
+      const auto value = ToElementwiseFloat(input);
       return {.value_ = FromElementwiseFloat<T>(cosf(value))};
     } else if constexpr (operation == UnaryElementwiseOp::TANH) {
+      const auto value = ToElementwiseFloat(input);
       return {.value_ = FromElementwiseFloat<T>(tanhf(value))};
     } else if constexpr (operation == UnaryElementwiseOp::SIGMOID) {
+      const auto value = ToElementwiseFloat(input);
       return {.value_ = FromElementwiseFloat<T>(StableSigmoid(value))};
     } else if constexpr (operation == UnaryElementwiseOp::RELU) {
+      const auto value = ToElementwiseFloat(input);
       return {.value_ = isnan(value) ? input : FromElementwiseFloat<T>(value > 0.0F ? value : 0.0F)};
     } else {
       static_assert(operation == UnaryElementwiseOp::SILU);
+      const auto value = ToElementwiseFloat(input);
       return {.value_ = FromElementwiseFloat<T>(value * StableSigmoid(value))};
     }
   }
@@ -150,6 +174,33 @@ void DispatchUnaryOperation(cudaStream_t stream, UnaryElementwiseOp operation, c
 }
 
 template <CudaStorageType T>
+void DispatchSignedUnaryOperation(cudaStream_t stream, UnaryElementwiseOp operation,
+                                  const ElementwiseIterator &iterator, std::source_location location) {
+  switch (operation) {
+    case UnaryElementwiseOp::NEGATE:
+      LaunchUnaryOperation<T, UnaryElementwiseOp::NEGATE>(stream, iterator, location);
+      return;
+    case UnaryElementwiseOp::ABS:
+      LaunchUnaryOperation<T, UnaryElementwiseOp::ABS>(stream, iterator, location);
+      return;
+    case UnaryElementwiseOp::RELU:
+      LaunchUnaryOperation<T, UnaryElementwiseOp::RELU>(stream, iterator, location);
+      return;
+    case UnaryElementwiseOp::EXP:
+    case UnaryElementwiseOp::LOG:
+    case UnaryElementwiseOp::SQRT:
+    case UnaryElementwiseOp::RSQRT:
+    case UnaryElementwiseOp::SIN:
+    case UnaryElementwiseOp::COS:
+    case UnaryElementwiseOp::TANH:
+    case UnaryElementwiseOp::SIGMOID:
+    case UnaryElementwiseOp::SILU:
+      throw InternalError("signed integer unary launch received a floating-point operation", location);
+  }
+  throw InternalError("invalid signed integer unary operation", location);
+}
+
+template <CudaStorageType T>
 void LaunchTypedGelu(cudaStream_t stream, GeluApproximation approximation, const ElementwiseIterator &iterator,
                      std::source_location location) {
   switch (approximation) {
@@ -194,8 +245,10 @@ void LaunchUnaryElementwise(cudaStream_t stream, DType dtype, UnaryElementwiseOp
   DispatchCudaDType(dtype, "unary elementwise", [&]<CudaStorageType T>(std::type_identity<T>) {
     if constexpr (IsCudaFloatingType<T>()) {
       DispatchUnaryOperation<T>(stream, operation, iterator, location);
+    } else if constexpr (IsCudaSignedIntegerType<T>()) {
+      DispatchSignedUnaryOperation<T>(stream, operation, iterator, location);
     } else {
-      throw InternalError("unary elementwise launch received a non-floating dtype", location);
+      throw InternalError("unary elementwise launch received an unsupported dtype", location);
     }
   });
 }

@@ -10,8 +10,11 @@
 
 #include "support/tensor_test_utils.hpp"
 #include "ttl/common/error.hpp"
+#include "ttl/runtime/device_error.cuh"
+#include "ttl/runtime/generator.hpp"
 #include "ttl/runtime/graph.hpp"
 #include "ttl/runtime/kernel_launch.hpp"
+#include "ttl/runtime/philox.cuh"
 #include "ttl/tensor/shape.hpp"
 #include "ttl/tensor/tensor.hpp"
 
@@ -32,6 +35,21 @@ __global__ void DelayedAddOneKernel(const float *input, float *output, size_t co
   const auto index = (static_cast<size_t>(blockIdx.x) * blockDim.x) + threadIdx.x;
   if (index < count) {
     output[index] = input[index] + 1.0F;
+  }
+}
+
+__global__ void ReportInvalidValueKernel(CudaDeviceErrorContext error_context) {
+  if (threadIdx.x == 0) {
+    ReportCudaDeviceError(error_context, CudaDeviceErrorCode::INVALID_VALUE, 7, 42, 11);
+  }
+}
+
+__global__ void WritePhiloxKernel(CudaPhiloxReservation reservation, int64_t *output) {
+  if (threadIdx.x == 0) {
+    const auto result = GenerateCudaPhilox(*reservation.base_counter_, reservation.seed_);
+    for (size_t index = 0; index < 4; ++index) {
+      output[index] = static_cast<int64_t>(result.values_[index]);
+    }
   }
 }
 
@@ -192,7 +210,7 @@ TEST(CudaKernelLaunchTest, RejectsInvalidWorkspaceAndCaptureOptions) {
                InvalidArgumentError);
 }
 
-TEST(CudaKernelLaunchTest, ClearsLaunchErrorBeforeTheNextSubmission) {
+TEST(CudaKernelLaunchTest, PoisonsContextAfterLaunchError) {
   test::RuntimeSession session;
   auto &context = session.GetContext();
   auto input = test::Upload(context, Shape{1}, std::vector<float>{4.0F});
@@ -207,8 +225,53 @@ TEST(CudaKernelLaunchTest, ClearsLaunchErrorBeforeTheNextSubmission) {
                                 }),
                CudaError);
 
+  EXPECT_THROW(SubmitAddOne(context, input, output, CudaCapturePolicy::FORBIDDEN), InvalidArgumentError);
+  context.Synchronize();
+}
+
+TEST(CudaKernelLaunchTest, ReportsExternalDeviceSemanticErrorsThroughContext) {
+  test::RuntimeSession session;
+  auto &context = session.GetContext();
+  const std::array<Tensor, 0> inputs{};
+  const std::array<Tensor *, 0> outputs{};
+
+  SubmitCudaKernel(context, "external semantic error", inputs, outputs, [&](CudaKernelLaunch &launch) {
+    const auto error_context = launch.GetDeviceErrorContext(DType::INT64, DType::INT64);
+    ReportInvalidValueKernel<<<1, 1, 0, launch.GetStream()>>>(error_context);
+  });
+  EXPECT_THROW(context.CheckAsyncErrors(), DeviceError);
+
+  auto input = test::Upload(context, Shape{1}, std::vector<float>{4.0F});
+  auto output = Empty(context, Shape{1}, DType::FLOAT32);
   SubmitAddOne(context, input, output, CudaCapturePolicy::FORBIDDEN);
   EXPECT_EQ(test::Download<float>(context, output), (std::vector<float>{5.0F}));
+}
+
+TEST(CudaKernelLaunchTest, ReservesGraphSafePhiloxBlocksForExternalKernel) {
+  test::RuntimeSession session;
+  auto &context = session.GetContext();
+  Generator generator{context, 1234};
+  auto first = Empty(context, Shape{4}, DType::INT64);
+  auto second = Empty(context, Shape{4}, DType::INT64);
+  const std::array<Tensor, 0> inputs{};
+
+  const auto submit = [&](Tensor &output) {
+    const std::array outputs{&output};
+    SubmitCudaKernel(context, "external Philox", inputs, outputs, [&](CudaKernelLaunch &launch) {
+      const auto reservation = launch.ReservePhilox(generator, 1);
+      WritePhiloxKernel<<<1, 1, 0, launch.GetStream()>>>(reservation, launch.GetOutputDataAs<int64_t>(output));
+    });
+  };
+
+  submit(first);
+  submit(second);
+  const auto first_values = test::Download<int64_t>(context, first);
+  const auto second_values = test::Download<int64_t>(context, second);
+  EXPECT_NE(first_values, second_values);
+
+  generator.SetSeed(context, 1234);
+  submit(second);
+  EXPECT_EQ(test::Download<int64_t>(context, second), first_values);
 }
 
 TEST(CudaKernelLaunchTest, FailsContextAndPreservesExceptionAfterPartialSubmission) {

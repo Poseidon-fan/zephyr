@@ -11,6 +11,7 @@
 #include "ttl/common/error.hpp"
 #include "ttl/distributed/collective.hpp"
 #include "ttl/distributed/communicator.hpp"
+#include "ttl/distributed/nccl_launch.hpp"
 #include "ttl/runtime/device.hpp"
 #include "ttl/runtime/execution_context.hpp"
 #include "ttl/runtime/runtime.hpp"
@@ -240,6 +241,53 @@ TEST(CollectiveIntegrationTest, ValidatesEveryRankBeforeEnqueue) {
     group.Close();
   }
   runtime.Shutdown();
+}
+
+TEST(CollectiveIntegrationTest, ExecutesCheckedCustomNcclSubmission) {
+  if (!RequireTwoDevices()) {
+    GTEST_SKIP() << "requires at least two CUDA devices";
+  }
+
+  auto sink = std::make_shared<test::RecordingErrorSink>();
+  Runtime runtime{test::MakeRuntimeOptions({Device{0}, Device{1}}, sink)};
+  {
+    std::array contexts{runtime.CreateExecutionContext(Device{0}), runtime.CreateExecutionContext(Device{1})};
+    const std::array rank_order{Device{0}, Device{1}};
+    auto group = LocalCommunicatorGroup::Create(runtime, rank_order);
+    std::array inputs{
+        test::Upload(contexts[0], Shape{2}, std::vector<float>{1, 2}),
+        test::Upload(contexts[1], Shape{2}, std::vector<float>{10, 20}),
+    };
+    std::array outputs{Empty(contexts[0], Shape{2}, DType::FLOAT32), Empty(contexts[1], Shape{2}, DType::FLOAT32)};
+    std::array output_pointers{outputs.data(), &outputs[1]};
+    const std::array calls{
+        LocalNcclKernelCall{
+            .context_ = contexts.data(),
+            .communicator_ = &group.GetCommunicator(0),
+            .inputs_ = std::span<const Tensor>{inputs.data(), 1},
+            .outputs_ = std::span<Tensor *const>{output_pointers.data(), 1},
+        },
+        LocalNcclKernelCall{
+            .context_ = &contexts[1],
+            .communicator_ = &group.GetCommunicator(1),
+            .inputs_ = std::span<const Tensor>{&inputs[1], 1},
+            .outputs_ = std::span<Tensor *const>{&output_pointers[1], 1},
+        },
+    };
+
+    SubmitNcclKernelsLocal(calls, "custom all-reduce", [&](size_t index, NcclKernelLaunch &launch) {
+      auto &cuda_launch = launch.GetCudaLaunch();
+      return ncclAllReduce(cuda_launch.GetInputDataAs<float>(inputs[index]),
+                           cuda_launch.GetOutputDataAs<float>(outputs[index]), 2, ncclFloat32, ncclSum,
+                           launch.GetCommunicator(), cuda_launch.GetStream());
+    });
+    Synchronize(contexts);
+    EXPECT_EQ(test::Download<float>(contexts[0], outputs[0]), (std::vector<float>{11, 22}));
+    EXPECT_EQ(test::Download<float>(contexts[1], outputs[1]), (std::vector<float>{11, 22}));
+    group.Close();
+  }
+  runtime.Shutdown();
+  EXPECT_TRUE(sink->GetRecords().empty());
 }
 
 TEST(CollectiveIntegrationTest, MovedFromCommunicatorHandlesFailDeterministically) {

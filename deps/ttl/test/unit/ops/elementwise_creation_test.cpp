@@ -1,5 +1,6 @@
 #include <array>
 #include <cstdint>
+#include <limits>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -39,6 +40,18 @@ TEST(ElementwiseTest, ComputesComparisonLogicalAndWhere) {
   auto selected = Where(context, LogicalAnd(context, positive, small), input,
                         Full(context, Shape{4}, Scalar{int64_t{-1}}, DType::INT32));
   EXPECT_EQ(test::Download<int32_t>(context, selected), (std::vector<int32_t>{-1, -1, 3, -1}));
+}
+
+TEST(ElementwiseTest, AppliesSignedIntegerUnaryOperationsWithModuloSemantics) {
+  test::RuntimeSession session;
+  auto &context = session.GetContext();
+  const auto minimum = std::numeric_limits<int32_t>::min();
+  auto input = test::Upload(context, Shape{5}, std::vector<int32_t>{minimum, -7, 0, 3, 9});
+
+  EXPECT_EQ(test::Download<int32_t>(context, Negate(context, input)), (std::vector<int32_t>{minimum, 7, 0, -3, -9}));
+  EXPECT_EQ(test::Download<int32_t>(context, Abs(context, input)), (std::vector<int32_t>{minimum, 7, 0, 3, 9}));
+  EXPECT_EQ(test::Download<int32_t>(context, Relu(context, input)), (std::vector<int32_t>{0, 0, 0, 3, 9}));
+  EXPECT_THROW(static_cast<void>(Exp(context, input)), NotSupportedError);
 }
 
 TEST(CreationCastTest, CreatesSequencesFillsAndCasts) {

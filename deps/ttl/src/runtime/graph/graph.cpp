@@ -77,6 +77,23 @@ struct QuarantinedGraphResources final {
   std::shared_ptr<RuntimeState> runtime_state_;
 };
 
+class CaptureContextUseGuard final {
+ public:
+  CaptureContextUseGuard(std::shared_ptr<ExecutionContextImpl> context, std::source_location location)
+      : context_(std::move(context)) {
+    if (context_->in_use_.test_and_set(std::memory_order_acquire)) {
+      throw InvalidArgumentError("execution context is already in use by another host thread", location);
+    }
+  }
+
+  CaptureContextUseGuard(const CaptureContextUseGuard &) = delete;
+  auto operator=(const CaptureContextUseGuard &) -> CaptureContextUseGuard & = delete;
+  ~CaptureContextUseGuard() noexcept { context_->in_use_.clear(std::memory_order_release); }
+
+ private:
+  std::shared_ptr<ExecutionContextImpl> context_;
+};
+
 void QuarantineGraphResources(cudaGraph_t graph, cudaGraphExec_t executable,
                               std::shared_ptr<StreamState> primary_stream,
                               std::vector<std::shared_ptr<StreamState>> auxiliary_streams,
@@ -121,15 +138,15 @@ void QuarantineGraphResources(cudaGraph_t graph, cudaGraphExec_t executable,
 
 }  // namespace
 
-CaptureSessionState::CaptureSessionState(ExecutionContextImpl &context, std::shared_ptr<RuntimeState> runtime_state,
+CaptureSessionState::CaptureSessionState(std::shared_ptr<ExecutionContextImpl> context,
+                                         std::shared_ptr<RuntimeState> runtime_state,
                                          std::shared_ptr<StreamState> primary_stream,
                                          std::vector<PooledEvent> dependency_events, std::string name,
                                          std::source_location location) noexcept
-    : context_(&context),
+    : context_(std::move(context)),
       runtime_state_(std::move(runtime_state)),
       primary_stream_(std::move(primary_stream)),
       dependency_events_(std::move(dependency_events)),
-      owner_thread_(std::this_thread::get_id()),
       name_(std::move(name)),
       location_(location) {}
 
@@ -137,7 +154,7 @@ auto CaptureSessionState::Begin(ExecutionContext &context, const GraphCaptureOpt
                                 std::source_location location) -> std::shared_ptr<CaptureSessionState> {
   ContextUseGuard use_guard{context, ContextUseMode::SUBMIT, location};
   auto &impl = ContextAccess::GetImpl(context, location);
-  if (impl.status_.load(std::memory_order_acquire) != ExecutionContextStatus::READY || impl.capture_state_ != nullptr) {
+  if (impl.status_.load(std::memory_order_acquire) != ExecutionContextStatus::READY || !impl.capture_state_.expired()) {
     throw CaptureError("execution context is not ready to begin CUDA graph capture", location);
   }
   auto primary_stream = StreamAccess::GetState(impl.primary_lane_.GetStream());
@@ -157,13 +174,14 @@ auto CaptureSessionState::Begin(ExecutionContext &context, const GraphCaptureOpt
     }
   }
 
-  auto state = std::shared_ptr<CaptureSessionState>{new CaptureSessionState{
-      impl, impl.runtime_state_, std::move(primary_stream), std::move(dependency_events), options.name_, location}};
+  auto state = std::shared_ptr<CaptureSessionState>{
+      new CaptureSessionState{ContextAccess::GetImplState(context, location), impl.runtime_state_,
+                              std::move(primary_stream), std::move(dependency_events), options.name_, location}};
 
   impl.runtime_state_->BeginCapture(location);
   try {
     DeviceGuard device_guard{context.GetDevice(), *impl.runtime_state_->GetErrorSink(), location};
-    CheckCuda(GetCudaApi().begin_stream_capture_(state->primary_stream_->GetNative(), cudaStreamCaptureModeThreadLocal),
+    CheckCuda(GetCudaApi().begin_stream_capture_(state->primary_stream_->GetNative(), cudaStreamCaptureModeRelaxed),
               "cudaStreamBeginCapture", location);
   } catch (...) {
     impl.runtime_state_->EndCapture();
@@ -182,14 +200,10 @@ CaptureSessionState::~CaptureSessionState() noexcept {
 }
 
 auto CaptureSessionState::Finish(std::source_location location) -> std::unique_ptr<CapturedGraphState> {
+  CaptureContextUseGuard use_guard{context_, location};
   if (!IsActive()) {
     throw CaptureError("CUDA graph capture session is not active", location);
   }
-  if (!IsOwnerThread()) {
-    context_->status_.store(ExecutionContextStatus::FAILED, std::memory_order_release);
-    throw CaptureError("CUDA graph capture must finish on the thread that began it", location);
-  }
-
   DeviceGuard device_guard{primary_stream_->GetDevice(), *runtime_state_->GetErrorSink(), location};
   cudaGraph_t graph = nullptr;
   const auto end_status = GetCudaApi().end_stream_capture_(primary_stream_->GetNative(), &graph);
@@ -222,7 +236,7 @@ auto CaptureSessionState::Finish(std::source_location location) -> std::unique_p
         location_);
     graph = nullptr;
     executable = nullptr;
-    status_ = CaptureStatus::FINISHED;
+    status_.store(CaptureStatus::FINISHED, std::memory_order_release);
     return graph_state;
   } catch (const CudaError &error) {
     DestroyGraphExecutableNoexcept(executable, *runtime_state_->GetErrorSink(),
@@ -238,15 +252,17 @@ auto CaptureSessionState::Finish(std::source_location location) -> std::unique_p
 }
 
 void CaptureSessionState::Abort() noexcept {
+  std::optional<CaptureContextUseGuard> use_guard;
+  try {
+    use_guard.emplace(context_, location_);
+  } catch (...) {
+    context_->status_.store(ExecutionContextStatus::FAILED, std::memory_order_release);
+    ReportCleanupFailure("CUDA graph capture was aborted concurrently with context use");
+    std::terminate();
+  }
   if (!IsActive()) {
     return;
   }
-  if (!IsOwnerThread()) {
-    context_->status_.store(ExecutionContextStatus::FAILED, std::memory_order_release);
-    ReportCleanupFailure("CUDA graph capture was abandoned from a different host thread");
-    return;
-  }
-
   cudaGraph_t graph = nullptr;
   const ErrorReportContext error_context = MakeErrorContext(*primary_stream_, location_);
   CleanupDeviceGuard device_guard{primary_stream_->GetDevice(), *runtime_state_->GetErrorSink(), error_context,
@@ -267,42 +283,42 @@ void CaptureSessionState::Abort() noexcept {
     for (auto &event : dependency_events_) {
       event.Discard();
     }
-    status_ = CaptureStatus::INVALIDATED;
+    status_.store(CaptureStatus::INVALIDATED, std::memory_order_release);
     return;
   }
   ClearContextRegistration(CaptureStatus::ABORTED);
 }
 
 void CaptureSessionState::Invalidate() noexcept {
-  if (status_ == CaptureStatus::ACTIVE) {
-    status_ = CaptureStatus::INVALIDATED;
-  }
+  auto expected = CaptureStatus::ACTIVE;
+  static_cast<void>(status_.compare_exchange_strong(expected, CaptureStatus::INVALIDATED, std::memory_order_acq_rel));
 }
 
 auto CaptureSessionState::IsActive() const noexcept -> bool {
-  return status_ == CaptureStatus::ACTIVE || status_ == CaptureStatus::INVALIDATED;
+  const auto status = status_.load(std::memory_order_acquire);
+  return status == CaptureStatus::ACTIVE || status == CaptureStatus::INVALIDATED;
 }
 
-auto CaptureSessionState::IsOwnerThread() const noexcept -> bool { return owner_thread_ == std::this_thread::get_id(); }
+auto CaptureSessionState::GetStatus() const noexcept -> CaptureStatus {
+  return status_.load(std::memory_order_acquire);
+}
 
-auto CaptureSessionState::GetStatus() const noexcept -> CaptureStatus { return status_; }
-
-auto CaptureSessionState::GetOperationCount() const noexcept -> uint64_t { return operation_count_; }
+auto CaptureSessionState::GetOperationCount() const noexcept -> uint64_t {
+  return operation_count_.load(std::memory_order_acquire);
+}
 
 void CaptureSessionState::BeginOperation(std::string_view operation, std::source_location location) {
-  if (!IsOwnerThread()) {
-    throw CaptureError("captured operators must run on the thread that began capture", location);
-  }
-  if (status_ != CaptureStatus::ACTIVE) {
+  if (status_.load(std::memory_order_acquire) != CaptureStatus::ACTIVE) {
     throw CaptureError("captured operator submitted to an invalidated or inactive capture session", location);
   }
   if (operation.empty()) {
     throw InternalError("captured operator name must not be empty", location);
   }
-  if (operation_count_ == std::numeric_limits<uint64_t>::max()) {
+  const auto operation_count = operation_count_.load(std::memory_order_relaxed);
+  if (operation_count == std::numeric_limits<uint64_t>::max()) {
     throw OverflowError("captured operation sequence overflow", location);
   }
-  operation_count_++;
+  operation_count_.store(operation_count + 1, std::memory_order_release);
 }
 
 void CaptureSessionState::RetainStorage(const std::shared_ptr<Storage> &storage, std::source_location location) {
@@ -349,10 +365,11 @@ auto CaptureSessionState::GetJoinEvent(size_t index) noexcept -> PooledEvent & {
 }
 
 void CaptureSessionState::ClearContextRegistration(CaptureStatus final_status) noexcept {
-  if (context_->capture_state_.get() != this) {
+  const auto registered_state = context_->capture_state_.lock();
+  if (registered_state.get() != this) {
     context_->status_.store(ExecutionContextStatus::FAILED, std::memory_order_release);
     ReportCleanupFailure("execution context lost its active CUDA graph capture registration");
-    status_ = final_status;
+    status_.store(final_status, std::memory_order_release);
     return;
   }
   context_->capture_state_.reset();
@@ -360,7 +377,7 @@ void CaptureSessionState::ClearContextRegistration(CaptureStatus final_status) n
     context_->status_.store(ExecutionContextStatus::READY, std::memory_order_release);
   }
   runtime_state_->EndCapture();
-  status_ = final_status;
+  status_.store(final_status, std::memory_order_release);
 }
 
 void CaptureSessionState::ReportCleanupFailure(std::string_view message) noexcept {
@@ -492,7 +509,7 @@ auto CapturedGraphState::GetLaunchCount() const noexcept -> uint64_t {
 auto CapturedGraphState::GetName() const noexcept -> std::string_view { return name_; }
 
 auto GetCaptureState(ExecutionContext &context, std::source_location location) -> std::shared_ptr<CaptureSessionState> {
-  return ContextAccess::GetImpl(context, location).capture_state_;
+  return ContextAccess::GetImpl(context, location).capture_state_.lock();
 }
 
 }  // namespace ttl::internal

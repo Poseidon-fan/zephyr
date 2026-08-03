@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -13,6 +14,7 @@
 #include "ttl/common/error.hpp"
 #include "ttl/distributed/collective.hpp"
 #include "ttl/distributed/communicator.hpp"
+#include "ttl/distributed/nccl_launch.hpp"
 #include "ttl/ops/creation.hpp"
 #include "ttl/runtime/device.hpp"
 #include "ttl/runtime/execution_context.hpp"
@@ -61,7 +63,52 @@ TEST(GraphIntegrationTest, RejectsWrongReplayStreamAndRetainsRuntimeRegistration
   EXPECT_TRUE(sink->GetRecords().empty());
 }
 
-TEST(GraphIntegrationTest, CapturesAndReplaysNCCLCollectiveOnFixedRankWorkers) {
+TEST(GraphIntegrationTest, CaptureTransactionOwnsContextStateAfterPublicHandleDestruction) {
+  auto sink = std::make_shared<test::RecordingErrorSink>();
+  Runtime runtime{test::MakeRuntimeOptions({Device{0}}, sink)};
+  std::optional<CaptureSession> capture;
+  std::optional<Tensor> output;
+  {
+    auto context = runtime.CreateExecutionContext(Device{0});
+    output.emplace(Empty(context, Shape{4}, DType::FLOAT32));
+    FillOut(context, *output, Scalar{1.0F});
+    context.Synchronize();
+    capture.emplace(context.BeginCapture(GraphCaptureOptions{.name_ = "detached context"}));
+    FillOut(context, *output, Scalar{2.0F});
+  }
+
+  {
+    auto graph = capture->Finish();
+    capture.reset();
+    const auto statistics = runtime.GetStatistics();
+    EXPECT_EQ(statistics.execution_context_count_, 0);
+    EXPECT_EQ(statistics.captured_graph_count_, 1);
+    EXPECT_EQ(statistics.active_capture_count_, 0);
+    EXPECT_EQ(graph.GetNodeCount(), 1);
+    EXPECT_THROW(runtime.Shutdown(), InvalidArgumentError);
+  }
+  output.reset();
+  runtime.Shutdown();
+  EXPECT_TRUE(sink->GetRecords().empty());
+}
+
+TEST(GraphIntegrationTest, CaptureTransactionCanAbortOnAnotherHostThread) {
+  auto sink = std::make_shared<test::RecordingErrorSink>();
+  Runtime runtime{test::MakeRuntimeOptions({Device{0}}, sink)};
+  {
+    auto context = runtime.CreateExecutionContext(Device{0});
+    auto session = context.BeginCapture(GraphCaptureOptions{.name_ = "cross-thread abort"});
+    std::thread abort_thread{[capture = std::move(session)]() mutable { capture.Abort(); }};
+    abort_thread.join();
+
+    auto output = Full(context, Shape{2}, Scalar{3.0F}, DType::FLOAT32);
+    EXPECT_EQ(test::Download<float>(context, output), (std::vector<float>{3, 3}));
+  }
+  runtime.Shutdown();
+  EXPECT_TRUE(sink->GetRecords().empty());
+}
+
+TEST(GraphIntegrationTest, CapturesAndReplaysCheckedNcclExtensionOnFixedRankWorkers) {
   if (!HasTwoDevices()) {
     GTEST_SKIP() << "requires at least two CUDA devices";
   }
@@ -103,7 +150,18 @@ TEST(GraphIntegrationTest, CapturesAndReplaysNCCLCollectiveOnFixedRankWorkers) {
       auto graph_group = CapturedGraphGroup::Capture(
           std::move(contexts),
           [&](size_t rank, ExecutionContext &context) {
-            AllReduceOut(context, outputs[rank], inputs[rank], communicator_group.GetCommunicator(rank), ReduceOp::SUM);
+            const std::array rank_inputs{inputs[rank]};
+            const std::array rank_outputs{&outputs[rank]};
+            SubmitNcclKernel(
+                context, communicator_group.GetCommunicator(rank), "captured custom all-reduce", rank_inputs,
+                rank_outputs,
+                [&](NcclKernelLaunch &launch) {
+                  auto &cuda_launch = launch.GetCudaLaunch();
+                  return ncclAllReduce(cuda_launch.GetInputDataAs<float>(inputs[rank]),
+                                       cuda_launch.GetOutputDataAs<float>(outputs[rank]), 2, ncclFloat32, ncclSum,
+                                       launch.GetCommunicator(), cuda_launch.GetStream());
+                },
+                CudaKernelLaunchOptions{.capture_policy_ = CudaCapturePolicy::SAFE});
           },
           GraphGroupCaptureOptions{.name_ = "two-rank all-reduce"});
       EXPECT_EQ(graph_group.GetWorldSize(), 2);

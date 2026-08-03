@@ -16,6 +16,7 @@
 #include "ttl/internal/ops/elementwise_iterator.hpp"
 #include "ttl/internal/ops/random.hpp"
 #include "ttl/internal/runtime/execution/execution_context.hpp"
+#include "ttl/internal/runtime/execution/generator.hpp"
 #include "ttl/internal/runtime/execution/op_guard.hpp"
 #include "ttl/internal/runtime/memory/device_allocator.hpp"
 #include "ttl/internal/runtime/memory/scratch_arena.hpp"
@@ -28,48 +29,6 @@
 #include "ttl/tensor/dtype.hpp"
 #include "ttl/tensor/shape.hpp"
 #include "ttl/tensor/tensor.hpp"
-
-namespace ttl::internal {
-
-class GeneratorImpl final {
- public:
-  GeneratorImpl(std::shared_ptr<Storage> storage, Device device, uint64_t stream_id, uint64_t seed) noexcept
-      : storage_(std::move(storage)), device_(device), stream_id_(stream_id), seed_(seed) {}
-
-  std::shared_ptr<Storage> storage_;
-  Device device_;
-  uint64_t stream_id_;
-  std::atomic<uint64_t> seed_;
-  std::atomic_flag in_use_ = ATOMIC_FLAG_INIT;
-};
-
-class GeneratorUseGuard final {
- public:
-  GeneratorUseGuard(GeneratorImpl &impl, std::source_location location) : impl_(impl) {
-    if (impl_.in_use_.test_and_set(std::memory_order_acquire)) {
-      throw InvalidArgumentError("Generator is already in use", location);
-    }
-  }
-
-  GeneratorUseGuard(const GeneratorUseGuard &) = delete;
-  auto operator=(const GeneratorUseGuard &) -> GeneratorUseGuard & = delete;
-  ~GeneratorUseGuard() noexcept { impl_.in_use_.clear(std::memory_order_release); }
-
- private:
-  GeneratorImpl &impl_;
-};
-
-class GeneratorAccess final {
- public:
-  [[nodiscard]] static auto GetImpl(Generator &generator, std::source_location location) -> GeneratorImpl & {
-    if (generator.impl_ == nullptr) {
-      throw InvalidArgumentError("Generator is in a moved-from state", location);
-    }
-    return *generator.impl_;
-  }
-};
-
-}  // namespace ttl::internal
 
 namespace ttl {
 namespace {

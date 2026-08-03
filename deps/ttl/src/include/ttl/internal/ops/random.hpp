@@ -8,15 +8,13 @@
 #include <driver_types.h>
 
 #include "ttl/internal/runtime/execution/device_error.hpp"
+#include "ttl/runtime/philox.hpp"
 #include "ttl/tensor/dtype.hpp"
 #include "ttl/tensor/shape.hpp"
 
 namespace ttl::internal {
 
-struct GeneratorState final {
-  uint64_t seed_;
-  uint64_t counter_;
-};
+using GeneratorState = CudaPhiloxGeneratorState;
 
 struct RandomParameters final {
   std::byte *output_;
@@ -33,13 +31,14 @@ enum class RandomDistribution : uint8_t {
   NORMAL,
 };
 
-static_assert(std::is_trivially_copyable_v<GeneratorState>);
-static_assert(std::is_standard_layout_v<GeneratorState>);
 static_assert(std::is_trivially_copyable_v<RandomParameters>);
 static_assert(std::is_standard_layout_v<RandomParameters>);
 
 void LaunchInitializeGenerator(cudaStream_t stream, GeneratorState *state, uint64_t seed,
                                std::source_location location = std::source_location::current());
+void LaunchReservePhilox(cudaStream_t stream, GeneratorState *state, uint64_t block_count, uint64_t *base_counter,
+                         const DeviceErrorLaunchContext &error_context,
+                         std::source_location location = std::source_location::current());
 void LaunchRandom(cudaStream_t stream, DType dtype, RandomDistribution distribution, const RandomParameters &parameters,
                   GeneratorState *state, uint64_t *base_counter, const DeviceErrorLaunchContext &error_context,
                   std::source_location location = std::source_location::current());

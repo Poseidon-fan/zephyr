@@ -321,9 +321,6 @@ void GatherRowsOutImpl(ExecutionContext &context, Tensor &output, const Tensor &
   guard.ValidateTensor(table);
   guard.ValidateTensor(indices);
   ValidateIndexDType(indices.GetDType(), operation, location);
-  if (table.GetDType() == DType::BOOL) {
-    throw NotSupportedError("GatherRows does not support BOOL table values", location);
-  }
   const auto shape = InferGatherRowsShape(table, indices, location);
   ValidateIndexingOutput(output, table, indices, shape, operation, location);
   if (output.GetNumElements() == 0) {
@@ -350,9 +347,6 @@ void GatherRowsOutImpl(ExecutionContext &context, Tensor &output, const Tensor &
     guard.ValidateTensor(table);
     guard.ValidateTensor(indices);
     ValidateIndexDType(indices.GetDType(), operation, location);
-    if (table.GetDType() == DType::BOOL) {
-      throw NotSupportedError("GatherRows does not support BOOL table values", location);
-    }
     shape = InferGatherRowsShape(table, indices, location);
   }
   auto output = Empty(context, shape, table.GetDType(), location);

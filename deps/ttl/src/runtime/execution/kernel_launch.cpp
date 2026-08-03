@@ -16,11 +16,15 @@
 #include <driver_types.h>
 
 #include "ttl/common/error.hpp"
+#include "ttl/internal/distributed/communicator.hpp"
+#include "ttl/internal/ops/random.hpp"
+#include "ttl/internal/runtime/execution/generator.hpp"
 #include "ttl/internal/runtime/execution/op_guard.hpp"
 #include "ttl/internal/runtime/execution/parallel_op_scope.hpp"
 #include "ttl/internal/runtime/memory/scratch_arena.hpp"
 #include "ttl/internal/tensor/tensor_impl.hpp"
 #include "ttl/runtime/execution_context.hpp"
+#include "ttl/runtime/generator.hpp"
 #include "ttl/tensor/dtype.hpp"
 #include "ttl/tensor/tensor.hpp"
 
@@ -61,9 +65,19 @@ class LaunchWorkspace final {
     if (request.size_bytes_ == 0) {
       return;
     }
-    scratch_scope_.emplace(std::invoke(std::forward<MakeScope>(make_scope)));
-    const auto allocation = scratch_scope_->AllocateBytes(request.size_bytes_, request.alignment_, location);
+    const internal::ScratchAllocation allocation =
+        AllocateBytes(request.size_bytes_, request.alignment_, std::forward<MakeScope>(make_scope), location);
     workspace_ = {.data_ = allocation.GetData(), .size_bytes_ = allocation.GetSizeBytes()};
+  }
+
+  template <typename MakeScope>
+    requires std::invocable<MakeScope>
+  [[nodiscard]] auto AllocateBytes(size_t bytes, size_t alignment, MakeScope &&make_scope,
+                                   std::source_location location) -> internal::ScratchAllocation {
+    if (!scratch_scope_.has_value()) {
+      scratch_scope_.emplace(std::invoke(std::forward<MakeScope>(make_scope)));
+    }
+    return scratch_scope_->AllocateBytes(bytes, alignment, location);
   }
 
   [[nodiscard]] auto GetWorkspace() const noexcept -> CudaWorkspace { return workspace_; }
@@ -79,7 +93,9 @@ class CudaKernelLaunch::Impl final {
  public:
   Impl(ExecutionContext &context, std::string_view operation, std::span<const Tensor> inputs,
        std::span<Tensor *const> outputs, const CudaKernelLaunchOptions &options, std::source_location location)
-      : operation_(operation),
+      : context_(context),
+        operation_(operation),
+        operation_location_(location),
         guard_(context, operation_, location, ToInternalCapturePolicy(options.capture_policy_, location)) {
     ValidateWorkspaceRequest(options.workspace_, "primary", location);
     if (options.auxiliary_workspaces_.size() > options.auxiliary_stream_count_) {
@@ -160,7 +176,7 @@ class CudaKernelLaunch::Impl final {
   }
 
   void Finish() {
-    auto launch_error = std::exception_ptr{};
+    std::exception_ptr launch_error;
     try {
       guard_.CheckLaunch();
     } catch (...) {
@@ -197,6 +213,49 @@ class CudaKernelLaunch::Impl final {
 
   [[nodiscard]] auto IsCapturing() const noexcept -> bool { return guard_.IsCapturing(); }
 
+  [[nodiscard]] auto GetDeviceErrorContext(DType source_dtype, DType target_dtype) -> CudaDeviceErrorContext {
+    if (!device_error_context_.has_value()) {
+      device_error_context_.emplace(guard_.RegisterDeviceError(source_dtype, target_dtype));
+    } else if (device_error_context_->source_dtype_ != source_dtype ||
+               device_error_context_->target_dtype_ != target_dtype) {
+      throw InvalidArgumentError("CUDA kernel device error context dtype metadata cannot change", operation_location_);
+    }
+    return *device_error_context_;
+  }
+
+  [[nodiscard]] auto ReservePhilox(Generator &generator, uint64_t block_count) -> CudaPhiloxReservation {
+    if (block_count == 0) {
+      throw InvalidArgumentError("Philox reservation requires at least one block", operation_location_);
+    }
+    if (generator_guard_ != nullptr) {
+      throw InvalidArgumentError("a CUDA kernel launch may reserve from one Generator exactly once",
+                                 operation_location_);
+    }
+    internal::GeneratorImpl &generator_impl = internal::GeneratorAccess::GetImpl(generator, operation_location_);
+    if (context_.GetDevice() != generator_impl.device_ || context_.GetStream().GetId() != generator_impl.stream_id_) {
+      throw InvalidArgumentError("Generator must be used with the execution context stream that created it",
+                                 operation_location_);
+    }
+    generator_guard_ = std::make_unique<internal::GeneratorUseGuard>(generator_impl, operation_location_);
+    const internal::ScratchAllocation base_counter_allocation = primary_workspace_.AllocateBytes(
+        sizeof(uint64_t), alignof(uint64_t), [&] { return guard_.MakeScratchScope(); }, operation_location_);
+    auto *base_counter = static_cast<uint64_t *>(base_counter_allocation.GetData());
+    generator_impl.storage_->RecordUsage(context_.GetStream());
+    guard_.RetainStorage(generator_impl.storage_);
+    const auto error_context = guard_.RegisterDeviceError(DType::INT64, DType::INT64);
+    internal::LaunchReservePhilox(guard_.GetNativeStream(),
+                                  static_cast<internal::GeneratorState *>(generator_impl.storage_->GetBasePointer()),
+                                  block_count, base_counter, error_context, operation_location_);
+    return CudaPhiloxReservation{
+        .seed_ = generator_impl.seed_.load(std::memory_order_acquire),
+        .base_counter_ = base_counter,
+    };
+  }
+
+  void RetainCommunicator(const std::shared_ptr<internal::CommunicatorGroupState> &communicator) {
+    guard_.RetainCommunicator(communicator);
+  }
+
  private:
   void ValidateAuxiliaryIndex(size_t index, std::source_location location) const {
     if (index >= auxiliary_workspaces_.size()) {
@@ -215,13 +274,17 @@ class CudaKernelLaunch::Impl final {
     }
   }
 
+  ExecutionContext &context_;
   std::string operation_;
+  std::source_location operation_location_;
   internal::OpGuard guard_;
   std::vector<const internal::TensorImpl *> input_impls_;
   std::vector<const internal::TensorImpl *> output_impls_;
   LaunchWorkspace primary_workspace_;
   std::optional<internal::ParallelOpScope> parallel_scope_;
   std::vector<LaunchWorkspace> auxiliary_workspaces_;
+  std::optional<CudaDeviceErrorContext> device_error_context_;
+  std::unique_ptr<internal::GeneratorUseGuard> generator_guard_;
 };
 
 CudaKernelLaunch::CudaKernelLaunch(ExecutionContext &context, std::string_view operation,
@@ -246,6 +309,14 @@ auto CudaKernelLaunch::GetAuxiliaryWorkspace(size_t index, std::source_location 
 }
 
 auto CudaKernelLaunch::IsCapturing() const noexcept -> bool { return impl_->IsCapturing(); }
+
+auto CudaKernelLaunch::GetDeviceErrorContext(DType source_dtype, DType target_dtype) -> CudaDeviceErrorContext {
+  return impl_->GetDeviceErrorContext(source_dtype, target_dtype);
+}
+
+auto CudaKernelLaunch::ReservePhilox(Generator &generator, uint64_t block_count) -> CudaPhiloxReservation {
+  return impl_->ReservePhilox(generator, block_count);
+}
 
 auto CudaKernelLaunch::GetInputData(const Tensor &tensor, std::source_location location) const -> const void * {
   if (!impl_->HasInput(tensor, location) && !impl_->HasOutput(tensor, location)) {
@@ -280,5 +351,9 @@ auto CudaKernelLaunch::GetOutputDataAsDType(Tensor &tensor, DType dtype, std::so
 void CudaKernelLaunch::Finish() { impl_->Finish(); }
 
 void CudaKernelLaunch::FailAfterCallbackException() noexcept { impl_->FailAfterCallbackException(); }
+
+void CudaKernelLaunch::RetainCommunicator(const std::shared_ptr<internal::CommunicatorGroupState> &communicator) {
+  impl_->RetainCommunicator(communicator);
+}
 
 }  // namespace ttl

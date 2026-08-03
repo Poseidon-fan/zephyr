@@ -6,6 +6,7 @@
 
 #include "support/tensor_test_utils.hpp"
 #include "ttl/common/error.hpp"
+#include "ttl/ops/cast.hpp"
 #include "ttl/ops/indexing.hpp"
 #include "ttl/ops/normalization.hpp"
 #include "ttl/ops/reduction.hpp"
@@ -76,6 +77,16 @@ TEST(IndexingTest, SelectsAndGathersAlongArbitraryAxes) {
   auto gather_indices = test::Upload(context, Shape{2, 2}, std::vector<int32_t>{1, 0, 2, 1});
   auto gathered = Gather(context, input, 1, gather_indices);
   EXPECT_EQ(test::Download<int32_t>(context, gathered), (std::vector<int32_t>{11, 10, 22, 21}));
+}
+
+TEST(IndexingTest, GathersBooleanRows) {
+  test::RuntimeSession session;
+  auto &context = session.GetContext();
+  auto table = Cast(context, test::Upload(context, Shape{3, 2}, std::vector<uint8_t>{1, 0, 0, 1, 1, 1}), DType::BOOL);
+  auto indices = test::Upload(context, Shape{2}, std::vector<int32_t>{2, 0});
+  auto output = GatherRows(context, table, indices);
+  EXPECT_EQ(output.GetDType(), DType::BOOL);
+  EXPECT_EQ(test::Download<uint8_t>(context, output), (std::vector<uint8_t>{1, 1, 1, 0}));
 }
 
 TEST(IndexingTest, SurfacesDeviceSideBoundsFailureAtExplicitErrorBoundary) {

@@ -63,7 +63,7 @@ CheckOptions:
   - { key: readability-identifier-naming.VariableCase,        value: lower_case }
 HeaderFilterRegex: '(^|.*/)(src|bindings/python|deps/ttl)/.*'
 ExcludeHeaderFilterRegex: '(^|.*/)deps/3rd/.*'
-HeaderFileExtensions: ['hpp']
+HeaderFileExtensions: ['hpp', 'cuh']
 ImplementationFileExtensions: ['cpp', 'cu']
 
 #### Disabled checks and why: #####

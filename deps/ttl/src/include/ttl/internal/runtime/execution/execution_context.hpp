@@ -67,7 +67,7 @@ class ExecutionContextImpl final {
   std::optional<PooledEvent> fork_event_;
   std::vector<PooledEvent> join_events_;
   std::unique_ptr<DeviceErrorState> device_error_state_;
-  std::shared_ptr<CaptureSessionState> capture_state_;
+  std::weak_ptr<CaptureSessionState> capture_state_;
   std::atomic_flag in_use_ = ATOMIC_FLAG_INIT;
   std::atomic<ExecutionContextStatus> status_{ExecutionContextStatus::READY};
 };
@@ -96,6 +96,8 @@ class ContextAccess final {
                                    const ExecutionContextOptions &options, std::source_location location)
       -> ExecutionContext;
   [[nodiscard]] static auto GetImpl(ExecutionContext &context, std::source_location location) -> ExecutionContextImpl &;
+  [[nodiscard]] static auto GetImplState(ExecutionContext &context, std::source_location location)
+      -> const std::shared_ptr<ExecutionContextImpl> &;
   [[nodiscard]] static auto GetRuntimeState(ExecutionContext &context, std::source_location location)
       -> const std::shared_ptr<RuntimeState> &;
   [[nodiscard]] static auto GetDeviceContext(ExecutionContext &context, std::source_location location)

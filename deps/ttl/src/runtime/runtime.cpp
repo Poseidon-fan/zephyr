@@ -236,6 +236,57 @@ auto RuntimeState::GetPinnedAllocator() const noexcept -> const std::shared_ptr<
 
 auto RuntimeState::GetStatus() const noexcept -> RuntimeStatus { return status_.load(std::memory_order_acquire); }
 
+auto RuntimeState::GetStatistics(std::source_location location) const -> RuntimeStatistics {
+  const std::scoped_lock lock{lifecycle_latch_};
+  RuntimeStatistics result{
+      .status_ = GetStatus(),
+      .execution_context_count_ = execution_context_count_.load(std::memory_order_acquire),
+      .captured_graph_count_ = graph_count_.load(std::memory_order_acquire),
+      .active_capture_count_ = active_capture_count_.load(std::memory_order_acquire),
+      .devices_ = {},
+      .pinned_memory_ = {},
+  };
+  result.devices_.reserve(device_contexts_.size());
+  for (const auto &device_context : device_contexts_) {
+    const auto allocator = device_context->GetAllocator()->GetStats(location);
+    const auto events = device_context->GetEventPool()->GetStats();
+    result.devices_.push_back(DeviceMemoryStatistics{
+        .device_ = device_context->GetDevice(),
+        .logical_live_bytes_ = allocator.logical_live_bytes_,
+        .retiring_bytes_ = allocator.retiring_bytes_,
+        .peak_physical_in_use_bytes_ = allocator.peak_physical_in_use_bytes_,
+        .allocation_count_ = allocator.allocation_count_,
+        .retirement_count_ = allocator.retirement_count_,
+        .retry_count_ = allocator.retry_count_,
+        .oom_count_ = allocator.oom_count_,
+        .trim_count_ = allocator.trim_count_,
+        .pending_retirement_count_ = allocator.pending_retirement_count_,
+        .pool_used_bytes_ = allocator.pool_used_bytes_,
+        .pool_reserved_bytes_ = allocator.pool_reserved_bytes_,
+        .outstanding_storage_count_ = allocator.outstanding_storage_count_,
+        .cached_event_count_ = events.cached_event_count_,
+        .outstanding_event_count_ = events.outstanding_event_count_,
+        .event_cache_capacity_ = events.max_cached_event_count_,
+        .blas_workspace_bytes_ = device_context->GetBlasHandlePool()->GetWorkspaceBytes(),
+    });
+  }
+  const auto pinned = pinned_allocator_->GetStats();
+  result.pinned_memory_ = PinnedMemoryStatistics{
+      .live_bytes_ = pinned.live_bytes_,
+      .pending_bytes_ = pinned.pending_bytes_,
+      .cached_bytes_ = pinned.cached_bytes_,
+      .physical_bytes_ = pinned.physical_bytes_,
+      .peak_physical_bytes_ = pinned.peak_physical_bytes_,
+      .host_allocation_count_ = pinned.host_allocation_count_,
+      .host_free_count_ = pinned.host_free_count_,
+      .cache_hit_count_ = pinned.cache_hit_count_,
+      .retirement_count_ = pinned.retirement_count_,
+      .pending_retirement_count_ = pinned.pending_retirement_count_,
+      .outstanding_buffer_count_ = pinned.outstanding_buffer_count_,
+  };
+  return result;
+}
+
 void RuntimeState::EnsureRunning(std::source_location location) const {
   if (GetStatus() != RuntimeStatus::RUNNING) {
     throw InvalidArgumentError("runtime is not accepting new work", location);
@@ -429,6 +480,10 @@ auto Runtime::CanAccessPeer(Device device, Device peer_device, std::source_locat
 }
 
 auto Runtime::GetStatus() const noexcept -> RuntimeStatus { return impl_->state_->GetStatus(); }
+
+auto Runtime::GetStatistics(std::source_location location) const -> RuntimeStatistics {
+  return impl_->state_->GetStatistics(location);
+}
 
 auto Runtime::CreateExecutionContext(Device device, const ExecutionContextOptions &options,
                                      std::source_location location) -> ExecutionContext {

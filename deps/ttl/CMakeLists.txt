@@ -40,11 +40,11 @@ target_link_libraries(
     ttl
     PUBLIC
         CUDA::cudart
+        NCCL::NCCL
     PRIVATE
         CUDA::cublas
         CUDA::cublasLt
         CUDA::curand
-        NCCL::NCCL
 )
 
 set_target_properties(

@@ -70,6 +70,7 @@ class RuntimeState final : public std::enable_shared_from_this<RuntimeState> {
   [[nodiscard]] auto GetErrorSink() const noexcept -> const std::shared_ptr<ErrorSink> &;
   [[nodiscard]] auto GetPinnedAllocator() const noexcept -> const std::shared_ptr<PinnedAllocator> &;
   [[nodiscard]] auto GetStatus() const noexcept -> RuntimeStatus;
+  [[nodiscard]] auto GetStatistics(std::source_location location) const -> RuntimeStatistics;
 
   void EnsureRunning(std::source_location location) const;
   void RegisterExecutionContext(std::source_location location);

@@ -13,11 +13,21 @@
 
 #include <driver_types.h>
 
+#include "ttl/runtime/device_error.hpp"
+#include "ttl/runtime/philox.hpp"
 #include "ttl/tensor/dtype.hpp"
+
+namespace ttl::internal {
+
+class CommunicatorGroupState;
+
+}  // namespace ttl::internal
 
 namespace ttl {
 
 class ExecutionContext;
+class Generator;
+class NcclKernelLaunch;
 class Tensor;
 
 /** Whether an external CUDA submission may participate in stream capture. */
@@ -88,6 +98,13 @@ class CudaKernelLaunch final {
       -> CudaWorkspace;
   [[nodiscard]] auto IsCapturing() const noexcept -> bool;
 
+  /** Register this submission with the context's sticky first-error channel. */
+  [[nodiscard]] auto GetDeviceErrorContext(DType source_dtype = DType::BOOL, DType target_dtype = DType::BOOL)
+      -> CudaDeviceErrorContext;
+
+  /** Reserve Philox4x32 blocks in stream order for a fused external sampling kernel. */
+  [[nodiscard]] auto ReservePhilox(Generator &generator, uint64_t block_count) -> CudaPhiloxReservation;
+
   [[nodiscard]] auto GetInputData(const Tensor &tensor,
                                   std::source_location location = std::source_location::current()) const -> const
       void *;
@@ -109,6 +126,7 @@ class CudaKernelLaunch final {
   }
 
  private:
+  friend class NcclKernelLaunch;
   template <typename Function>
     requires std::invocable<Function, CudaKernelLaunch &>
   friend void SubmitCudaKernel(ExecutionContext &context, std::string_view operation, std::span<const Tensor> inputs,
@@ -123,6 +141,7 @@ class CudaKernelLaunch final {
 
   void Finish();
   void FailAfterCallbackException() noexcept;
+  void RetainCommunicator(const std::shared_ptr<internal::CommunicatorGroupState> &communicator);
 
   [[nodiscard]] auto GetInputDataAsDType(const Tensor &tensor, DType dtype, std::source_location location) const
       -> const void *;

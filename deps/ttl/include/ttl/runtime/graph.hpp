@@ -32,7 +32,9 @@ class CapturedGraph;
 /**
  * Explicit owner of one active stream-capture transaction.
  *
- * Finish and Abort must run on the thread that began capture. Destruction aborts an active session without throwing.
+ * Operations, Finish, and Abort must not run concurrently. The transaction may move between host threads because TTL
+ * uses relaxed CUDA stream capture so a noexcept destructor can always terminate the native capture. Destruction
+ * aborts an active session without throwing.
  */
 class CaptureSession final {
  public:

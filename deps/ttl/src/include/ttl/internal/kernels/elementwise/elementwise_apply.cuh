@@ -216,6 +216,7 @@ __global__ void ContiguousTernaryKernel(Output *output, const First *first, cons
 }
 
 template <size_t width, typename... Types>
+// NOLINTNEXTLINE(bugprone-dynamic-static-initializers): constexpr variable templates are constant-initialized.
 inline constexpr bool VALID_ELEMENTWISE_VECTOR_WIDTH = ((sizeof(Types) * width <= 16) && ...);
 
 template <typename Output, typename Input, size_t width, typename Parameters, typename Operation>

@@ -40,6 +40,22 @@ TEST(RuntimeTest, OwnsDeviceContextAndRequiresExplicitCleanShutdown) {
   EXPECT_TRUE(session.GetErrorSink()->GetRecords().empty());
 }
 
+TEST(RuntimeTest, ExposesAllocatorAndLifecycleStatistics) {
+  test::RuntimeSession session;
+  const auto before = session.GetRuntime().GetStatistics();
+  ASSERT_EQ(before.devices_.size(), 1);
+  EXPECT_EQ(before.status_, RuntimeStatus::RUNNING);
+  EXPECT_EQ(before.execution_context_count_, 1);
+  EXPECT_GE(before.devices_[0].outstanding_storage_count_, 1);
+
+  auto tensor = Empty(session.GetContext(), Shape{1024}, DType::FLOAT32);
+  const auto during = session.GetRuntime().GetStatistics();
+  EXPECT_GE(during.devices_[0].logical_live_bytes_, before.devices_[0].logical_live_bytes_ + 4096);
+  EXPECT_GE(during.devices_[0].allocation_count_, before.devices_[0].allocation_count_ + 1);
+  EXPECT_GT(during.devices_[0].blas_workspace_bytes_, 0);
+  static_cast<void>(tensor);
+}
+
 TEST(TensorTest, AllocatesCopiesAndClassifiesViews) {
   test::RuntimeSession session;
   auto &context = session.GetContext();

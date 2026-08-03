@@ -65,7 +65,7 @@ ContextUseGuard::ContextUseGuard(ExecutionContext &context, ContextUseMode mode,
     impl_.in_use_.clear(std::memory_order_release);
     throw InvalidArgumentError("execution context is in a failed state", location);
   }
-  if (impl_.capture_state_ != nullptr && is_cleanup) {
+  if (!impl_.capture_state_.expired() && is_cleanup) {
     impl_.in_use_.clear(std::memory_order_release);
     throw CaptureError("synchronization and polling are forbidden during CUDA graph capture", location);
   }
@@ -108,7 +108,7 @@ auto ContextAccess::Create(const std::shared_ptr<RuntimeState> &runtime_state,
                                                      runtime_state->GetErrorSink(), location);
   runtime_state->RegisterExecutionContext(location);
   try {
-    return ExecutionContext{std::make_unique<ExecutionContextImpl>(
+    return ExecutionContext{std::make_shared<ExecutionContextImpl>(
         runtime_state, std::move(device_context), std::move(primary_lane), std::move(auxiliary_lanes),
         std::move(fork_event), std::move(join_events), std::move(device_error_state))};
   } catch (...) {
@@ -122,6 +122,12 @@ auto ContextAccess::GetImpl(ExecutionContext &context, std::source_location loca
     throw InvalidArgumentError("execution context is in a moved-from state", location);
   }
   return *context.impl_;
+}
+
+auto ContextAccess::GetImplState(ExecutionContext &context, std::source_location location)
+    -> const std::shared_ptr<ExecutionContextImpl> & {
+  static_cast<void>(GetImpl(context, location));
+  return context.impl_;
 }
 
 auto ContextAccess::GetRuntimeState(ExecutionContext &context, std::source_location location)
@@ -209,13 +215,20 @@ void SynchronizeAndCheckDeviceErrors(internal::ExecutionContextImpl &impl, std::
   }
 
   impl.device_error_state_->EnqueueRead(primary_stream, location);
-  internal::CheckCuda(cuda_api.synchronize_stream_(primary_stream), "cudaStreamSynchronize", location);
+  first_status = cuda_api.synchronize_stream_(primary_stream);
+  if (first_status != cudaSuccess) {
+    impl.status_.store(internal::ExecutionContextStatus::FAILED, std::memory_order_release);
+    for (const auto &lane : impl.auxiliary_lanes_) {
+      static_cast<void>(cuda_api.synchronize_stream_(internal::StreamAccess::GetNative(lane.GetStream())));
+    }
+  }
+  internal::CheckCuda(first_status, "cudaStreamSynchronize", location);
   impl.device_error_state_->ConsumeAndReset(primary_stream, location);
 }
 
 }  // namespace
 
-ExecutionContext::ExecutionContext(std::unique_ptr<internal::ExecutionContextImpl> impl) noexcept
+ExecutionContext::ExecutionContext(std::shared_ptr<internal::ExecutionContextImpl> impl) noexcept
     : impl_(std::move(impl)) {}
 
 ExecutionContext::ExecutionContext(ExecutionContext &&) noexcept = default;
@@ -251,7 +264,7 @@ auto ExecutionContext::IsExternalStream(std::source_location location) const -> 
 
 auto ExecutionContext::RecordEvent(std::source_location location) -> Event {
   internal::ContextUseGuard use_guard{*this, internal::ContextUseMode::SUBMIT, location};
-  if (impl_->capture_state_ != nullptr) {
+  if (!impl_->capture_state_.expired()) {
     throw CaptureError("public event recording is forbidden during CUDA graph capture", location);
   }
   return internal::EventAccess::Record(impl_->primary_lane_.GetStream(), location);
@@ -259,7 +272,7 @@ auto ExecutionContext::RecordEvent(std::source_location location) -> Event {
 
 void ExecutionContext::Wait(const Event &event, std::source_location location) {
   internal::ContextUseGuard use_guard{*this, internal::ContextUseMode::SUBMIT, location};
-  if (impl_->capture_state_ != nullptr) {
+  if (!impl_->capture_state_.expired()) {
     throw CaptureError("public event waits are forbidden during CUDA graph capture", location);
   }
   internal::EventAccess::Wait(impl_->primary_lane_.GetStream(), event, location);

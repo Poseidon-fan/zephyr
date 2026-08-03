@@ -56,6 +56,50 @@ enum class RuntimeStatus : uint8_t {
   CLOSED,
 };
 
+struct DeviceMemoryStatistics final {
+  Device device_;
+  uint64_t logical_live_bytes_;
+  uint64_t retiring_bytes_;
+  uint64_t peak_physical_in_use_bytes_;
+  uint64_t allocation_count_;
+  uint64_t retirement_count_;
+  uint64_t retry_count_;
+  uint64_t oom_count_;
+  uint64_t trim_count_;
+  uint64_t pending_retirement_count_;
+  uint64_t pool_used_bytes_;
+  uint64_t pool_reserved_bytes_;
+  uint64_t outstanding_storage_count_;
+  size_t cached_event_count_;
+  size_t outstanding_event_count_;
+  size_t event_cache_capacity_;
+  size_t blas_workspace_bytes_;
+};
+
+struct PinnedMemoryStatistics final {
+  uint64_t live_bytes_;
+  uint64_t pending_bytes_;
+  uint64_t cached_bytes_;
+  uint64_t physical_bytes_;
+  uint64_t peak_physical_bytes_;
+  uint64_t host_allocation_count_;
+  uint64_t host_free_count_;
+  uint64_t cache_hit_count_;
+  uint64_t retirement_count_;
+  uint64_t pending_retirement_count_;
+  uint64_t outstanding_buffer_count_;
+};
+
+/** Aggregate host-side snapshot for serving telemetry and memory admission control. */
+struct RuntimeStatistics final {
+  RuntimeStatus status_;
+  size_t execution_context_count_;
+  size_t captured_graph_count_;
+  size_t active_capture_count_;
+  std::vector<DeviceMemoryStatistics> devices_;
+  PinnedMemoryStatistics pinned_memory_;
+};
+
 /**
  * Description of an existing CUDA device allocation.
  *
@@ -85,6 +129,8 @@ class Runtime final {
   [[nodiscard]] auto CanAccessPeer(Device device, Device peer_device,
                                    std::source_location location = std::source_location::current()) const -> bool;
   [[nodiscard]] auto GetStatus() const noexcept -> RuntimeStatus;
+  [[nodiscard]] auto GetStatistics(std::source_location location = std::source_location::current()) const
+      -> RuntimeStatistics;
 
   [[nodiscard]] auto CreateExecutionContext(Device device, const ExecutionContextOptions &options = {},
                                             std::source_location location = std::source_location::current())

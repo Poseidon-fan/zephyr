@@ -64,9 +64,9 @@ class ExecutionContext final {
  private:
   friend class internal::ContextAccess;
 
-  explicit ExecutionContext(std::unique_ptr<internal::ExecutionContextImpl> impl) noexcept;
+  explicit ExecutionContext(std::shared_ptr<internal::ExecutionContextImpl> impl) noexcept;
 
-  std::unique_ptr<internal::ExecutionContextImpl> impl_;
+  std::shared_ptr<internal::ExecutionContextImpl> impl_;
 };
 
 static_assert(!std::default_initializable<ExecutionContext>);

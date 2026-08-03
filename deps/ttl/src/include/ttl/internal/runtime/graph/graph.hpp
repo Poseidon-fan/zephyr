@@ -8,7 +8,6 @@
 #include <source_location>
 #include <string>
 #include <string_view>
-#include <thread>
 #include <vector>
 
 #include <cuda_runtime_api.h>
@@ -39,7 +38,7 @@ enum class CaptureStatus : uint8_t {
   ABORTED,
 };
 
-/** Owner and bookkeeping record for one active thread-local stream capture. */
+/** Owner and bookkeeping record for one active stream-capture transaction. */
 class CaptureSessionState final {
  public:
   [[nodiscard]] static auto Begin(ExecutionContext &context, const GraphCaptureOptions &options,
@@ -57,7 +56,6 @@ class CaptureSessionState final {
   void Invalidate() noexcept;
 
   [[nodiscard]] auto IsActive() const noexcept -> bool;
-  [[nodiscard]] auto IsOwnerThread() const noexcept -> bool;
   [[nodiscard]] auto GetStatus() const noexcept -> CaptureStatus;
   [[nodiscard]] auto GetOperationCount() const noexcept -> uint64_t;
 
@@ -70,25 +68,24 @@ class CaptureSessionState final {
   [[nodiscard]] auto GetJoinEvent(size_t index) noexcept -> PooledEvent &;
 
  private:
-  CaptureSessionState(ExecutionContextImpl &context, std::shared_ptr<RuntimeState> runtime_state,
+  CaptureSessionState(std::shared_ptr<ExecutionContextImpl> context, std::shared_ptr<RuntimeState> runtime_state,
                       std::shared_ptr<StreamState> primary_stream, std::vector<PooledEvent> dependency_events,
                       std::string name, std::source_location location) noexcept;
 
   void ClearContextRegistration(CaptureStatus final_status) noexcept;
   void ReportCleanupFailure(std::string_view message) noexcept;
 
-  ExecutionContextImpl *context_;
+  std::shared_ptr<ExecutionContextImpl> context_;
   std::shared_ptr<RuntimeState> runtime_state_;
   std::shared_ptr<StreamState> primary_stream_;
   std::vector<std::shared_ptr<StreamState>> auxiliary_streams_;
   std::vector<PooledEvent> dependency_events_;
   std::map<const Storage *, std::shared_ptr<Storage>> retained_storage_;
   std::map<const CommunicatorGroupState *, std::shared_ptr<CommunicatorGroupState>> retained_communicators_;
-  std::thread::id owner_thread_;
   std::string name_;
   std::source_location location_;
-  CaptureStatus status_{CaptureStatus::ACTIVE};
-  uint64_t operation_count_{0};
+  std::atomic<CaptureStatus> status_{CaptureStatus::ACTIVE};
+  std::atomic<uint64_t> operation_count_{0};
 };
 
 /** Native CUDA graph executable plus every owner required by its captured addresses and library nodes. */

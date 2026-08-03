@@ -1,14 +1,12 @@
 #pragma once
 
+#include <driver_types.h>
 #include <cstdint>
 #include <memory>
 #include <source_location>
-#include <type_traits>
 
-#include <driver_types.h>
-
+#include "ttl/runtime/device_error.hpp"
 #include "ttl/runtime/stream.hpp"
-#include "ttl/tensor/dtype.hpp"
 
 namespace ttl {
 
@@ -22,38 +20,9 @@ class DeviceAllocator;
 class PinnedDeviceErrorRecord;
 class Storage;
 
-enum class DeviceErrorCode : uint8_t {
-  NONE = 0,
-  INDEX_OUT_OF_BOUNDS,
-  INTEGER_DIVIDE_BY_ZERO,
-  CAST_OUT_OF_RANGE,
-  RNG_COUNTER_OVERFLOW,
-};
-
-/** Sticky first-error record shared by kernels submitted through one ExecutionContext. */
-struct DeviceErrorRecord final {
-  uint32_t code_{0};
-  uint8_t source_dtype_{0};
-  uint8_t target_dtype_{0};
-  uint16_t reserved_{0};
-  uint64_t operation_sequence_{0};
-  int64_t linear_index_{0};
-  uint64_t offending_value_bits_{0};
-  int64_t bound_{0};
-};
-
-/** Per-launch device error destination and monotonically increasing operation identity. */
-struct DeviceErrorLaunchContext final {
-  DeviceErrorRecord *record_{nullptr};
-  uint64_t operation_sequence_{0};
-  DType source_dtype_{DType::BOOL};
-  DType target_dtype_{DType::BOOL};
-};
-
-static_assert(std::is_trivially_copyable_v<DeviceErrorRecord>);
-static_assert(std::is_standard_layout_v<DeviceErrorRecord>);
-static_assert(std::is_trivially_copyable_v<DeviceErrorLaunchContext>);
-static_assert(std::is_standard_layout_v<DeviceErrorLaunchContext>);
+using DeviceErrorCode = CudaDeviceErrorCode;
+using DeviceErrorRecord = CudaDeviceErrorRecord;
+using DeviceErrorLaunchContext = CudaDeviceErrorContext;
 
 /** ExecutionContext-owned device record and pinned host mirror. */
 class DeviceErrorState final {

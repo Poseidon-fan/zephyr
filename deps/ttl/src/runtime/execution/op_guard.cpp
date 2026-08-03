@@ -94,8 +94,12 @@ void OpGuard::RetainCommunicator(const std::shared_ptr<CommunicatorGroupState> &
 
 void OpGuard::CheckLaunch() const {
   const auto status = GetCudaApi().get_last_error_();
-  if (status != cudaSuccess && capture_state_ != nullptr) {
-    capture_state_->Invalidate();
+  if (status != cudaSuccess) {
+    ContextAccess::GetImpl(context_, location_)
+        .status_.store(ExecutionContextStatus::FAILED, std::memory_order_release);
+    if (capture_state_ != nullptr) {
+      capture_state_->Invalidate();
+    }
   }
   CheckCuda(status, operation_, location_);
 }

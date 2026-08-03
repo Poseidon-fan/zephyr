@@ -19,7 +19,8 @@ namespace ttl {
  * Copyable owner of a fixed-size CUDA page-locked host allocation.
  *
  * Copies share the same mutable bytes. Releasing the last owner is asynchronous with respect to previously submitted
- * transfers: the underlying allocation is not reused until every recorded CUDA stream has completed.
+ * transfers: the underlying allocation is not reused until every recorded CUDA stream has completed. A moved-from
+ * buffer is a valid empty buffer whose observers return null, zero, or an empty span.
  */
 class PinnedBuffer final {
  public:

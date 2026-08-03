@@ -144,6 +144,20 @@ void ValidateFloatingDType(DType dtype, std::string_view operation, std::source_
   }
 }
 
+void ValidateUnaryDType(DType dtype, internal::UnaryElementwiseOp operation, std::string_view name,
+                        std::source_location location) {
+  if (IsFloating(dtype, location)) {
+    return;
+  }
+  const auto supports_signed_integer = operation == internal::UnaryElementwiseOp::NEGATE ||
+                                       operation == internal::UnaryElementwiseOp::ABS ||
+                                       operation == internal::UnaryElementwiseOp::RELU;
+  if (supports_signed_integer && IsSignedInteger(dtype, location)) {
+    return;
+  }
+  ThrowUnsupportedDType(name, dtype, location);
+}
+
 void ValidateEqualDTypes(DType lhs, DType rhs, std::string_view operation, std::source_location location) {
   if (lhs != rhs) {
     ThrowElementwiseError(operation, "input dtypes must match", location);
@@ -396,7 +410,7 @@ void UnaryOutImpl(ExecutionContext &context, Tensor &output, const Tensor &input
   guard.ValidateTensor(input);
   ValidateOutputShape(output.GetShape(), input.GetShape(), name, location);
   ValidateOutputDType(output.GetDType(), input.GetDType(), name, location);
-  ValidateFloatingDType(input.GetDType(), name, location);
+  ValidateUnaryDType(input.GetDType(), operation, name, location);
   const auto iterator = internal::ElementwiseIterator::Builder{}
                             .AddOutput(output)
                             .AddInput(input)
@@ -418,7 +432,7 @@ void UnaryOutImpl(ExecutionContext &context, Tensor &output, const Tensor &input
   {
     internal::OpGuard guard{context, name, location};
     guard.ValidateTensor(input);
-    ValidateFloatingDType(input.GetDType(), name, location);
+    ValidateUnaryDType(input.GetDType(), operation, name, location);
   }
   auto output = Empty(context, input.GetShape(), input.GetDType(), location);
   UnaryOutImpl(context, output, input, operation, location);

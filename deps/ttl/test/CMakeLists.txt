@@ -1,6 +1,11 @@
 include(GoogleTest)
 
-file(GLOB_RECURSE TTL_PUBLIC_HEADERS CONFIGURE_DEPENDS "${CMAKE_CURRENT_LIST_DIR}/../include/ttl/*.hpp")
+file(
+    GLOB_RECURSE TTL_PUBLIC_HEADERS
+    CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_LIST_DIR}/../include/ttl/*.hpp"
+    "${CMAKE_CURRENT_LIST_DIR}/../include/ttl/*.cuh"
+)
 
 file(
     GLOB_RECURSE TTL_TEST_SOURCES
@@ -16,9 +21,16 @@ add_dependencies(ttl_build_tests ttl_public_headers)
 foreach(ttl_public_header IN LISTS TTL_PUBLIC_HEADERS)
     file(RELATIVE_PATH ttl_public_header_relative "${CMAKE_CURRENT_LIST_DIR}/../include" "${ttl_public_header}")
     string(REPLACE "/" "_" ttl_public_header_target "${ttl_public_header_relative}")
-    string(REPLACE ".hpp" "" ttl_public_header_target "${ttl_public_header_target}")
+    string(REPLACE "." "_" ttl_public_header_target "${ttl_public_header_target}")
     set(ttl_public_header_target "header_${ttl_public_header_target}")
-    set(ttl_public_header_source "${CMAKE_CURRENT_BINARY_DIR}/header_check/${ttl_public_header_target}.cpp")
+    if(ttl_public_header_relative MATCHES "\\.cuh$")
+        set(ttl_public_header_extension cu)
+    else()
+        set(ttl_public_header_extension cpp)
+    endif()
+    set(ttl_public_header_source
+        "${CMAKE_CURRENT_BINARY_DIR}/header_check/${ttl_public_header_target}.${ttl_public_header_extension}"
+    )
     file(GENERATE OUTPUT "${ttl_public_header_source}" CONTENT "#include <${ttl_public_header_relative}>\n")
 
     add_library(${ttl_public_header_target} OBJECT EXCLUDE_FROM_ALL "${ttl_public_header_source}")
