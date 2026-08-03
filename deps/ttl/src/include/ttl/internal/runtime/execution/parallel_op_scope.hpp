@@ -53,6 +53,7 @@ class ParallelOpScope final {
   void RecordTensor(const Tensor &tensor, size_t auxiliary_stream_index);
   void CheckLaunch() const;
   void Finish();
+  void FailExternalSubmissionNoexcept() noexcept;
 
  private:
   struct JoinResult final {
@@ -66,6 +67,7 @@ class ParallelOpScope final {
     FAILED,
   };
 
+  void FailNoexcept(bool report_unfinished_scope) noexcept;
   void MarkFailed() noexcept;
   [[nodiscard]] auto EnqueueJoin() noexcept -> JoinResult;
   [[nodiscard]] auto GetAuxiliaryLane(size_t index) const -> ExecutionLane &;

@@ -26,17 +26,26 @@ enum class CudaCapturePolicy : uint8_t {
   SAFE,
 };
 
+/** One stream-local scratch workspace requested for an external CUDA submission lane. */
+struct CudaWorkspaceRequest final {
+  size_t size_bytes_{0};
+  size_t alignment_{256};
+};
+
 /** Resources and capture contract requested by one external CUDA submission. */
 struct CudaKernelLaunchOptions final {
-  size_t workspace_bytes_{0};
-  size_t workspace_alignment_{256};
+  CudaWorkspaceRequest workspace_{};
+  size_t auxiliary_stream_count_{0};
+  /** Optional request for each leading auxiliary lane; omitted lanes receive an empty workspace. */
+  // NOLINTNEXTLINE(readability-redundant-member-init): keeps designated initializers warning-free under NVCC.
+  std::span<const CudaWorkspaceRequest> auxiliary_workspaces_{};
   CudaCapturePolicy capture_policy_{CudaCapturePolicy::FORBIDDEN};
 };
 
 /** A byte range in TTL's stream-local scratch arena. It is valid only during the submission callback. */
 struct CudaWorkspace final {
-  void *data_;
-  size_t size_bytes_;
+  void *data_{nullptr};
+  size_t size_bytes_{0};
 };
 
 class CudaKernelLaunch;
@@ -52,8 +61,10 @@ void SubmitCudaKernel(ExecutionContext &context, std::string_view operation, std
  * Checked bridge for inference-engine CUDA kernels implemented outside TTL.
  *
  * Construction claims exclusive host-side use of the context, selects its device, validates and records all tensor
- * storage on the context stream, and obtains optional stream-local workspace. The object must remain on the stack
- * until every kernel in the submission has been enqueued. Prefer SubmitCudaKernel so launch errors are always checked.
+ * storage on every requested execution lane, and obtains optional stream-local workspaces. Auxiliary lanes form a
+ * structured fork/join region: they wait for prior primary-stream work before the callback, and the primary stream
+ * waits for them before the submission completes. The object must remain on the stack until every kernel has been
+ * enqueued. Prefer SubmitCudaKernel so launch errors and the fork/join boundary are always checked.
  *
  * Output tensors are read-write. An input that is also written must be listed in outputs as well. Tensor metadata and
  * output alias requirements remain the custom operator's responsibility.
@@ -68,6 +79,13 @@ class CudaKernelLaunch final {
 
   [[nodiscard]] auto GetStream() const noexcept -> cudaStream_t;
   [[nodiscard]] auto GetWorkspace() const noexcept -> CudaWorkspace;
+  [[nodiscard]] auto GetAuxiliaryStreamCount() const noexcept -> size_t;
+  [[nodiscard]] auto GetAuxiliaryStream(size_t index,
+                                        std::source_location location = std::source_location::current()) const
+      -> cudaStream_t;
+  [[nodiscard]] auto GetAuxiliaryWorkspace(size_t index,
+                                           std::source_location location = std::source_location::current()) const
+      -> CudaWorkspace;
   [[nodiscard]] auto IsCapturing() const noexcept -> bool;
 
   [[nodiscard]] auto GetInputData(const Tensor &tensor,
@@ -103,7 +121,7 @@ class CudaKernelLaunch final {
                    std::span<Tensor *const> outputs, const CudaKernelLaunchOptions &options,
                    std::source_location location);
 
-  void CheckLaunch() const;
+  void Finish();
   void FailAfterCallbackException() noexcept;
 
   [[nodiscard]] auto GetInputDataAsDType(const Tensor &tensor, DType dtype, std::source_location location) const
@@ -116,10 +134,11 @@ class CudaKernelLaunch final {
 /**
  * Run one checked external CUDA submission.
  *
- * The callback receives the only valid access path to registered output pointers, the native stream, and scratch
- * workspace. A normal callback return is followed by cudaGetLastError through TTL's error translation layer. If the
- * callback throws, TTL invalidates the submission context, clears and reports any pending CUDA launch error, and then
- * rethrows the original exception so partially submitted work cannot be followed by unrelated operations.
+ * The callback receives the only valid access path to registered output pointers, native streams, and scratch
+ * workspaces. A normal callback return is followed by cudaGetLastError and, when auxiliary streams were requested, a
+ * join back to the primary stream. If the callback throws, TTL best-effort joins the lanes, invalidates the submission
+ * context, clears and reports any pending CUDA launch error, and then rethrows the original exception so partially
+ * submitted work cannot be followed by unrelated operations.
  */
 template <typename Function>
   requires std::invocable<Function, CudaKernelLaunch &>
@@ -133,7 +152,7 @@ void SubmitCudaKernel(ExecutionContext &context, std::string_view operation, std
     launch.FailAfterCallbackException();
     throw;
   }
-  launch.CheckLaunch();
+  launch.Finish();
 }
 
 static_assert(!std::copy_constructible<CudaKernelLaunch>);

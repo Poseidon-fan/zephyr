@@ -25,6 +25,16 @@ __global__ void AddOneKernel(const float *input, float *output, size_t count) {
   }
 }
 
+__global__ void DelayedAddOneKernel(const float *input, float *output, size_t count, uint64_t delay_cycles) {
+  const auto start = static_cast<uint64_t>(clock64());
+  while (static_cast<uint64_t>(clock64()) - start < delay_cycles) {
+  }
+  const auto index = (static_cast<size_t>(blockIdx.x) * blockDim.x) + threadIdx.x;
+  if (index < count) {
+    output[index] = input[index] + 1.0F;
+  }
+}
+
 void SubmitAddOne(ExecutionContext &context, const Tensor &input, Tensor &output, CudaCapturePolicy capture_policy) {
   const std::array inputs{input};
   const std::array outputs{&output};
@@ -38,8 +48,37 @@ void SubmitAddOne(ExecutionContext &context, const Tensor &input, Tensor &output
                                                                          launch.GetOutputDataAs<float>(output), count);
       },
       CudaKernelLaunchOptions{
-          .workspace_bytes_ = 1024,
-          .workspace_alignment_ = 256,
+          .workspace_ = {.size_bytes_ = 1024, .alignment_ = 256},
+          .capture_policy_ = capture_policy,
+      });
+}
+
+void SubmitAddOneParallel(ExecutionContext &context, const Tensor &input, Tensor &output,
+                          CudaCapturePolicy capture_policy) {
+  const std::array inputs{input};
+  const std::array outputs{&output};
+  constexpr std::array auxiliary_workspaces{
+      CudaWorkspaceRequest{.size_bytes_ = 512, .alignment_ = 128},
+  };
+  SubmitCudaKernel(
+      context, "external parallel AddOne", inputs, outputs,
+      [&](CudaKernelLaunch &launch) {
+        const auto count = static_cast<size_t>(input.GetNumElements());
+        const auto primary_count = count / 2;
+        const auto auxiliary_count = count - primary_count;
+        constexpr uint32_t block_size = 128;
+        const auto *input_data = launch.GetInputDataAs<float>(input);
+        auto *output_data = launch.GetOutputDataAs<float>(output);
+        const auto primary_blocks = static_cast<uint32_t>((primary_count + block_size - 1) / block_size);
+        const auto auxiliary_blocks = static_cast<uint32_t>((auxiliary_count + block_size - 1) / block_size);
+        AddOneKernel<<<primary_blocks, block_size, 0, launch.GetStream()>>>(input_data, output_data, primary_count);
+        AddOneKernel<<<auxiliary_blocks, block_size, 0, launch.GetAuxiliaryStream(0)>>>(
+            input_data + primary_count, output_data + primary_count, auxiliary_count);
+      },
+      CudaKernelLaunchOptions{
+          .workspace_ = {.size_bytes_ = 1024, .alignment_ = 256},
+          .auxiliary_stream_count_ = 1,
+          .auxiliary_workspaces_ = auxiliary_workspaces,
           .capture_policy_ = capture_policy,
       });
 }
@@ -54,6 +93,46 @@ TEST(CudaKernelLaunchTest, RunsExternalKernelUsingOnlyPublicApi) {
 
   SubmitAddOne(context, input, output, CudaCapturePolicy::FORBIDDEN);
   EXPECT_EQ(test::Download<float>(context, output), (std::vector<float>{-1.0F, 1.0F, 2.0F, 5.0F, 10.0F}));
+}
+
+TEST(CudaKernelLaunchTest, RunsOneSubmissionAcrossPrimaryAndAuxiliaryStreams) {
+  test::RuntimeSession session;
+  auto context =
+      session.GetRuntime().CreateExecutionContext(Device{0}, ExecutionContextOptions{.max_auxiliary_stream_count_ = 1});
+  auto input = test::Upload(context, Shape{6}, std::vector<float>{-2.0F, -0.0F, 1.0F, 4.0F, 9.0F, 16.0F});
+  auto output = Empty(context, Shape{6}, DType::FLOAT32);
+  const std::array inputs{input};
+  const std::array outputs{&output};
+  constexpr std::array auxiliary_workspaces{
+      CudaWorkspaceRequest{.size_bytes_ = 512, .alignment_ = 128},
+  };
+
+  SubmitCudaKernel(
+      context, "parallel public API", inputs, outputs,
+      [&](CudaKernelLaunch &launch) {
+        EXPECT_EQ(launch.GetAuxiliaryStreamCount(), 1);
+        EXPECT_NE(launch.GetStream(), launch.GetAuxiliaryStream(0));
+        EXPECT_EQ(launch.GetWorkspace().size_bytes_, 1024);
+        EXPECT_EQ(launch.GetAuxiliaryWorkspace(0).size_bytes_, 512);
+        EXPECT_EQ(reinterpret_cast<uintptr_t>(launch.GetWorkspace().data_) % 256, 0);
+        EXPECT_EQ(reinterpret_cast<uintptr_t>(launch.GetAuxiliaryWorkspace(0).data_) % 128, 0);
+        EXPECT_THROW(static_cast<void>(launch.GetAuxiliaryStream(1)), InvalidArgumentError);
+        EXPECT_THROW(static_cast<void>(launch.GetAuxiliaryWorkspace(1)), InvalidArgumentError);
+
+        constexpr uint32_t block_size = 128;
+        const auto *input_data = launch.GetInputDataAs<float>(input);
+        auto *output_data = launch.GetOutputDataAs<float>(output);
+        AddOneKernel<<<1, block_size, 0, launch.GetStream()>>>(input_data, output_data, 3);
+        DelayedAddOneKernel<<<1, block_size, 0, launch.GetAuxiliaryStream(0)>>>(input_data + 3, output_data + 3, 3,
+                                                                                5'000'000);
+      },
+      CudaKernelLaunchOptions{
+          .workspace_ = {.size_bytes_ = 1024, .alignment_ = 256},
+          .auxiliary_stream_count_ = 1,
+          .auxiliary_workspaces_ = auxiliary_workspaces,
+      });
+
+  EXPECT_EQ(test::Download<float>(context, output), (std::vector<float>{-1.0F, 1.0F, 2.0F, 5.0F, 10.0F, 17.0F}));
 }
 
 TEST(CudaKernelLaunchTest, RejectsUnregisteredAndWronglyTypedPointers) {
@@ -82,12 +161,33 @@ TEST(CudaKernelLaunchTest, RejectsInvalidWorkspaceAndCaptureOptions) {
   const auto no_op = [](CudaKernelLaunch &) {};
 
   EXPECT_THROW(SubmitCudaKernel(context, "invalid alignment", inputs, outputs, no_op,
-                                CudaKernelLaunchOptions{.workspace_bytes_ = 1, .workspace_alignment_ = 3}),
+                                CudaKernelLaunchOptions{.workspace_ = {.size_bytes_ = 1, .alignment_ = 3}}),
                InvalidArgumentError);
   EXPECT_THROW(SubmitCudaKernel(context, "invalid capture policy", inputs, outputs, no_op,
                                 CudaKernelLaunchOptions{
                                     // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange): invalid input test.
                                     .capture_policy_ = static_cast<CudaCapturePolicy>(255),
+                                }),
+               InvalidArgumentError);
+
+  EXPECT_THROW(SubmitCudaKernel(context, "unavailable auxiliary stream", inputs, outputs, no_op,
+                                CudaKernelLaunchOptions{.auxiliary_stream_count_ = 1}),
+               InvalidArgumentError);
+
+  auto auxiliary_context =
+      session.GetRuntime().CreateExecutionContext(Device{0}, ExecutionContextOptions{.max_auxiliary_stream_count_ = 1});
+  constexpr std::array invalid_auxiliary_workspaces{
+      CudaWorkspaceRequest{.size_bytes_ = 1, .alignment_ = 3},
+  };
+  EXPECT_THROW(SubmitCudaKernel(auxiliary_context, "invalid auxiliary alignment", inputs, outputs, no_op,
+                                CudaKernelLaunchOptions{
+                                    .auxiliary_stream_count_ = 1,
+                                    .auxiliary_workspaces_ = invalid_auxiliary_workspaces,
+                                }),
+               InvalidArgumentError);
+  EXPECT_THROW(SubmitCudaKernel(auxiliary_context, "excess auxiliary workspaces", inputs, outputs, no_op,
+                                CudaKernelLaunchOptions{
+                                    .auxiliary_workspaces_ = invalid_auxiliary_workspaces,
                                 }),
                InvalidArgumentError);
 }
@@ -147,6 +247,48 @@ TEST(CudaKernelLaunchTest, ReplaysCaptureSafeExternalKernel) {
 
   EXPECT_EQ(graph.GetLaunchCount(), 2);
   EXPECT_EQ(test::Download<float>(context, output), (std::vector<float>{1.0F, 2.0F, 3.0F, 4.0F}));
+}
+
+TEST(CudaKernelLaunchTest, ReplaysCaptureSafeExternalKernelAcrossAuxiliaryStream) {
+  test::RuntimeSession session;
+  auto context =
+      session.GetRuntime().CreateExecutionContext(Device{0}, ExecutionContextOptions{.max_auxiliary_stream_count_ = 1});
+  auto input = test::Upload(context, Shape{6}, std::vector<float>{0.0F, 1.0F, 2.0F, 3.0F, 4.0F, 5.0F});
+  auto output = Empty(context, Shape{6}, DType::FLOAT32);
+
+  SubmitAddOneParallel(context, input, output, CudaCapturePolicy::SAFE);
+  context.Synchronize();
+  auto capture = context.BeginCapture(GraphCaptureOptions{.name_ = "external parallel kernel"});
+  SubmitAddOneParallel(context, input, output, CudaCapturePolicy::SAFE);
+  auto graph = capture.Finish();
+  graph.Launch(context);
+  graph.Launch(context);
+  context.Synchronize();
+
+  EXPECT_EQ(graph.GetLaunchCount(), 2);
+  EXPECT_EQ(test::Download<float>(context, output), (std::vector<float>{1.0F, 2.0F, 3.0F, 4.0F, 5.0F, 6.0F}));
+}
+
+TEST(CudaKernelLaunchTest, FailsContextAfterParallelCallbackException) {
+  test::RuntimeSession session;
+  auto context =
+      session.GetRuntime().CreateExecutionContext(Device{0}, ExecutionContextOptions{.max_auxiliary_stream_count_ = 1});
+  auto input = test::Upload(context, Shape{1}, std::vector<float>{4.0F});
+  auto output = Empty(context, Shape{1}, DType::FLOAT32);
+  const std::array inputs{input};
+  const std::array outputs{&output};
+
+  EXPECT_THROW(SubmitCudaKernel(
+                   context, "throwing parallel submission", inputs, outputs,
+                   [&](CudaKernelLaunch &launch) {
+                     AddOneKernel<<<1, 1, 0, launch.GetAuxiliaryStream(0)>>>(launch.GetInputDataAs<float>(input),
+                                                                             launch.GetOutputDataAs<float>(output), 1);
+                     throw std::runtime_error{"parallel submission callback failed"};
+                   },
+                   CudaKernelLaunchOptions{.auxiliary_stream_count_ = 1}),
+               std::runtime_error);
+  EXPECT_THROW(SubmitAddOneParallel(context, input, output, CudaCapturePolicy::FORBIDDEN), InvalidArgumentError);
+  context.Synchronize();
 }
 
 TEST(CudaKernelLaunchTest, MovedFromCapturedGraphFailsDeterministically) {

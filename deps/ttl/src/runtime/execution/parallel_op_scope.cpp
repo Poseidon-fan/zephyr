@@ -111,21 +111,7 @@ ParallelOpScope::~ParallelOpScope() noexcept {
   if (status_ != Status::ACTIVE) {
     return;
   }
-
-  RuntimeState &runtime_state = *impl_.runtime_state_;
-  const auto result = EnqueueJoin();
-  if (result.status_ != cudaSuccess) {
-    const ErrorReportContext error_context{
-        .location_ = location_,
-        .device_ = impl_.primary_lane_.GetStream().GetDevice(),
-        .stream_id_ = impl_.primary_lane_.GetStream().GetId(),
-    };
-    TryCuda(result.status_, result.operation_, *runtime_state.GetErrorSink(), error_context);
-  }
-  MarkFailed();
-
-  ReportUnfinishedScope(*runtime_state.GetErrorSink(), impl_.primary_lane_.GetStream().GetDevice(),
-                        impl_.primary_lane_.GetStream().GetId(), guard_.operation_, location_);
+  FailNoexcept(true);
 }
 
 auto ParallelOpScope::GetAuxiliaryStreamCount() const noexcept -> size_t { return auxiliary_stream_count_; }
@@ -223,6 +209,31 @@ void ParallelOpScope::Finish() {
   }
   status_ = Status::JOINED;
   guard_.parallel_scope_active_ = false;
+}
+
+void ParallelOpScope::FailExternalSubmissionNoexcept() noexcept {
+  if (status_ == Status::ACTIVE) {
+    FailNoexcept(false);
+  }
+}
+
+void ParallelOpScope::FailNoexcept(bool report_unfinished_scope) noexcept {
+  RuntimeState &runtime_state = *impl_.runtime_state_;
+  const auto result = EnqueueJoin();
+  if (result.status_ != cudaSuccess) {
+    const ErrorReportContext error_context{
+        .location_ = location_,
+        .device_ = impl_.primary_lane_.GetStream().GetDevice(),
+        .stream_id_ = impl_.primary_lane_.GetStream().GetId(),
+    };
+    TryCuda(result.status_, result.operation_, *runtime_state.GetErrorSink(), error_context);
+  }
+  MarkFailed();
+
+  if (report_unfinished_scope) {
+    ReportUnfinishedScope(*runtime_state.GetErrorSink(), impl_.primary_lane_.GetStream().GetDevice(),
+                          impl_.primary_lane_.GetStream().GetId(), guard_.operation_, location_);
+  }
 }
 
 void ParallelOpScope::MarkFailed() noexcept {
