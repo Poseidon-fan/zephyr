@@ -11,12 +11,7 @@
 
 namespace ttl {
 
-/**
- * Identifies one concrete CUDA device by ordinal.
- *
- * Device construction does not initialize the CUDA runtime or verify that the ordinal exists. Runtime performs all
- * environment-dependent validation.
- */
+/** Identifies one concrete CUDA device by ordinal without initializing the CUDA runtime. */
 class Device final {
  public:
   constexpr explicit Device(int32_t ordinal, std::source_location location = std::source_location::current())

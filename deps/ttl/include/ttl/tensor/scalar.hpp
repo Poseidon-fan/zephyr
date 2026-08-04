@@ -40,12 +40,12 @@ class Scalar final {
     } else if constexpr (std::same_as<Value, int64_t>) {
       return CastToInt64(location);
     } else if constexpr (std::same_as<Value, Float16>) {
-      return CastToFloat16();
+      return CastToFloat16(location);
     } else if constexpr (std::same_as<Value, BFloat16>) {
-      return CastToBFloat16();
+      return CastToBFloat16(location);
     } else {
       static_assert(std::same_as<Value, float>);
-      return CastToFloat32();
+      return CastToFloat32(location);
     }
   }
 
@@ -54,9 +54,9 @@ class Scalar final {
   [[nodiscard]] auto CastToUInt8(std::source_location location) const -> uint8_t;
   [[nodiscard]] auto CastToInt32(std::source_location location) const -> int32_t;
   [[nodiscard]] auto CastToInt64(std::source_location location) const -> int64_t;
-  [[nodiscard]] auto CastToFloat16() const noexcept -> Float16;
-  [[nodiscard]] auto CastToBFloat16() const noexcept -> BFloat16;
-  [[nodiscard]] auto CastToFloat32() const noexcept -> float;
+  [[nodiscard]] auto CastToFloat16(std::source_location location) const -> Float16;
+  [[nodiscard]] auto CastToBFloat16(std::source_location location) const -> BFloat16;
+  [[nodiscard]] auto CastToFloat32(std::source_location location) const -> float;
 
   std::variant<bool, int64_t, double> value_;
 };

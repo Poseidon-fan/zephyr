@@ -17,6 +17,7 @@
 
 #include <driver_types.h>
 
+#include "ttl/common/device.hpp"
 #include "ttl/common/error.hpp"
 #include "ttl/common/error_sink.hpp"
 #include "ttl/distributed/communicator.hpp"
@@ -37,7 +38,6 @@
 #include "ttl/internal/runtime/runtime.hpp"
 #include "ttl/internal/tensor/storage.hpp"
 #include "ttl/internal/tensor/tensor_impl.hpp"
-#include "ttl/runtime/device.hpp"
 #include "ttl/runtime/device_properties.hpp"
 #include "ttl/runtime/execution_context.hpp"
 #include "ttl/runtime/stream.hpp"
@@ -98,11 +98,11 @@ void ValidateRuntimeOptions(const RuntimeOptions &options, std::source_location 
 [[nodiscard]] auto FormatOutstandingContexts(size_t count) -> std::string {
   std::string message{"cannot shut down runtime while "};
   message.append(std::to_string(count));
-  message.append(" ExecutionContext object");
+  message.append(" ExecutionContext registration");
   if (count != 1) {
     message.push_back('s');
   }
-  message.append(" remain alive");
+  message.append(" remain active");
   return message;
 }
 
@@ -306,10 +306,22 @@ void RuntimeState::EnsureRunning(std::source_location location) const {
   }
 }
 
-void RuntimeState::RegisterExecutionContext(std::source_location location) {
+auto RuntimeState::BeginExecutionContextCreation(std::source_location location) -> ExecutionContextRegistration {
   const std::scoped_lock lock{lifecycle_latch_};
   EnsureRunning(location);
+  if (HasActiveCapture()) {
+    throw CaptureError("cannot create an execution context during CUDA graph capture", location);
+  }
+  if (execution_context_count_.load(std::memory_order_relaxed) == std::numeric_limits<size_t>::max()) {
+    throw OverflowError("execution context count overflow", location);
+  }
   execution_context_count_.fetch_add(1, std::memory_order_relaxed);
+  return ExecutionContextRegistration{shared_from_this()};
+}
+
+void RuntimeState::CommitExecutionContextCreation(std::source_location location) {
+  const std::scoped_lock lock{lifecycle_latch_};
+  EnsureRunning(location);
 }
 
 void RuntimeState::UnregisterExecutionContext() noexcept {
@@ -373,6 +385,20 @@ void RuntimeState::PollGraphCleanupsNoexcept() noexcept {
   while (*link != nullptr) {
     auto *state = *link;
     if (!state->RetryNoexcept(*this)) {
+      link = &state->next_;
+      continue;
+    }
+    *link = state->next_;
+    delete state;
+  }
+}
+
+void RuntimeState::DrainGraphCleanups(std::source_location location) {
+  const std::scoped_lock lock{graph_cleanup_latch_};
+  auto **link = &pending_graph_cleanup_head_;
+  while (*link != nullptr) {
+    auto *state = *link;
+    if (!state->SynchronizeAndRetry(*this, location)) {
       link = &state->next_;
       continue;
     }
@@ -484,12 +510,13 @@ void RuntimeState::Shutdown(std::source_location location) {
   if (context_count != 0) {
     throw InvalidArgumentError(FormatOutstandingContexts(context_count), location);
   }
+  if (HasActiveCapture()) {
+    throw InvalidArgumentError("cannot shut down runtime while CUDA graph capture is active", location);
+  }
+  DrainGraphCleanups(location);
   const auto graph_count = graph_count_.load(std::memory_order_acquire);
   if (graph_count != 0) {
     throw InvalidArgumentError(FormatOutstandingGraphs(graph_count), location);
-  }
-  if (HasActiveCapture()) {
-    throw InvalidArgumentError("cannot shut down runtime while CUDA graph capture is active", location);
   }
   if (HasOpenCommunicatorGroups()) {
     throw InvalidArgumentError("cannot shut down runtime while an NCCL communicator group remains open", location);
@@ -568,27 +595,23 @@ auto Runtime::GetStatistics(std::source_location location) const -> RuntimeStati
 
 auto Runtime::CreateExecutionContext(Device device, const ExecutionContextOptions &options,
                                      std::source_location location) -> ExecutionContext {
-  impl_->state_->EnsureRunning(location);
-  if (impl_->state_->HasActiveCapture()) {
-    throw CaptureError("cannot create an execution context during CUDA graph capture", location);
-  }
+  auto registration = impl_->state_->BeginExecutionContextCreation(location);
   const auto device_context = impl_->state_->GetDeviceContext(device, location);
   auto stream =
       internal::StreamAccess::CreateOwned(device, options.stream_priority_, impl_->state_->GetErrorSink(), location);
-  return internal::ContextAccess::Create(impl_->state_, device_context, std::move(stream), options, location);
+  return internal::ContextAccess::Create(impl_->state_, std::move(registration), device_context, std::move(stream),
+                                         options, location);
 }
 
 auto Runtime::WrapExternalStream(Device device, cudaStream_t stream, std::shared_ptr<void> owner,
                                  const ExecutionContextOptions &options, std::source_location location)
     -> ExecutionContext {
-  impl_->state_->EnsureRunning(location);
-  if (impl_->state_->HasActiveCapture()) {
-    throw CaptureError("cannot wrap an external stream during CUDA graph capture", location);
-  }
+  auto registration = impl_->state_->BeginExecutionContextCreation(location);
   const auto device_context = impl_->state_->GetDeviceContext(device, location);
   auto wrapped_stream =
       internal::StreamAccess::WrapExternal(device, stream, std::move(owner), impl_->state_->GetErrorSink(), location);
-  return internal::ContextAccess::Create(impl_->state_, device_context, std::move(wrapped_stream), options, location);
+  return internal::ContextAccess::Create(impl_->state_, std::move(registration), device_context,
+                                         std::move(wrapped_stream), options, location);
 }
 
 auto Runtime::FromBlob(ExecutionContext &context, ExternalMemory memory, const Shape &shape, const Strides &strides,

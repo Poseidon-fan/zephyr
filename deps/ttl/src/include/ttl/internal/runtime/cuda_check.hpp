@@ -9,8 +9,8 @@
 #include <cuda_runtime_api.h>
 #include <nccl.h>
 
+#include "ttl/common/device.hpp"
 #include "ttl/common/error_sink.hpp"
-#include "ttl/runtime/device.hpp"
 
 namespace ttl::internal {
 

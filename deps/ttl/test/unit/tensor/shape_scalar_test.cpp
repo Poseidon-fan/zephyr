@@ -1,4 +1,5 @@
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <limits>
 #include <span>
@@ -67,6 +68,10 @@ TEST(ScalarTest, PreservesCategoryAndChecksIntegerConversions) {
   EXPECT_THROW(static_cast<void>(Scalar{1.5}.Cast<int32_t>()), InvalidArgumentError);
   EXPECT_THROW(static_cast<void>(Scalar{std::numeric_limits<double>::infinity()}.Cast<int64_t>()),
                InvalidArgumentError);
+  EXPECT_THROW(static_cast<void>(Scalar{std::numeric_limits<double>::max()}.Cast<float>()), OverflowError);
+  EXPECT_THROW(static_cast<void>(Scalar{65505.0}.Cast<Float16>()), OverflowError);
+  EXPECT_THROW(static_cast<void>(Scalar{0x1.ffp127}.Cast<BFloat16>()), OverflowError);
+  EXPECT_TRUE(std::isinf(Scalar{std::numeric_limits<double>::infinity()}.Cast<float>()));
 }
 
 }  // namespace ttl

@@ -9,13 +9,13 @@
 #include <span>
 #include <vector>
 
+#include "ttl/common/device.hpp"
 #include "ttl/common/error_sink.hpp"
 #include "ttl/internal/ops/matmul_plan.hpp"
 #include "ttl/internal/runtime/execution/event_pool.hpp"
 #include "ttl/internal/runtime/library/blas_handle_pool.hpp"
 #include "ttl/internal/runtime/memory/device_allocator.hpp"
 #include "ttl/internal/runtime/memory/pinned_allocator.hpp"
-#include "ttl/runtime/device.hpp"
 #include "ttl/runtime/device_properties.hpp"
 #include "ttl/runtime/runtime.hpp"
 
@@ -29,6 +29,7 @@ namespace ttl::internal {
 
 class CommunicatorGroupState;
 class CaptureSessionState;
+class ExecutionContextRegistration;
 class GraphCleanupState;
 
 class DeviceContext final {
@@ -75,7 +76,8 @@ class RuntimeState final : public std::enable_shared_from_this<RuntimeState> {
   [[nodiscard]] auto GetStatistics(std::source_location location) const -> RuntimeStatistics;
 
   void EnsureRunning(std::source_location location) const;
-  void RegisterExecutionContext(std::source_location location);
+  [[nodiscard]] auto BeginExecutionContextCreation(std::source_location location) -> ExecutionContextRegistration;
+  void CommitExecutionContextCreation(std::source_location location);
   void UnregisterExecutionContext() noexcept;
   void RegisterGraph(std::source_location location);
   void UnregisterGraph() noexcept;
@@ -96,6 +98,7 @@ class RuntimeState final : public std::enable_shared_from_this<RuntimeState> {
  private:
   [[nodiscard]] auto FindDeviceIndex(Device device, std::source_location location) const -> size_t;
   [[nodiscard]] auto HasOpenCommunicatorGroups() noexcept -> bool;
+  void DrainGraphCleanups(std::source_location location);
   void PollGraphCleanupsNoexcept() noexcept;
 
   std::vector<Device> devices_;

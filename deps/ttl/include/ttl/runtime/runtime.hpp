@@ -11,7 +11,7 @@
 
 #include <driver_types.h>
 
-#include "ttl/runtime/device.hpp"
+#include "ttl/common/device.hpp"
 #include "ttl/runtime/device_properties.hpp"
 #include "ttl/runtime/execution_context.hpp"
 #include "ttl/runtime/pinned_buffer.hpp"
@@ -118,7 +118,12 @@ struct ExternalMemory final {
   std::shared_ptr<void> owner_;
 };
 
-/** Process-local owner of the CUDA devices and memory services registered with TTL. */
+/**
+ * Process-local owner of the CUDA devices and memory services registered with TTL.
+ *
+ * Public methods may be called concurrently. Shutdown closes admission before checking child registrations, so a
+ * racing resource-creation call either commits before that transition or fails and releases its reservation.
+ */
 class Runtime final {
  public:
   explicit Runtime(RuntimeOptions options, std::source_location location = std::source_location::current());

@@ -10,13 +10,13 @@
 #include <string>
 #include <utility>
 
+#include "ttl/common/device.hpp"
 #include "ttl/common/error.hpp"
 #include "ttl/internal/common/checked_math.hpp"
 #include "ttl/internal/runtime/execution/execution_context.hpp"
 #include "ttl/internal/runtime/memory/device_allocator.hpp"
 #include "ttl/internal/tensor/storage.hpp"
 #include "ttl/internal/tensor/tensor_impl.hpp"
-#include "ttl/runtime/device.hpp"
 #include "ttl/runtime/execution_context.hpp"
 #include "ttl/runtime/stream.hpp"
 #include "ttl/tensor/dtype.hpp"
@@ -258,6 +258,13 @@ auto Tensor::IsNonOverlappingDense(std::source_location location) const -> bool 
 
 auto Tensor::HasZeroStride(std::source_location location) const -> bool {
   return GetImpl(location).HasFlag(internal::TensorFlag::HAS_ZERO_STRIDE);
+}
+
+void Tensor::RecordUsage(const Stream &stream, std::source_location location) const {
+  if (stream.GetDevice(location) != GetDevice(location)) {
+    throw InvalidArgumentError("tensor usage stream belongs to a different device", location);
+  }
+  internal::TensorAccess::RecordUsage(*this, stream, location);
 }
 
 auto Tensor::GetDataPointer(DType expected_dtype, std::source_location location) const -> const void * {

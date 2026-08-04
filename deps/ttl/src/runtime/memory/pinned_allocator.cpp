@@ -21,6 +21,7 @@
 
 #include <cuda_runtime_api.h>
 
+#include "ttl/common/device.hpp"
 #include "ttl/common/error.hpp"
 #include "ttl/common/error_sink.hpp"
 #include "ttl/internal/common/checked_math.hpp"
@@ -29,7 +30,6 @@
 #include "ttl/internal/runtime/device_guard.hpp"
 #include "ttl/internal/runtime/execution/event_pool.hpp"
 #include "ttl/internal/runtime/execution/stream.hpp"
-#include "ttl/runtime/device.hpp"
 #include "ttl/runtime/pinned_buffer.hpp"
 #include "ttl/runtime/runtime.hpp"
 #include "ttl/runtime/stream.hpp"

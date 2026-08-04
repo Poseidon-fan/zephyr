@@ -3,9 +3,9 @@
 #include <cstddef>
 #include <memory>
 
+#include "ttl/common/device.hpp"
 #include "ttl/internal/runtime/memory/allocation.hpp"
 #include "ttl/internal/runtime/memory/stream_usage.hpp"
-#include "ttl/runtime/device.hpp"
 #include "ttl/runtime/stream.hpp"
 
 namespace ttl::internal {

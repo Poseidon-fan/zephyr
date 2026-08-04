@@ -6,8 +6,8 @@
 
 #include <cuda_runtime_api.h>
 
+#include "ttl/common/device.hpp"
 #include "ttl/common/error_sink.hpp"
-#include "ttl/runtime/device.hpp"
 #include "ttl/runtime/event.hpp"
 #include "ttl/runtime/stream.hpp"
 

@@ -24,6 +24,7 @@ constinit const CudaApi CUDA_API{
     .synchronize_event_ = cudaEventSynchronize,
     .destroy_event_ = cudaEventDestroy,
     .stream_wait_event_ = cudaStreamWaitEvent,
+    .query_stream_ = cudaStreamQuery,
     .synchronize_stream_ = cudaStreamSynchronize,
     .begin_stream_capture_ = cudaStreamBeginCapture,
     .end_stream_capture_ = cudaStreamEndCapture,

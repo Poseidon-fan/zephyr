@@ -6,7 +6,7 @@
 #include <source_location>
 #include <type_traits>
 
-#include "ttl/runtime/device.hpp"
+#include "ttl/common/device.hpp"
 #include "ttl/tensor/dtype.hpp"
 #include "ttl/tensor/shape.hpp"
 
@@ -19,6 +19,8 @@ class TensorImpl;
 }  // namespace ttl::internal
 
 namespace ttl {
+
+class Stream;
 
 class ExecutionContext;
 
@@ -63,6 +65,14 @@ class Tensor final {
       -> const std::remove_cv_t<T> * {
     return static_cast<const std::remove_cv_t<T> *>(GetDataPointer(DTYPE_OF<T>, location));
   }
+
+  /**
+   * Record a direct asynchronous read on a stream before releasing the final Tensor owner.
+   *
+   * This protects allocation lifetime only; it does not establish an execution dependency or retain storage for CUDA
+   * Graph capture. Capture and writable access must use SubmitCudaKernel.
+   */
+  void RecordUsage(const Stream &stream, std::source_location location = std::source_location::current()) const;
 
  private:
   friend class internal::TensorAccess;

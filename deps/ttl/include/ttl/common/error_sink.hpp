@@ -5,8 +5,8 @@
 #include <source_location>
 #include <string>
 
+#include "ttl/common/device.hpp"
 #include "ttl/common/error.hpp"
-#include "ttl/runtime/device.hpp"
 
 namespace ttl {
 
@@ -28,7 +28,8 @@ struct ErrorRecord final {
  * Receives errors from execution paths that are forbidden to throw.
  *
  * Report may be called concurrently and from destructors or C callbacks. Implementations must be thread-safe,
- * non-blocking, must not call TTL or NVIDIA APIs, and must internally handle allocation or logging failures.
+ * non-blocking, must not call TTL or NVIDIA APIs, and must internally handle allocation or logging failures. A caller
+ * may drop a record if constructing its owning message fails before Report is entered.
  */
 class ErrorSink {
  public:

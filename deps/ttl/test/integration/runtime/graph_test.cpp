@@ -12,13 +12,13 @@
 #include <gtest/gtest.h>
 
 #include "support/tensor_test_utils.hpp"
+#include "ttl/common/device.hpp"
 #include "ttl/common/error.hpp"
 #include "ttl/distributed/collective.hpp"
 #include "ttl/distributed/communicator.hpp"
 #include "ttl/distributed/nccl_launch.hpp"
 #include "ttl/internal/runtime/cuda_api.hpp"
 #include "ttl/ops/creation.hpp"
-#include "ttl/runtime/device.hpp"
 #include "ttl/runtime/execution_context.hpp"
 #include "ttl/runtime/graph.hpp"
 #include "ttl/runtime/runtime.hpp"
@@ -53,6 +53,11 @@ auto FailGraphExecDestroyOnce(cudaGraphExec_t executable) -> cudaError_t {
     }
   }
   return cudaGraphExecDestroy(executable);
+}
+
+auto ReportEventNotReady(cudaEvent_t event) -> cudaError_t {
+  static_cast<void>(event);
+  return cudaErrorNotReady;
 }
 
 // NOLINTNEXTLINE(readability-non-const-parameter): CUDA's function pointer requires a mutable output pointer.
@@ -153,6 +158,35 @@ TEST(GraphIntegrationTest, RetriesFailedNativeGraphDestructionFromRuntimePoll) {
   }
   runtime.Shutdown();
   EXPECT_FALSE(sink->GetRecords().empty());
+}
+
+TEST(GraphIntegrationTest, RetainsReplayResourcesUntilLaunchCompletion) {
+  auto sink = std::make_shared<test::RecordingErrorSink>();
+  Runtime runtime{MakeGraphRuntimeOptions(sink)};
+  {
+    auto context = runtime.CreateExecutionContext(Device{0});
+    auto output = Empty(context, Shape{1024}, DType::FLOAT32);
+    FillOut(context, output, Scalar{1.0F});
+    context.Synchronize();
+
+    auto capture = context.BeginCapture(GraphCaptureOptions{.name_ = "deferred replay cleanup"});
+    FillOut(context, output, Scalar{2.0F});
+    std::optional<CapturedGraph> graph{capture.Finish()};
+    graph->Launch(context);
+    auto cuda_api = internal::GetCudaApi();
+    cuda_api.query_event_ = ReportEventNotReady;
+    {
+      const internal::ScopedCudaApiOverride override{cuda_api};
+      graph.reset();
+    }
+
+    EXPECT_EQ(runtime.GetStatistics().captured_graph_count_, 1);
+    context.Synchronize();
+    runtime.Poll();
+    EXPECT_EQ(runtime.GetStatistics().captured_graph_count_, 0);
+  }
+  runtime.Shutdown();
+  EXPECT_TRUE(sink->GetRecords().empty());
 }
 
 TEST(GraphIntegrationTest, RetriesAbortWhenCleanupCannotSelectTheCaptureDevice) {

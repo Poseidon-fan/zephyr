@@ -12,6 +12,7 @@
 #include <cublas_v2.h>
 #include <driver_types.h>
 
+#include "ttl/common/device.hpp"
 #include "ttl/common/error.hpp"
 #include "ttl/common/error_sink.hpp"
 #include "ttl/internal/runtime/cuda_api.hpp"
@@ -24,7 +25,6 @@
 #include "ttl/internal/runtime/graph/graph.hpp"
 #include "ttl/internal/runtime/memory/scratch_arena.hpp"
 #include "ttl/internal/runtime/runtime.hpp"
-#include "ttl/runtime/device.hpp"
 #include "ttl/runtime/execution_context.hpp"
 #include "ttl/runtime/stream.hpp"
 #include "ttl/tensor/tensor.hpp"

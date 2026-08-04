@@ -76,8 +76,13 @@ template <typename Integer>
       value);
 }
 
-[[nodiscard]] auto CastToFloat(const std::variant<bool, int64_t, double> &value) noexcept -> float {
-  return std::visit([](const auto &stored) { return static_cast<float>(stored); }, value);
+[[nodiscard]] auto CastToFloat(const std::variant<bool, int64_t, double> &value, double maximum, std::string_view dtype,
+                               std::source_location location) -> float {
+  const auto converted = std::visit([](const auto &stored) { return static_cast<double>(stored); }, value);
+  if (std::isfinite(converted) && std::abs(converted) > maximum) {
+    ThrowScalarOverflow(dtype, location);
+  }
+  return static_cast<float>(converted);
 }
 
 }  // namespace
@@ -114,10 +119,16 @@ auto Scalar::CastToInt64(std::source_location location) const -> int64_t {
   return CastToInteger<int64_t>(value_, "int64", location);
 }
 
-auto Scalar::CastToFloat16() const noexcept -> Float16 { return FloatToFloat16(CastToFloat(value_)); }
+auto Scalar::CastToFloat16(std::source_location location) const -> Float16 {
+  return FloatToFloat16(CastToFloat(value_, 65504.0, "float16", location));
+}
 
-auto Scalar::CastToBFloat16() const noexcept -> BFloat16 { return FloatToBFloat16(CastToFloat(value_)); }
+auto Scalar::CastToBFloat16(std::source_location location) const -> BFloat16 {
+  return FloatToBFloat16(CastToFloat(value_, 0x1.fep127, "bfloat16", location));
+}
 
-auto Scalar::CastToFloat32() const noexcept -> float { return CastToFloat(value_); }
+auto Scalar::CastToFloat32(std::source_location location) const -> float {
+  return CastToFloat(value_, std::numeric_limits<float>::max(), "float32", location);
+}
 
 }  // namespace ttl

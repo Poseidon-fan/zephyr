@@ -1,9 +1,9 @@
 #include <zephyr/vector_adder.hpp>
 
+#include <ttl/common/device.hpp>
 #include <ttl/common/error_sink.hpp>
 #include <ttl/ops/copy.hpp>
 #include <ttl/ops/elementwise.hpp>
-#include <ttl/runtime/device.hpp>
 #include <ttl/runtime/runtime.hpp>
 #include <ttl/tensor/dtype.hpp>
 #include <ttl/tensor/shape.hpp>

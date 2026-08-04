@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <optional>
 #include <source_location>
 #include <string>
 #include <string_view>
@@ -13,8 +14,8 @@
 
 #include <cuda_runtime_api.h>
 
+#include "ttl/common/device.hpp"
 #include "ttl/internal/runtime/execution/event_pool.hpp"
-#include "ttl/runtime/device.hpp"
 
 namespace ttl {
 
@@ -38,6 +39,12 @@ enum class CaptureStatus : uint8_t {
   INVALIDATED,
   FINISHED,
   ABORTED,
+};
+
+enum class GraphCompletionState : uint8_t {
+  COMPLETE,
+  EVENT,
+  STREAM,
 };
 
 /** Move-only token that releases one RuntimeState capture count exactly once. */
@@ -127,15 +134,17 @@ class GraphCleanupState final {
                     std::vector<PooledEvent> dependency_events,
                     std::map<const Storage *, std::shared_ptr<Storage>> storage,
                     std::map<const CommunicatorGroupState *, std::shared_ptr<CommunicatorGroupState>> communicators,
+                    std::optional<PooledEvent> completion_event, GraphCompletionState completion_state,
                     std::source_location location, bool registrations_active) noexcept;
 
   GraphCleanupState(const GraphCleanupState &) = delete;
   auto operator=(const GraphCleanupState &) -> GraphCleanupState & = delete;
-  GraphCleanupState(GraphCleanupState &&) = delete;
+  GraphCleanupState(GraphCleanupState &&other) noexcept;
   auto operator=(GraphCleanupState &&) -> GraphCleanupState & = delete;
   ~GraphCleanupState() noexcept = default;
 
   [[nodiscard]] auto RetryNoexcept(RuntimeState &runtime_state) noexcept -> bool;
+  [[nodiscard]] auto SynchronizeAndRetry(RuntimeState &runtime_state, std::source_location location) -> bool;
 
  private:
   friend class RuntimeState;
@@ -147,6 +156,8 @@ class GraphCleanupState final {
   std::vector<PooledEvent> dependency_events_;
   std::map<const Storage *, std::shared_ptr<Storage>> storage_;
   std::map<const CommunicatorGroupState *, std::shared_ptr<CommunicatorGroupState>> communicators_;
+  std::optional<PooledEvent> completion_event_;
+  GraphCompletionState completion_state_;
   std::source_location location_;
   bool registrations_active_;
   GraphCleanupState *next_{nullptr};
@@ -161,8 +172,8 @@ class CapturedGraphState final {
                      std::vector<PooledEvent> dependency_events,
                      std::map<const Storage *, std::shared_ptr<Storage>> storage,
                      std::map<const CommunicatorGroupState *, std::shared_ptr<CommunicatorGroupState>> communicators,
-                     std::shared_ptr<RuntimeState> runtime_state, std::string name, size_t node_count,
-                     std::source_location location) noexcept;
+                     PooledEvent completion_event, std::shared_ptr<RuntimeState> runtime_state, std::string name,
+                     size_t node_count, std::source_location location) noexcept;
 
   CapturedGraphState(const CapturedGraphState &) = delete;
   auto operator=(const CapturedGraphState &) -> CapturedGraphState & = delete;
@@ -191,6 +202,8 @@ class CapturedGraphState final {
   std::vector<PooledEvent> dependency_events_;
   std::map<const Storage *, std::shared_ptr<Storage>> storage_;
   std::map<const CommunicatorGroupState *, std::shared_ptr<CommunicatorGroupState>> communicators_;
+  std::optional<PooledEvent> completion_event_;
+  GraphCompletionState completion_state_{GraphCompletionState::COMPLETE};
   std::shared_ptr<RuntimeState> runtime_state_;
   std::string name_;
   size_t node_count_;

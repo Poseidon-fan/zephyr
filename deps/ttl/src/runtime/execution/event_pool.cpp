@@ -12,12 +12,12 @@
 
 #include <cuda_runtime_api.h>
 
+#include "ttl/common/device.hpp"
 #include "ttl/common/error.hpp"
 #include "ttl/common/error_sink.hpp"
 #include "ttl/internal/runtime/cuda_api.hpp"
 #include "ttl/internal/runtime/cuda_check.hpp"
 #include "ttl/internal/runtime/device_guard.hpp"
-#include "ttl/runtime/device.hpp"
 
 namespace ttl::internal {
 namespace {

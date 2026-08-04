@@ -4,9 +4,9 @@
 #include <memory>
 #include <utility>
 
+#include "ttl/common/device.hpp"
 #include "ttl/internal/runtime/execution/stream.hpp"
 #include "ttl/internal/runtime/memory/device_allocator.hpp"
-#include "ttl/runtime/device.hpp"
 #include "ttl/runtime/stream.hpp"
 
 namespace ttl::internal {

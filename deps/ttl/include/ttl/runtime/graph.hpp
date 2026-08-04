@@ -11,7 +11,7 @@
 #include <type_traits>
 #include <vector>
 
-#include "ttl/runtime/device.hpp"
+#include "ttl/common/device.hpp"
 #include "ttl/runtime/execution_context.hpp"
 
 namespace ttl::internal {

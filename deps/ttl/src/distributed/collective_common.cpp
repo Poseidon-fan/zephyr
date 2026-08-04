@@ -12,6 +12,7 @@
 #include <driver_types.h>
 #include <nccl.h>
 
+#include "ttl/common/device.hpp"
 #include "ttl/common/error.hpp"
 #include "ttl/distributed/communicator.hpp"
 #include "ttl/internal/common/checked_math.hpp"
@@ -24,7 +25,6 @@
 #include "ttl/internal/tensor/storage.hpp"
 #include "ttl/internal/tensor/tensor_impl.hpp"
 #include "ttl/ops/copy.hpp"
-#include "ttl/runtime/device.hpp"
 #include "ttl/runtime/execution_context.hpp"
 #include "ttl/tensor/dtype.hpp"
 #include "ttl/tensor/shape.hpp"

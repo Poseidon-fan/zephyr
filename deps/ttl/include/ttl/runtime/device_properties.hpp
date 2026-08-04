@@ -6,7 +6,7 @@
 #include <string>
 #include <type_traits>
 
-#include "ttl/runtime/device.hpp"
+#include "ttl/common/device.hpp"
 
 namespace ttl {
 

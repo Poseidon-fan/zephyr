@@ -23,6 +23,7 @@
 
 #include <driver_types.h>
 
+#include "ttl/common/device.hpp"
 #include "ttl/common/error.hpp"
 #include "ttl/common/error_sink.hpp"
 #include "ttl/internal/common/checked_math.hpp"
@@ -33,7 +34,6 @@
 #include "ttl/internal/runtime/execution/stream.hpp"
 #include "ttl/internal/runtime/memory/allocation.hpp"
 #include "ttl/internal/tensor/storage.hpp"
-#include "ttl/runtime/device.hpp"
 #include "ttl/runtime/stream.hpp"
 #include "ttl/tensor/dtype.hpp"
 #include "ttl/tensor/shape.hpp"

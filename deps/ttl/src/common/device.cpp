@@ -1,4 +1,4 @@
-#include "ttl/runtime/device.hpp"
+#include "ttl/common/device.hpp"
 
 #include <ostream>
 #include <string>

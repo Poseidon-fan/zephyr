@@ -10,11 +10,11 @@
 
 #include <driver_types.h>
 
+#include "ttl/common/device.hpp"
 #include "ttl/common/error_sink.hpp"
 #include "ttl/internal/runtime/execution/event_pool.hpp"
 #include "ttl/internal/runtime/execution/execution_lane.hpp"
 #include "ttl/internal/runtime/memory/device_allocator.hpp"
-#include "ttl/runtime/device.hpp"
 #include "ttl/runtime/execution_context.hpp"
 #include "ttl/runtime/stream.hpp"
 
@@ -46,11 +46,31 @@ enum class ContextUseMode : uint8_t {
   CLEANUP,
 };
 
+/** Move-only reservation that prevents Runtime shutdown while an ExecutionContext is being constructed or alive. */
+class ExecutionContextRegistration final {
+ public:
+  ExecutionContextRegistration(const ExecutionContextRegistration &) = delete;
+  auto operator=(const ExecutionContextRegistration &) -> ExecutionContextRegistration & = delete;
+  ExecutionContextRegistration(ExecutionContextRegistration &&other) noexcept;
+  auto operator=(ExecutionContextRegistration &&) -> ExecutionContextRegistration & = delete;
+  ~ExecutionContextRegistration() noexcept;
+
+  void Commit(std::source_location location);
+
+ private:
+  friend class RuntimeState;
+
+  explicit ExecutionContextRegistration(std::shared_ptr<RuntimeState> runtime_state) noexcept;
+
+  std::shared_ptr<RuntimeState> runtime_state_;
+};
+
 class ExecutionContextImpl final {
  public:
-  ExecutionContextImpl(std::shared_ptr<RuntimeState> runtime_state, std::shared_ptr<DeviceContext> device_context,
-                       ExecutionLane primary_lane, std::vector<ExecutionLane> auxiliary_lanes,
-                       std::optional<PooledEvent> fork_event, std::vector<PooledEvent> join_events,
+  ExecutionContextImpl(std::shared_ptr<RuntimeState> runtime_state, ExecutionContextRegistration registration,
+                       std::shared_ptr<DeviceContext> device_context, ExecutionLane primary_lane,
+                       std::vector<ExecutionLane> auxiliary_lanes, std::optional<PooledEvent> fork_event,
+                       std::vector<PooledEvent> join_events,
                        std::unique_ptr<DeviceErrorState> device_error_state) noexcept;
 
   ExecutionContextImpl(const ExecutionContextImpl &) = delete;
@@ -61,6 +81,7 @@ class ExecutionContextImpl final {
   ~ExecutionContextImpl() noexcept;
 
   std::shared_ptr<RuntimeState> runtime_state_;
+  ExecutionContextRegistration registration_;
   std::shared_ptr<DeviceContext> device_context_;
   ExecutionLane primary_lane_;
   std::vector<ExecutionLane> auxiliary_lanes_;
@@ -92,6 +113,7 @@ class ContextUseGuard final {
 class ContextAccess final {
  public:
   [[nodiscard]] static auto Create(const std::shared_ptr<RuntimeState> &runtime_state,
+                                   ExecutionContextRegistration registration,
                                    std::shared_ptr<DeviceContext> device_context, Stream stream,
                                    const ExecutionContextOptions &options, std::source_location location)
       -> ExecutionContext;

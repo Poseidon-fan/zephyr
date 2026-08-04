@@ -2,7 +2,7 @@
 
 #include <source_location>
 
-#include "ttl/runtime/device.hpp"
+#include "ttl/common/device.hpp"
 #include "ttl/runtime/device_properties.hpp"
 
 namespace ttl::internal {

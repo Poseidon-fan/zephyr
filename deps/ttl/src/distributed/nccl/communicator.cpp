@@ -19,6 +19,7 @@
 
 #include <nccl.h>
 
+#include "ttl/common/device.hpp"
 #include "ttl/common/error.hpp"
 #include "ttl/common/error_sink.hpp"
 #include "ttl/internal/distributed/communicator.hpp"
@@ -30,7 +31,6 @@
 #include "ttl/internal/runtime/memory/device_allocator.hpp"
 #include "ttl/internal/runtime/runtime.hpp"
 #include "ttl/internal/tensor/storage.hpp"
-#include "ttl/runtime/device.hpp"
 #include "ttl/runtime/runtime.hpp"
 #include "ttl/runtime/stream.hpp"
 

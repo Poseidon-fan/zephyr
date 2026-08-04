@@ -10,6 +10,7 @@
 
 #include <driver_types.h>
 
+#include "ttl/common/device.hpp"
 #include "ttl/common/error.hpp"
 #include "ttl/common/error_sink.hpp"
 #include "ttl/internal/ops/matmul_plan.hpp"
@@ -26,7 +27,6 @@
 #include "ttl/internal/runtime/library/blas_handle_pool.hpp"
 #include "ttl/internal/runtime/memory/pinned_allocator.hpp"
 #include "ttl/internal/runtime/runtime.hpp"
-#include "ttl/runtime/device.hpp"
 #include "ttl/runtime/event.hpp"
 #include "ttl/runtime/graph.hpp"
 #include "ttl/runtime/pinned_buffer.hpp"
@@ -35,12 +35,33 @@
 
 namespace ttl::internal {
 
+ExecutionContextRegistration::ExecutionContextRegistration(std::shared_ptr<RuntimeState> runtime_state) noexcept
+    : runtime_state_(std::move(runtime_state)) {}
+
+ExecutionContextRegistration::ExecutionContextRegistration(ExecutionContextRegistration &&other) noexcept
+    : runtime_state_(std::move(other.runtime_state_)) {}
+
+ExecutionContextRegistration::~ExecutionContextRegistration() noexcept {
+  if (runtime_state_ != nullptr) {
+    runtime_state_->UnregisterExecutionContext();
+  }
+}
+
+void ExecutionContextRegistration::Commit(std::source_location location) {
+  if (runtime_state_ == nullptr) {
+    throw InternalError("cannot commit an empty execution context registration", location);
+  }
+  runtime_state_->CommitExecutionContextCreation(location);
+}
+
 ExecutionContextImpl::ExecutionContextImpl(std::shared_ptr<RuntimeState> runtime_state,
+                                           ExecutionContextRegistration registration,
                                            std::shared_ptr<DeviceContext> device_context, ExecutionLane primary_lane,
                                            std::vector<ExecutionLane> auxiliary_lanes,
                                            std::optional<PooledEvent> fork_event, std::vector<PooledEvent> join_events,
                                            std::unique_ptr<DeviceErrorState> device_error_state) noexcept
     : runtime_state_(std::move(runtime_state)),
+      registration_(std::move(registration)),
       device_context_(std::move(device_context)),
       primary_lane_(std::move(primary_lane)),
       auxiliary_lanes_(std::move(auxiliary_lanes)),
@@ -48,7 +69,17 @@ ExecutionContextImpl::ExecutionContextImpl(std::shared_ptr<RuntimeState> runtime
       join_events_(std::move(join_events)),
       device_error_state_(std::move(device_error_state)) {}
 
-ExecutionContextImpl::~ExecutionContextImpl() noexcept { runtime_state_->UnregisterExecutionContext(); }
+ExecutionContextImpl::~ExecutionContextImpl() noexcept {
+  // Context-owned dependency events may still be referenced by an asynchronous stream operation. Do not return
+  // these handles to the shared cache during teardown; Discard destroys the handle without making it available for
+  // another recording sequence.
+  if (fork_event_.has_value()) {
+    fork_event_->Discard();
+  }
+  for (auto &event : join_events_) {
+    event.Discard();
+  }
+}
 
 ContextUseGuard::ContextUseGuard(ExecutionContext &context, ContextUseMode mode, std::source_location location)
     : impl_(ContextAccess::GetImpl(context, location)) {
@@ -74,8 +105,9 @@ ContextUseGuard::ContextUseGuard(ExecutionContext &context, ContextUseMode mode,
 ContextUseGuard::~ContextUseGuard() noexcept { impl_.in_use_.clear(std::memory_order_release); }
 
 auto ContextAccess::Create(const std::shared_ptr<RuntimeState> &runtime_state,
-                           std::shared_ptr<DeviceContext> device_context, Stream stream,
-                           const ExecutionContextOptions &options, std::source_location location) -> ExecutionContext {
+                           ExecutionContextRegistration registration, std::shared_ptr<DeviceContext> device_context,
+                           Stream stream, const ExecutionContextOptions &options, std::source_location location)
+    -> ExecutionContext {
   ExecutionLane primary_lane{std::move(stream), device_context->GetBlasHandlePool(), device_context->GetAllocator()};
 
   std::vector<ExecutionLane> auxiliary_lanes;
@@ -106,15 +138,10 @@ auto ContextAccess::Create(const std::shared_ptr<RuntimeState> &runtime_state,
 
   auto device_error_state = DeviceErrorState::Create(device_context->GetAllocator(), primary_lane.GetStream(),
                                                      runtime_state->GetErrorSink(), location);
-  runtime_state->RegisterExecutionContext(location);
-  try {
-    return ExecutionContext{std::make_shared<ExecutionContextImpl>(
-        runtime_state, std::move(device_context), std::move(primary_lane), std::move(auxiliary_lanes),
-        std::move(fork_event), std::move(join_events), std::move(device_error_state))};
-  } catch (...) {
-    runtime_state->UnregisterExecutionContext();
-    throw;
-  }
+  registration.Commit(location);
+  return ExecutionContext{std::make_shared<ExecutionContextImpl>(
+      runtime_state, std::move(registration), std::move(device_context), std::move(primary_lane),
+      std::move(auxiliary_lanes), std::move(fork_event), std::move(join_events), std::move(device_error_state))};
 }
 
 auto ContextAccess::GetImpl(ExecutionContext &context, std::source_location location) -> ExecutionContextImpl & {

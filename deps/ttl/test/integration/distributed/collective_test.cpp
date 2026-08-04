@@ -8,11 +8,11 @@
 #include <gtest/gtest.h>
 
 #include "support/tensor_test_utils.hpp"
+#include "ttl/common/device.hpp"
 #include "ttl/common/error.hpp"
 #include "ttl/distributed/collective.hpp"
 #include "ttl/distributed/communicator.hpp"
 #include "ttl/distributed/nccl_launch.hpp"
-#include "ttl/runtime/device.hpp"
 #include "ttl/runtime/execution_context.hpp"
 #include "ttl/runtime/runtime.hpp"
 #include "ttl/tensor/dtype.hpp"

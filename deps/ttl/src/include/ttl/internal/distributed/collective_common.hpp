@@ -9,8 +9,8 @@
 #include <driver_types.h>
 #include <nccl.h>
 
+#include "ttl/common/device.hpp"
 #include "ttl/internal/runtime/memory/scratch_arena.hpp"
-#include "ttl/runtime/device.hpp"
 #include "ttl/tensor/dtype.hpp"
 #include "ttl/tensor/tensor.hpp"
 

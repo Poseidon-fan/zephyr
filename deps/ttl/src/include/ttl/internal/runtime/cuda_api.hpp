@@ -31,6 +31,7 @@ struct CudaApi final {
   decltype(&cudaEventSynchronize) synchronize_event_;
   decltype(&cudaEventDestroy) destroy_event_;
   decltype(&cudaStreamWaitEvent) stream_wait_event_;
+  decltype(&cudaStreamQuery) query_stream_;
   decltype(&cudaStreamSynchronize) synchronize_stream_;
   decltype(&cudaStreamBeginCapture) begin_stream_capture_;
   decltype(&cudaStreamEndCapture) end_stream_capture_;

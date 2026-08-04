@@ -4,9 +4,9 @@
 #include <source_location>
 #include <string_view>
 
+#include "ttl/common/device.hpp"
 #include "ttl/common/error_sink.hpp"
 #include "ttl/internal/runtime/cuda_check.hpp"
-#include "ttl/runtime/device.hpp"
 
 namespace ttl::internal {
 

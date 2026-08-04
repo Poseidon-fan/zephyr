@@ -13,9 +13,9 @@
 
 #include <nccl.h>
 
+#include "ttl/common/device.hpp"
 #include "ttl/distributed/communicator.hpp"
 #include "ttl/internal/runtime/execution/event_pool.hpp"
-#include "ttl/runtime/device.hpp"
 #include "ttl/runtime/stream.hpp"
 
 namespace ttl {

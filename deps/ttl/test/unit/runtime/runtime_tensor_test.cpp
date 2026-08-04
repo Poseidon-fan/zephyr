@@ -1,15 +1,18 @@
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <memory>
+#include <optional>
+#include <thread>
 #include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
 
 #include "support/tensor_test_utils.hpp"
+#include "ttl/common/device.hpp"
 #include "ttl/common/error.hpp"
 #include "ttl/ops/creation.hpp"
-#include "ttl/runtime/device.hpp"
 #include "ttl/runtime/event.hpp"
 #include "ttl/runtime/generator.hpp"
 #include "ttl/runtime/runtime.hpp"
@@ -56,11 +59,46 @@ TEST(RuntimeTest, ExposesAllocatorAndLifecycleStatistics) {
   static_cast<void>(tensor);
 }
 
+TEST(RuntimeTest, SerializesConcurrentContextCreationAndShutdown) {
+  auto sink = std::make_shared<test::RecordingErrorSink>();
+  Runtime runtime{test::MakeRuntimeOptions({Device{0}}, sink)};
+  std::optional<ExecutionContext> context;
+  std::exception_ptr creation_error;
+  std::exception_ptr shutdown_error;
+
+  std::thread creator{[&] {
+    try {
+      context.emplace(runtime.CreateExecutionContext(Device{0}));
+    } catch (...) {
+      creation_error = std::current_exception();
+    }
+  }};
+  std::thread shutdown{[&] {
+    try {
+      runtime.Shutdown();
+    } catch (...) {
+      shutdown_error = std::current_exception();
+    }
+  }};
+  creator.join();
+  shutdown.join();
+
+  EXPECT_TRUE(context.has_value() || creation_error != nullptr);
+  if (runtime.GetStatus() == RuntimeStatus::CLOSED) {
+    EXPECT_FALSE(context.has_value());
+  } else {
+    EXPECT_NE(shutdown_error, nullptr);
+    context.reset();
+    runtime.Shutdown();
+  }
+}
+
 TEST(TensorTest, AllocatesCopiesAndClassifiesViews) {
   test::RuntimeSession session;
   auto &context = session.GetContext();
   const std::vector<int32_t> host{0, 1, 2, 3, 4, 5};
   auto tensor = test::Upload(context, Shape{2, 3}, host);
+  tensor.RecordUsage(context.GetStream());
   EXPECT_EQ(test::Download<int32_t>(context, tensor), host);
   EXPECT_TRUE(tensor.IsContiguous());
   EXPECT_TRUE(tensor.IsNonOverlappingDense());

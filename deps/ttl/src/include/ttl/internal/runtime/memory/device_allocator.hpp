@@ -9,8 +9,8 @@
 #include <string_view>
 #include <vector>
 
+#include "ttl/common/device.hpp"
 #include "ttl/internal/runtime/memory/allocation.hpp"
-#include "ttl/runtime/device.hpp"
 #include "ttl/runtime/stream.hpp"
 #include "ttl/tensor/dtype.hpp"
 #include "ttl/tensor/shape.hpp"

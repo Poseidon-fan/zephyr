@@ -7,7 +7,7 @@
 #include <cublasLt.h>
 #include <cublas_v2.h>
 
-#include "ttl/runtime/device.hpp"
+#include "ttl/common/device.hpp"
 #include "ttl/runtime/stream.hpp"
 
 namespace ttl {
