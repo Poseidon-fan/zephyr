@@ -509,6 +509,8 @@ void SubmitLocal(CollectiveKind kind, std::span<const LocalCollectiveCall> calls
     internal::CheckNccl(internal::GetNcclApi().group_start_(), "ncclGroupStart", location);
     cudaError_t set_device_status = cudaSuccess;
     try {
+      // NCCL requires every local rank to be enclosed by the same host group. Device changes stay inside that group,
+      // and all native statuses are collected before restoring the caller's original CUDA device.
       for (size_t rank = 0; rank < calls.size(); rank++) {
         set_device_status = cuda_api.set_device_(state->GetDevice(rank).GetOrdinal());
         if (set_device_status != cudaSuccess) {

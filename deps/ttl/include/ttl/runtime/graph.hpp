@@ -23,6 +23,7 @@ class CapturedGraphState;
 
 namespace ttl {
 
+/** @brief Optional metadata recorded with a captured CUDA graph. */
 struct GraphCaptureOptions final {
   std::string name_;
 };
@@ -45,7 +46,10 @@ class CaptureSession final {
   auto operator=(CaptureSession &&other) noexcept -> CaptureSession &;
   ~CaptureSession() noexcept;
 
+  /** @brief End native stream capture and instantiate an executable graph. */
   [[nodiscard]] auto Finish(std::source_location location = std::source_location::current()) -> CapturedGraph;
+
+  /** @brief Best-effort terminate an active capture; this operation never throws. */
   void Abort() noexcept;
   [[nodiscard]] auto IsActive() const noexcept -> bool;
 
@@ -67,7 +71,10 @@ class CapturedGraph final {
   auto operator=(CapturedGraph &&) noexcept -> CapturedGraph &;
   ~CapturedGraph() noexcept;
 
+  /** @brief Enqueue one replay on the exact runtime, device, and stream used for capture. */
   void Launch(ExecutionContext &context, std::source_location location = std::source_location::current());
+
+  /** @brief Write CUDA's verbose DOT representation of the captured native graph. */
   void DebugDumpDot(std::string_view path, std::source_location location = std::source_location::current()) const;
 
   [[nodiscard]] auto GetDevice(std::source_location location = std::source_location::current()) const -> Device;
@@ -86,6 +93,7 @@ class CapturedGraph final {
 
 using GraphCaptureFunction = std::function<void(size_t, ExecutionContext &)>;
 
+/** @brief Optional shared name used to derive rank-local graph names. */
 struct GraphGroupCaptureOptions final {
   std::string name_;
 };
@@ -98,6 +106,11 @@ struct GraphGroupCaptureOptions final {
  */
 class CapturedGraphGroup final {
  public:
+  /**
+   * @brief Capture one graph per rank using concurrent fixed worker threads.
+   * @param contexts One warmed context per unique device; ownership moves into the returned group.
+   * @param capture_function Callback invoked concurrently as `(rank, context)` for every rank.
+   */
   [[nodiscard]] static auto Capture(std::vector<ExecutionContext> contexts, GraphCaptureFunction capture_function,
                                     const GraphGroupCaptureOptions &options = {},
                                     std::source_location location = std::source_location::current())
@@ -110,7 +123,10 @@ class CapturedGraphGroup final {
   auto operator=(CapturedGraphGroup &&) noexcept -> CapturedGraphGroup &;
   ~CapturedGraphGroup() noexcept;
 
+  /** @brief Concurrently enqueue one replay for every rank-local graph. */
   void Launch(std::source_location location = std::source_location::current());
+
+  /** @brief Synchronize every owned rank context and surface asynchronous errors. */
   void Synchronize(std::source_location location = std::source_location::current());
 
   [[nodiscard]] auto GetWorldSize(std::source_location location = std::source_location::current()) const -> size_t;

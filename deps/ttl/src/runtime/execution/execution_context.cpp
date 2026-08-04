@@ -231,6 +231,8 @@ void SynchronizeAndCheckDeviceErrors(internal::ExecutionContextImpl &impl, std::
 
   auto first_status = cudaSuccess;
   if (failed) {
+    // A failed structured multi-stream submission may have bypassed its normal join. Drain every lane before reading
+    // or resetting context-owned error state so no auxiliary kernel can still write it.
     first_status = cuda_api.synchronize_stream_(primary_stream);
     for (const auto &lane : impl.auxiliary_lanes_) {
       const auto status = cuda_api.synchronize_stream_(internal::StreamAccess::GetNative(lane.GetStream()));
@@ -242,6 +244,8 @@ void SynchronizeAndCheckDeviceErrors(internal::ExecutionContextImpl &impl, std::
   }
 
   impl.device_error_state_->EnqueueRead(primary_stream, location);
+  // The device-to-host copy is ordered after all successful submissions on the primary stream. Synchronizing once
+  // therefore observes both native launch failures and the sticky semantic error record.
   first_status = cuda_api.synchronize_stream_(primary_stream);
   if (first_status != cudaSuccess) {
     impl.status_.store(internal::ExecutionContextStatus::FAILED, std::memory_order_release);

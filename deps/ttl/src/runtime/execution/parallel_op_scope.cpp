@@ -251,6 +251,8 @@ void ParallelOpScope::FailNoexcept(bool report_unfinished_scope) noexcept {
 
 void ParallelOpScope::MarkFailed() noexcept {
   impl_.status_.store(ExecutionContextStatus::FAILED, std::memory_order_release);
+  // A dependency event involved in a partially submitted fork/join may still be referenced by CUDA. Destroy it on
+  // final release instead of returning it to the shared pool for a new recording sequence.
   if (impl_.fork_event_.has_value()) {
     impl_.fork_event_->Discard();
   }
@@ -286,6 +288,8 @@ auto ParallelOpScope::EnqueueAuxiliaryToPrimary() noexcept -> DependencyResult {
   const auto primary_stream = StreamAccess::GetNative(impl_.primary_lane_.GetStream());
   FirstCudaFailure failure;
 
+  // Continue issuing independent joins after the first failure. Best-effort convergence on the primary stream limits
+  // the amount of outstanding work that cleanup must conservatively synchronize.
   for (size_t index = 0; index < auxiliary_stream_count_; index++) {
     auto &join_event =
         !guard_.IsCapturing() ? impl_.join_events_[index] : guard_.GetCaptureState()->GetJoinEvent(index);

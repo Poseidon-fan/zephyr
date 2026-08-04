@@ -23,8 +23,11 @@ namespace ttl {
 class CaptureSession;
 struct GraphCaptureOptions;
 
+/** @brief Configures the primary stream and structured auxiliary lanes owned by an execution context. */
 struct ExecutionContextOptions final {
+  /** CUDA stream priority applied to the primary and auxiliary streams. */
   int32_t stream_priority_{0};
+  /** Maximum auxiliary lanes available to checked multi-stream submissions. */
   size_t max_auxiliary_stream_count_{0};
 };
 
@@ -49,16 +52,26 @@ class ExecutionContext final {
       -> size_t;
   [[nodiscard]] auto IsExternalStream(std::source_location location = std::source_location::current()) const -> bool;
 
+  /** @brief Record an event after all work currently enqueued on the primary stream. */
   [[nodiscard]] auto RecordEvent(std::source_location location = std::source_location::current()) -> Event;
+
+  /** @brief Make the primary stream wait for `event` without blocking the host. */
   void Wait(const Event &event, std::source_location location = std::source_location::current());
 
+  /** @brief Begin relaxed CUDA stream capture on the primary stream. */
   [[nodiscard]] auto BeginCapture(std::source_location location = std::source_location::current()) -> CaptureSession;
+
+  /** @brief Begin relaxed CUDA stream capture using the supplied graph metadata. */
   [[nodiscard]] auto BeginCapture(const GraphCaptureOptions &options,
                                   std::source_location location = std::source_location::current()) -> CaptureSession;
 
-  /** Synchronize submitted work and surface the first pending device-side semantic error. */
+  /** @brief Synchronize submitted work and surface the first pending device-side semantic error. */
   void CheckAsyncErrors(std::source_location location = std::source_location::current());
+
+  /** @brief Synchronize submitted work, check asynchronous errors, and reclaim completed runtime resources. */
   void Synchronize(std::source_location location = std::source_location::current());
+
+  /** @brief Reclaim completed resources without synchronizing GPU work. */
   void Poll(std::source_location location = std::source_location::current());
 
  private:

@@ -193,6 +193,8 @@ class BlasHandlePoolState final : public std::enable_shared_from_this<BlasHandle
     bool poisoned = false;
     const auto error_context = MakeErrorContext(device_, *stream, location_);
 
+    // A handle is stream-bound and its workspace may still be in use. Record completion before moving the resource
+    // back to the cache; failures poison the entry so only a synchronized shutdown may destroy it.
     CleanupDeviceGuard device_guard{device_, *error_sink_, error_context, "retire cuBLAS handle",
                                     "restore after cuBLAS handle retirement"};
     if (!device_guard) {

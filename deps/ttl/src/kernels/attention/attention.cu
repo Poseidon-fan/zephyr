@@ -126,6 +126,8 @@ __global__ void SdpaKernel(SdpaParameters parameters) {
           const auto score = (reduction[0] * parameters.scale_) + additive_mask;
           process_score = score != -CUDART_INF_F;
           if (process_score) {
+            // Update softmax online. Rescaling the previous normalizer and value accumulator when the running maximum
+            // changes avoids materializing the QK score row and keeps exponentials in a stable range.
             const auto new_maximum = isnan(score) || isnan(maximum) ? CUDART_NAN_F : fmaxf(maximum, score);
             old_scale = maximum == -CUDART_INF_F ? 0.0F : expf(maximum - new_maximum);
             current_scale = expf(score - new_maximum);

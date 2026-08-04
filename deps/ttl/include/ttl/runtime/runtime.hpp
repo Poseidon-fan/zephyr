@@ -29,20 +29,28 @@ class RuntimeAccess;
 
 }  // namespace internal
 
+/** @brief Configures one CUDA device's stream-ordered memory pool. */
 struct DeviceMemoryOptions final {
+  /** Bytes the CUDA pool may retain after frees; defaults to no automatic release. */
   uint64_t release_threshold_bytes_{std::numeric_limits<uint64_t>::max()};
+  /** Maximum bytes allocated or asynchronously retiring; zero disables the TTL budget. */
   uint64_t max_live_bytes_{0};
+  /** Whether a host thread polls completed asynchronous retirements. */
   bool enable_maintenance_thread_{true};
 };
 
+/** @brief Configures the process-wide page-locked host-memory cache and admission budget. */
 struct PinnedMemoryOptions final {
   size_t max_cached_bytes_{256U * 1024U * 1024U};
   size_t max_live_bytes_{512U * 1024U * 1024U};
 };
 
+/** @brief Configures devices and process-local services owned by a `Runtime`. */
 struct RuntimeOptions final {
+  /** Unique CUDA devices registered with the runtime. */
   std::vector<Device> devices_;
   DeviceMemoryOptions device_memory_;
+  /** Per-handle cuBLAS workspace bytes; zero selects an architecture-dependent default. */
   size_t blas_workspace_bytes_{0};
   size_t event_pool_capacity_per_device_{256};
   size_t event_pool_reserve_per_device_{0};
@@ -50,12 +58,14 @@ struct RuntimeOptions final {
   PinnedMemoryOptions pinned_memory_;
 };
 
+/** @brief Public lifecycle state of a runtime. */
 enum class RuntimeStatus : uint8_t {
   RUNNING,
   CLOSING,
   CLOSED,
 };
 
+/** @brief Snapshot of allocator, event, and cuBLAS resources for one registered device. */
 struct DeviceMemoryStatistics final {
   Device device_;
   uint64_t logical_live_bytes_;
@@ -79,6 +89,7 @@ struct DeviceMemoryStatistics final {
   size_t blas_workspace_bytes_;
 };
 
+/** @brief Snapshot of process-wide page-locked host-memory accounting. */
 struct PinnedMemoryStatistics final {
   uint64_t live_bytes_;
   uint64_t pending_bytes_;
@@ -143,24 +154,49 @@ class Runtime final {
   [[nodiscard]] auto GetStatistics(std::source_location location = std::source_location::current()) const
       -> RuntimeStatistics;
 
+  /** @brief Create an execution context backed by a new non-default CUDA stream. */
   [[nodiscard]] auto CreateExecutionContext(Device device, const ExecutionContextOptions &options = {},
                                             std::source_location location = std::source_location::current())
       -> ExecutionContext;
+
+  /**
+   * @brief Create an execution context around a caller-owned non-default CUDA stream.
+   *
+   * A non-null `owner` is retained for the context lifetime and is required for CUDA Graph capture.
+   */
   [[nodiscard]] auto WrapExternalStream(Device device, cudaStream_t stream, std::shared_ptr<void> owner = nullptr,
                                         const ExecutionContextOptions &options = {},
                                         std::source_location location = std::source_location::current())
       -> ExecutionContext;
 
+  /**
+   * @brief Wrap an existing CUDA device allocation in immutable tensor metadata.
+   *
+   * A null `memory.owner_` creates borrowed storage; otherwise the owner is retained through asynchronous retirement.
+   */
   [[nodiscard]] auto FromBlob(ExecutionContext &context, ExternalMemory memory, const Shape &shape,
                               const Strides &strides, DType dtype, int64_t storage_offset = 0,
                               std::source_location location = std::source_location::current()) -> Tensor;
 
+  /** @brief Allocate a page-locked host buffer from the runtime cache. */
   [[nodiscard]] auto AllocatePinned(size_t bytes, std::source_location location = std::source_location::current())
       -> PinnedBuffer;
+
+  /** @brief Poll retirements and ask one CUDA memory pool to release cached pages down to the target. */
   void TrimMemory(Device device, size_t target_reserved_bytes,
                   std::source_location location = std::source_location::current());
+
+  /** @brief Poll retirements and release every cached page-locked host allocation. */
   void TrimPinnedMemory(std::source_location location = std::source_location::current());
+
+  /** @brief Advance nonblocking cleanup and asynchronous NCCL error polling without throwing. */
   void Poll() noexcept;
+
+  /**
+   * @brief Close all runtime services after callers have released contexts, graphs, tensors, and communicators.
+   *
+   * Shutdown is retryable after an ordering error or native cleanup failure; completed stages are not repeated.
+   */
   void Shutdown(std::source_location location = std::source_location::current());
 
  private:

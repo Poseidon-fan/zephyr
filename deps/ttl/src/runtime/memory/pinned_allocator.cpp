@@ -256,6 +256,8 @@ class PinnedAllocatorImpl final {
     }
 
     try {
+      // Pinned-buffer usage may span devices, so record one completion event per distinct usage stream. Reuse is
+      // allowed only after every event succeeds; any ambiguous record is quarantined for a synchronized drain.
       for (const auto &stream : retirement.streams_) {
         auto event = FindEventPool(stream->GetDevice(), location)->Acquire(location);
         const auto context = MakeContext(location, stream->GetDevice(), stream->GetId());
@@ -390,6 +392,8 @@ class PinnedAllocatorImpl final {
   }
 
   void ReserveRetirementSlot(std::source_location location) {
+    // PinnedBlock destruction is noexcept. Pre-reserving one queue entry at allocation time makes retirement
+    // allocation-free even when event creation or cache insertion fails.
     std::scoped_lock lock{retirement_latch_};
     const auto required =
         CheckedAdd(retirements_.size(),

@@ -62,6 +62,8 @@ void ReorderDimensions(uint8_t rank, uint8_t operand_count, std::array<uint64_t,
     return;
   }
 
+  // Size-one axes do not affect addressing, so move them outward before sorting the remaining axes by output stride.
+  // This preserves logical values while maximizing the chance that adjacent physical dimensions can be coalesced.
   std::array<size_t, TTL_MAX_RANK> axes{};
   size_t axis_count = 0;
   for (size_t axis = 0; axis < rank; ++axis) {
@@ -105,6 +107,8 @@ void ReorderDimensions(uint8_t rank, uint8_t operand_count, std::array<uint64_t,
     return rank;
   }
 
+  // Two dimensions may collapse only when every operand is contiguous across the boundary or broadcasts across both.
+  // Checking all operands here keeps the later fast-path classification valid for mixed strided inputs.
   size_t previous_axis = 0;
   for (size_t axis = 1; axis < rank; ++axis) {
     if (CanCoalesce(previous_axis, axis, operand_count, shape, strides)) {

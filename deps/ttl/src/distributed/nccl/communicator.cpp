@@ -190,6 +190,8 @@ void CommunicatorGroupState::Initialize(std::source_location location) {
     CheckNccl(start_status, "ncclGroupStart (communicator initialization)", location);
   }
 
+  // All process-local ranks must enter initialization as one NCCL group. Switch the CUDA device for each rank, then
+  // close the group and restore the caller's device before translating any status into an exception.
   const auto &cuda_api = GetCudaApi();
   int previous_device = -1;
   auto get_device_status = cuda_api.get_device_(&previous_device);
@@ -620,6 +622,8 @@ void CommunicatorGroupState::AbortHandlesNoexcept() noexcept {
     }
     status_.store(CommunicatorStatus::FAILED, std::memory_order_release);
     abort_requested_ = true;
+    // An active submission or captured graph may still reference native handles. Record the abort request and let the
+    // final lease or graph registration perform destruction after those references disappear.
     if (active_rank_count_ != 0 || graph_reference_count_ != 0) {
       return;
     }

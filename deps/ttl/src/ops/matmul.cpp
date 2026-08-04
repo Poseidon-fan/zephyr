@@ -627,6 +627,8 @@ void InitializeLayout(cublasLtMatrixLayout_t descriptor, cudaDataType_t dtype, c
   };
   auto choice = guard.GetMatmulAlgorithmCache().Find(key);
   if (!choice.has_value()) {
+    // cuBLASLt heuristic discovery performs host-side work and is not capture-safe. Cache both successful choices and
+    // unsupported signatures so capture either reuses a warmed decision or fails before native graph mutation.
     if (guard.IsCapturing()) {
       throw CaptureError("cuBLASLt algorithm must be warmed up before CUDA graph capture", location);
     }

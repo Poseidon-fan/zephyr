@@ -185,6 +185,8 @@ auto GraphCleanupState::RetryNoexcept(RuntimeState &runtime_state) noexcept -> b
   if (!device_guard) {
     return false;
   }
+  // Native graph objects and retained storage cannot be released until the last replay completes. Prefer the pooled
+  // completion event; fall back to stream observation if recording that event failed during launch.
   if (completion_state_ == GraphCompletionState::EVENT) {
     if (!completion_event_.has_value()) {
       std::terminate();
@@ -226,6 +228,8 @@ auto GraphCleanupState::RetryNoexcept(RuntimeState &runtime_state) noexcept -> b
     graph_ = nullptr;
   }
   if (registrations_active_) {
+    // Registrations are released last because they prevent runtime or communicator shutdown while native graph
+    // handles and captured resource owners remain reachable.
     for (auto &entry : communicators_) {
       entry.second->UnregisterGraph();
     }
@@ -501,6 +505,8 @@ void CaptureSessionState::CompleteCapture(CaptureStatus final_status) noexcept {
       context_->status_.store(ExecutionContextStatus::READY, std::memory_order_release);
     }
   }
+  // Clear the context's capture registration before decrementing the runtime's active-capture count. Admission is
+  // serialized by its lifecycle latch, so callers never observe a ready context backed by an unclosed capture.
   registration_.Complete();
   status_.store(final_status, std::memory_order_release);
 }
@@ -924,6 +930,8 @@ class CapturedGraphGroup::Impl final {
   };
 
   void Dispatch(Command command, std::source_location location) {
+    // One dispatcher owns each generation from publication through completion. Workers retain a stable rank and host
+    // thread so NCCL capture and replay are issued concurrently rather than serialized across devices.
     const std::scoped_lock dispatch_lock{dispatch_latch_};
     if (command == Command::LAUNCH) {
       if (failed_.load(std::memory_order_acquire)) {

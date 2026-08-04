@@ -43,6 +43,8 @@ struct SoftmaxStatisticsCombine final {
     if (isnan(lhs.maximum_) || isnan(rhs.maximum_)) {
       return {.maximum_ = CUDART_NAN_F, .sum_ = CUDART_NAN_F};
     }
+    // Each partial sum is relative to its own maximum. Rescale both before merging so the operation remains stable
+    // and associative enough for warp, block, and two-stage CUB reductions.
     const auto maximum = fmaxf(lhs.maximum_, rhs.maximum_);
     return {
         .maximum_ = maximum,

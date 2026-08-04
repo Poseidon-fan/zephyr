@@ -119,6 +119,8 @@ void TopKOut(ExecutionContext &context, Tensor &values, Tensor &indices, const T
   guard.RecordTensor(values);
   guard.RecordTensor(indices);
   guard.RecordTensor(input);
+  // Prefer an in-block sorting network for short axes, segmented CUB radix sort when its 32-bit API can represent the
+  // problem, and a constant-workspace serial selector for shapes outside the CUB range.
   if (shape_info.axis_size_ <= 1024) {
     internal::LaunchTopKSmall(guard.GetNativeStream(), input.GetDType(), parameters, location);
   } else if (input.GetNumElements() <= std::numeric_limits<int32_t>::max() &&

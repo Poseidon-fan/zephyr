@@ -226,6 +226,8 @@ class DeviceAllocatorImpl final {
       DeviceGuard device_guard{device_, *error_sink_, context.location_};
       status = GetCudaApi().malloc_from_pool_async_(&pointer, bytes, pool_, allocation_stream->GetNative());
       if (status == cudaErrorMemoryAllocation) {
+        // CUDA may retain already-freed pages in the pool. Clear the expected sticky allocation error, reclaim
+        // completed retirements, trim to the pre-request physical budget, and make exactly one retry.
         const auto last_error = GetCudaApi().get_last_error_();
         if (last_error != cudaSuccess && last_error != cudaErrorMemoryAllocation) {
           CheckCuda(last_error, "cudaGetLastError", context.location_);
@@ -349,6 +351,8 @@ class DeviceAllocatorImpl final {
 
     auto target_stream = record.allocation_stream_;
     if (!record.side_streams_.empty()) {
+      // Lifetime tracking names every stream that touched the allocation but creates no dependency. Publish those
+      // streams to a private reclaim stream before enqueueing the free so retirement remains asynchronous.
       record.uses_reclaim_stream_ = true;
       if (!SubmitDependency(record.allocation_stream_, record.allocation_.location_) ||
           !std::ranges::all_of(record.side_streams_, [this, &record](const auto &stream) {
@@ -620,6 +624,8 @@ class DeviceAllocatorImpl final {
   }
 
   void ReserveRetirementSlot(std::source_location location) {
+    // Storage destruction is noexcept. Reserve queue capacity before exposing a Storage so its eventual retirement
+    // can enqueue without allocating or throwing.
     std::scoped_lock lock{retirement_latch_};
     const auto required =
         CheckedAdd(retirements_.size(),
@@ -659,6 +665,8 @@ class DeviceAllocatorImpl final {
   }
 
   void Quarantine(RetirementRecord &record) noexcept {
+    // An ambiguous native submission cannot be retried safely. Keep the allocation and its stream owners reachable;
+    // explicit Shutdown later synchronizes the usage streams and completes the retirement conservatively.
     if (!record.poisoned_) {
       record.poisoned_ = true;
       quarantined_retirement_count_.fetch_add(1, std::memory_order_relaxed);

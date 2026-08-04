@@ -10,11 +10,23 @@
 
 namespace ttl {
 
+/** @brief Selects the exact or tanh approximation used by GELU. */
 enum class GeluApproximation : uint8_t {
   NONE,
   TANH,
 };
 
+/**
+ * @name Elementwise Arithmetic
+ * @brief Apply arithmetic to tensors of one dtype, with broadcasting for tensor-tensor operands.
+ *
+ * These operations support signed integer and floating dtypes. Allocating forms return canonical contiguous tensors;
+ * `*Out` forms require a matching non-overlapping dense output, which may exactly alias at most one tensor operand.
+ * Integer add, subtract, and multiply use modular arithmetic. Integer division by zero is reported asynchronously by
+ * the execution context, and the corresponding output element is not written. Floating minimum and maximum propagate
+ * a NaN operand.
+ * @{
+ */
 void AddOut(ExecutionContext &context, Tensor &output, const Tensor &lhs, const Tensor &rhs,
             std::source_location location = std::source_location::current());
 void AddOut(ExecutionContext &context, Tensor &output, const Tensor &input, Scalar scalar,
@@ -68,7 +80,16 @@ void MinimumOut(ExecutionContext &context, Tensor &output, const Tensor &input, 
                            std::source_location location = std::source_location::current()) -> Tensor;
 [[nodiscard]] auto Minimum(ExecutionContext &context, const Tensor &input, Scalar scalar,
                            std::source_location location = std::source_location::current()) -> Tensor;
+/** @} */
 
+/**
+ * @name Elementwise Comparisons
+ * @brief Compare broadcast operands and produce BOOL results.
+ *
+ * Tensor operands use one dtype. Equality supports every dtype; ordered comparisons exclude BOOL. A `*Out` output
+ * must be a non-overlapping dense BOOL tensor. It may exactly alias one input only when that input is also BOOL.
+ * @{
+ */
 void EqualOut(ExecutionContext &context, Tensor &output, const Tensor &lhs, const Tensor &rhs,
               std::source_location location = std::source_location::current());
 void EqualOut(ExecutionContext &context, Tensor &output, const Tensor &input, Scalar scalar,
@@ -122,7 +143,17 @@ void GreaterEqualOut(ExecutionContext &context, Tensor &output, const Tensor &in
                                 std::source_location location = std::source_location::current()) -> Tensor;
 [[nodiscard]] auto GreaterEqual(ExecutionContext &context, const Tensor &input, Scalar scalar,
                                 std::source_location location = std::source_location::current()) -> Tensor;
+/** @} */
 
+/**
+ * @name Unary Elementwise Operations
+ * @brief Apply one operation independently to every logical input element.
+ *
+ * `Negate` and `Abs` support signed integer and floating tensors. The remaining functions in this group support only
+ * floating tensors. A `*Out` output must match the input shape and dtype, be non-overlapping dense, and may exactly
+ * alias the input.
+ * @{
+ */
 void NegateOut(ExecutionContext &context, Tensor &output, const Tensor &input,
                std::source_location location = std::source_location::current());
 [[nodiscard]] auto Negate(ExecutionContext &context, const Tensor &input,
@@ -187,13 +218,27 @@ void GeluOut(ExecutionContext &context, Tensor &output, const Tensor &input, Gel
              std::source_location location = std::source_location::current());
 [[nodiscard]] auto Gelu(ExecutionContext &context, const Tensor &input, GeluApproximation approximation,
                         std::source_location location = std::source_location::current()) -> Tensor;
+/** @} */
 
+/**
+ * @brief Clamp each floating input value to optional inclusive bounds.
+ *
+ * At least one bound must be present and, when both are present, `minimum` may not exceed `maximum`. `output` may
+ * exactly alias `input`.
+ */
 void ClampOut(ExecutionContext &context, Tensor &output, const Tensor &input, std::optional<Scalar> minimum,
               std::optional<Scalar> maximum, std::source_location location = std::source_location::current());
 [[nodiscard]] auto Clamp(ExecutionContext &context, const Tensor &input, std::optional<Scalar> minimum,
                          std::optional<Scalar> maximum, std::source_location location = std::source_location::current())
     -> Tensor;
 
+/**
+ * @name Logical Operations
+ * @brief Apply boolean logic to BOOL tensors, broadcasting binary operands.
+ *
+ * A `*Out` output must be non-overlapping dense and may exactly alias at most one input.
+ * @{
+ */
 void LogicalAndOut(ExecutionContext &context, Tensor &output, const Tensor &lhs, const Tensor &rhs,
                    std::source_location location = std::source_location::current());
 [[nodiscard]] auto LogicalAnd(ExecutionContext &context, const Tensor &lhs, const Tensor &rhs,
@@ -208,7 +253,14 @@ void LogicalNotOut(ExecutionContext &context, Tensor &output, const Tensor &inpu
                    std::source_location location = std::source_location::current());
 [[nodiscard]] auto LogicalNot(ExecutionContext &context, const Tensor &input,
                               std::source_location location = std::source_location::current()) -> Tensor;
+/** @} */
 
+/**
+ * @brief Select values from two same-dtype tensors using a broadcast BOOL condition.
+ *
+ * All three inputs broadcast to the output shape. `output` may exactly alias one value input but must not overlap the
+ * condition or otherwise overlap either value input.
+ */
 void WhereOut(ExecutionContext &context, Tensor &output, const Tensor &condition, const Tensor &true_value,
               const Tensor &false_value, std::source_location location = std::source_location::current());
 [[nodiscard]] auto Where(ExecutionContext &context, const Tensor &condition, const Tensor &true_value,

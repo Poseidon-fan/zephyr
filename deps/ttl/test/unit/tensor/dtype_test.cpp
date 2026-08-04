@@ -32,7 +32,7 @@ TEST(DTypeTest, ReportsCompleteMetadata) {
 
 TEST(DTypeTest, RejectsInvalidEnumInReleaseChecks) {
   constexpr auto raw = uint8_t{255};
-  EXPECT_EQ(TryParseDType(raw), std::nullopt);
+  EXPECT_EQ(ParseDType(raw), std::nullopt);
   EXPECT_THROW(static_cast<void>(GetDTypeInfo(static_cast<DType>(raw))), InvalidArgumentError);
 }
 

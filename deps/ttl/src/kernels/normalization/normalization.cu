@@ -33,6 +33,8 @@ struct alignas(8) WelfordStatistics final {
   uint64_t count_;
 };
 
+// Layer normalization combines Welford accumulators so every reduction path uses the same numerically stable
+// population-variance semantics instead of subtracting two large moments.
 struct WelfordOperation final {
   using Accumulator = WelfordStatistics;
 
@@ -69,6 +71,8 @@ struct alignas(8) ScaledSquaresStatistics final {
   uint64_t count_;
 };
 
+// RMS normalization tracks sum-of-squares relative to the largest magnitude. This prevents intermediate overflow
+// without changing the final mean-square result, including across independently reduced tiles.
 struct ScaledSquaresOperation final {
   using Accumulator = ScaledSquaresStatistics;
 
