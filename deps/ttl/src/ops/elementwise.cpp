@@ -521,115 +521,31 @@ void LogicalBinaryOutImpl(ExecutionContext &context, Tensor &output, const Tenso
 
 }  // namespace
 
-void AddOut(ExecutionContext &context, Tensor &output, const Tensor &lhs, const Tensor &rhs,
-            std::source_location location) {
-  BinaryOutImpl(context, output, lhs, rhs, internal::BinaryElementwiseOp::ADD, location);
-}
+#define TTL_DEFINE_BINARY(name, operation)                                                                            \
+  void name##Out(ExecutionContext &context, Tensor &output, const Tensor &lhs, const Tensor &rhs,                     \
+                 std::source_location location) {                                                                     \
+    BinaryOutImpl(context, output, lhs, rhs, internal::BinaryElementwiseOp::operation, location);                     \
+  }                                                                                                                   \
+  void name##Out(ExecutionContext &context, Tensor &output, const Tensor &input, Scalar scalar,                       \
+                 std::source_location location) {                                                                     \
+    ScalarBinaryOutImpl(context, output, input, scalar, internal::BinaryElementwiseOp::operation, location);          \
+  }                                                                                                                   \
+  auto name(ExecutionContext &context, const Tensor &lhs, const Tensor &rhs, std::source_location location)           \
+      -> Tensor {                                                                                                     \
+    return BinaryImpl(context, lhs, rhs, internal::BinaryElementwiseOp::operation, location);                         \
+  }                                                                                                                   \
+  auto name(ExecutionContext &context, const Tensor &input, Scalar scalar, std::source_location location) -> Tensor { \
+    return ScalarBinaryImpl(context, input, scalar, internal::BinaryElementwiseOp::operation, location);              \
+  }
 
-void AddOut(ExecutionContext &context, Tensor &output, const Tensor &input, Scalar scalar,
-            std::source_location location) {
-  ScalarBinaryOutImpl(context, output, input, scalar, internal::BinaryElementwiseOp::ADD, location);
-}
+TTL_DEFINE_BINARY(Add, ADD)
+TTL_DEFINE_BINARY(Subtract, SUBTRACT)
+TTL_DEFINE_BINARY(Multiply, MULTIPLY)
+TTL_DEFINE_BINARY(Divide, DIVIDE)
+TTL_DEFINE_BINARY(Maximum, MAXIMUM)
+TTL_DEFINE_BINARY(Minimum, MINIMUM)
 
-auto Add(ExecutionContext &context, const Tensor &lhs, const Tensor &rhs, std::source_location location) -> Tensor {
-  return BinaryImpl(context, lhs, rhs, internal::BinaryElementwiseOp::ADD, location);
-}
-
-auto Add(ExecutionContext &context, const Tensor &input, Scalar scalar, std::source_location location) -> Tensor {
-  return ScalarBinaryImpl(context, input, scalar, internal::BinaryElementwiseOp::ADD, location);
-}
-
-void SubtractOut(ExecutionContext &context, Tensor &output, const Tensor &lhs, const Tensor &rhs,
-                 std::source_location location) {
-  BinaryOutImpl(context, output, lhs, rhs, internal::BinaryElementwiseOp::SUBTRACT, location);
-}
-
-void SubtractOut(ExecutionContext &context, Tensor &output, const Tensor &input, Scalar scalar,
-                 std::source_location location) {
-  ScalarBinaryOutImpl(context, output, input, scalar, internal::BinaryElementwiseOp::SUBTRACT, location);
-}
-
-auto Subtract(ExecutionContext &context, const Tensor &lhs, const Tensor &rhs, std::source_location location)
-    -> Tensor {
-  return BinaryImpl(context, lhs, rhs, internal::BinaryElementwiseOp::SUBTRACT, location);
-}
-
-auto Subtract(ExecutionContext &context, const Tensor &input, Scalar scalar, std::source_location location) -> Tensor {
-  return ScalarBinaryImpl(context, input, scalar, internal::BinaryElementwiseOp::SUBTRACT, location);
-}
-
-void MultiplyOut(ExecutionContext &context, Tensor &output, const Tensor &lhs, const Tensor &rhs,
-                 std::source_location location) {
-  BinaryOutImpl(context, output, lhs, rhs, internal::BinaryElementwiseOp::MULTIPLY, location);
-}
-
-void MultiplyOut(ExecutionContext &context, Tensor &output, const Tensor &input, Scalar scalar,
-                 std::source_location location) {
-  ScalarBinaryOutImpl(context, output, input, scalar, internal::BinaryElementwiseOp::MULTIPLY, location);
-}
-
-auto Multiply(ExecutionContext &context, const Tensor &lhs, const Tensor &rhs, std::source_location location)
-    -> Tensor {
-  return BinaryImpl(context, lhs, rhs, internal::BinaryElementwiseOp::MULTIPLY, location);
-}
-
-auto Multiply(ExecutionContext &context, const Tensor &input, Scalar scalar, std::source_location location) -> Tensor {
-  return ScalarBinaryImpl(context, input, scalar, internal::BinaryElementwiseOp::MULTIPLY, location);
-}
-
-void DivideOut(ExecutionContext &context, Tensor &output, const Tensor &lhs, const Tensor &rhs,
-               std::source_location location) {
-  BinaryOutImpl(context, output, lhs, rhs, internal::BinaryElementwiseOp::DIVIDE, location);
-}
-
-void DivideOut(ExecutionContext &context, Tensor &output, const Tensor &input, Scalar scalar,
-               std::source_location location) {
-  ScalarBinaryOutImpl(context, output, input, scalar, internal::BinaryElementwiseOp::DIVIDE, location);
-}
-
-auto Divide(ExecutionContext &context, const Tensor &lhs, const Tensor &rhs, std::source_location location) -> Tensor {
-  return BinaryImpl(context, lhs, rhs, internal::BinaryElementwiseOp::DIVIDE, location);
-}
-
-auto Divide(ExecutionContext &context, const Tensor &input, Scalar scalar, std::source_location location) -> Tensor {
-  return ScalarBinaryImpl(context, input, scalar, internal::BinaryElementwiseOp::DIVIDE, location);
-}
-
-void MaximumOut(ExecutionContext &context, Tensor &output, const Tensor &lhs, const Tensor &rhs,
-                std::source_location location) {
-  BinaryOutImpl(context, output, lhs, rhs, internal::BinaryElementwiseOp::MAXIMUM, location);
-}
-
-void MaximumOut(ExecutionContext &context, Tensor &output, const Tensor &input, Scalar scalar,
-                std::source_location location) {
-  ScalarBinaryOutImpl(context, output, input, scalar, internal::BinaryElementwiseOp::MAXIMUM, location);
-}
-
-auto Maximum(ExecutionContext &context, const Tensor &lhs, const Tensor &rhs, std::source_location location) -> Tensor {
-  return BinaryImpl(context, lhs, rhs, internal::BinaryElementwiseOp::MAXIMUM, location);
-}
-
-auto Maximum(ExecutionContext &context, const Tensor &input, Scalar scalar, std::source_location location) -> Tensor {
-  return ScalarBinaryImpl(context, input, scalar, internal::BinaryElementwiseOp::MAXIMUM, location);
-}
-
-void MinimumOut(ExecutionContext &context, Tensor &output, const Tensor &lhs, const Tensor &rhs,
-                std::source_location location) {
-  BinaryOutImpl(context, output, lhs, rhs, internal::BinaryElementwiseOp::MINIMUM, location);
-}
-
-void MinimumOut(ExecutionContext &context, Tensor &output, const Tensor &input, Scalar scalar,
-                std::source_location location) {
-  ScalarBinaryOutImpl(context, output, input, scalar, internal::BinaryElementwiseOp::MINIMUM, location);
-}
-
-auto Minimum(ExecutionContext &context, const Tensor &lhs, const Tensor &rhs, std::source_location location) -> Tensor {
-  return BinaryImpl(context, lhs, rhs, internal::BinaryElementwiseOp::MINIMUM, location);
-}
-
-auto Minimum(ExecutionContext &context, const Tensor &input, Scalar scalar, std::source_location location) -> Tensor {
-  return ScalarBinaryImpl(context, input, scalar, internal::BinaryElementwiseOp::MINIMUM, location);
-}
+#undef TTL_DEFINE_BINARY
 
 #define TTL_DEFINE_COMPARISON(name, operation)                                                                        \
   void name##Out(ExecutionContext &context, Tensor &output, const Tensor &lhs, const Tensor &rhs,                     \
