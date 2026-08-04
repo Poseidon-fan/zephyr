@@ -13,7 +13,10 @@
 #include "ttl/common/device.hpp"
 #include "ttl/common/error.hpp"
 #include "ttl/internal/common/checked_math.hpp"
+#include "ttl/internal/runtime/cuda_api.hpp"
+#include "ttl/internal/runtime/cuda_check.hpp"
 #include "ttl/internal/runtime/execution/execution_context.hpp"
+#include "ttl/internal/runtime/execution/stream.hpp"
 #include "ttl/internal/runtime/memory/device_allocator.hpp"
 #include "ttl/internal/tensor/storage.hpp"
 #include "ttl/internal/tensor/tensor_impl.hpp"
@@ -263,6 +266,13 @@ auto Tensor::HasZeroStride(std::source_location location) const -> bool {
 void Tensor::RecordUsage(const Stream &stream, std::source_location location) const {
   if (stream.GetDevice(location) != GetDevice(location)) {
     throw InvalidArgumentError("tensor usage stream belongs to a different device", location);
+  }
+  cudaStreamCaptureStatus capture_status = cudaStreamCaptureStatusNone;
+  internal::CheckCuda(
+      internal::GetCudaApi().is_stream_capturing_(internal::StreamAccess::GetNative(stream), &capture_status),
+      "cudaStreamIsCapturing (tensor usage recording)", location);
+  if (capture_status != cudaStreamCaptureStatusNone) {
+    throw CaptureError("stream-capture tensor usage must use SubmitCudaKernel", location);
   }
   internal::TensorAccess::RecordUsage(*this, stream, location);
 }
