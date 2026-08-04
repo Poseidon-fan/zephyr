@@ -148,8 +148,7 @@ inline constexpr std::array<DTypeInfo, TTL_DTYPE_COUNT> TTL_DTYPE_INFOS{
 /** Return true for UINT8, INT32, and INT64. BOOL is deliberately excluded. */
 [[nodiscard]] constexpr auto IsIntegral(DType dtype, std::source_location location = std::source_location::current())
     -> bool {
-  const auto category = GetDTypeInfo(dtype, location).category_;
-  return category == DTypeCategory::UNSIGNED_INTEGER || category == DTypeCategory::SIGNED_INTEGER;
+  return IsSignedInteger(dtype, location) || IsUnsignedInteger(dtype, location);
 }
 
 [[nodiscard]] constexpr auto IsFloating(DType dtype, std::source_location location = std::source_location::current())
@@ -201,8 +200,6 @@ concept TensorStorageType = !std::is_volatile_v<T> && requires {
 };
 
 template <TensorStorageType T>
-// CUDA-mode clang-tidy misclassifies this dependent constexpr variable template as dynamically initialized.
-// NOLINTNEXTLINE(bugprone-dynamic-static-initializers)
 inline constexpr DType DTYPE_OF = DTypeOf<std::remove_cv_t<T>>::VALUE;
 
 template <DType dtype>
