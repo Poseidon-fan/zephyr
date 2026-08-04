@@ -38,9 +38,6 @@ void CheckCublas(cublasStatus_t status, std::string_view operation,
 void CheckNccl(ncclResult_t status, std::string_view operation,
                std::source_location location = std::source_location::current());
 
-/** Check the current thread's pending kernel launch error without clearing CUDA's last-error state. */
-void CheckCudaKernelLaunch(std::string_view kernel, std::source_location location = std::source_location::current());
-
 /** Return whether a CUDA call succeeded, reporting a failure without throwing. */
 auto TryCuda(cudaError_t status, std::string_view operation, ErrorSink &error_sink,
              const ErrorReportContext &context) noexcept -> bool;

@@ -29,6 +29,7 @@
 #include "ttl/internal/runtime/execution/event_pool.hpp"
 #include "ttl/internal/runtime/execution/execution_context.hpp"
 #include "ttl/internal/runtime/execution/stream.hpp"
+#include "ttl/internal/runtime/graph/graph.hpp"
 #include "ttl/internal/runtime/library/blas_handle_pool.hpp"
 #include "ttl/internal/runtime/memory/allocation.hpp"
 #include "ttl/internal/runtime/memory/device_allocator.hpp"
@@ -347,6 +348,39 @@ void RuntimeState::EndCapture() noexcept {
   }
 }
 
+void RuntimeState::TrackCaptureSession(const std::shared_ptr<CaptureSessionState> &state,
+                                       std::source_location location) {
+  if (state == nullptr) {
+    throw InvalidArgumentError("cannot track a null CUDA graph capture session", location);
+  }
+  const std::scoped_lock lock{lifecycle_latch_};
+  EnsureRunning(location);
+  capture_sessions_.push_back(state);
+}
+
+void RuntimeState::EnqueueGraphCleanup(GraphCleanupState *state) noexcept {
+  if (state == nullptr) {
+    std::terminate();
+  }
+  const std::scoped_lock lock{graph_cleanup_latch_};
+  state->next_ = pending_graph_cleanup_head_;
+  pending_graph_cleanup_head_ = state;
+}
+
+void RuntimeState::PollGraphCleanupsNoexcept() noexcept {
+  const std::scoped_lock lock{graph_cleanup_latch_};
+  auto **link = &pending_graph_cleanup_head_;
+  while (*link != nullptr) {
+    auto *state = *link;
+    if (!state->RetryNoexcept(*this)) {
+      link = &state->next_;
+      continue;
+    }
+    *link = state->next_;
+    delete state;
+  }
+}
+
 auto RuntimeState::HasActiveCapture() const noexcept -> bool {
   return active_capture_count_.load(std::memory_order_acquire) != 0;
 }
@@ -392,6 +426,17 @@ void RuntimeState::TrimPinnedMemory(std::source_location location) {
 
 void RuntimeState::Poll() noexcept {
   const std::scoped_lock lock{lifecycle_latch_};
+  std::erase_if(capture_sessions_, [](const auto &weak_session) {
+    const auto session = weak_session.lock();
+    if (session == nullptr) {
+      return true;
+    }
+    if (session->HasPendingCleanup()) {
+      session->RetryPendingCleanupNoexcept();
+    }
+    return !session->IsActive() && !session->HasPendingCleanup();
+  });
+  PollGraphCleanupsNoexcept();
   if (HasActiveCapture()) {
     return;
   }
@@ -422,6 +467,18 @@ void RuntimeState::Shutdown(std::source_location location) {
     return;
   }
   status_.store(RuntimeStatus::CLOSING, std::memory_order_release);
+
+  std::erase_if(capture_sessions_, [](const auto &weak_session) {
+    const auto session = weak_session.lock();
+    if (session == nullptr) {
+      return true;
+    }
+    if (session->HasPendingCleanup()) {
+      session->RetryPendingCleanupNoexcept();
+    }
+    return !session->IsActive() && !session->HasPendingCleanup();
+  });
+  PollGraphCleanupsNoexcept();
 
   const auto context_count = execution_context_count_.load(std::memory_order_acquire);
   if (context_count != 0) {

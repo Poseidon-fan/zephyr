@@ -16,6 +16,7 @@
 #include "ttl/ops/copy.hpp"
 #include "ttl/ops/creation.hpp"
 #include "ttl/runtime/device.hpp"
+#include "ttl/runtime/execution_context.hpp"
 #include "ttl/runtime/pinned_buffer.hpp"
 #include "ttl/runtime/runtime.hpp"
 #include "ttl/tensor/layout.hpp"
@@ -23,6 +24,24 @@
 #include "ttl/tensor/tensor.hpp"
 
 namespace ttl {
+namespace {
+
+[[nodiscard]] auto HasDevices(int count) -> bool {
+  int device_count = 0;
+  const auto status = cudaGetDeviceCount(&device_count);
+  EXPECT_EQ(status, cudaSuccess);
+  return status == cudaSuccess && device_count >= count;
+}
+
+[[nodiscard]] auto HasBidirectionalPeerAccess(Device first, Device second) -> bool {
+  int first_to_second = 0;
+  int second_to_first = 0;
+  EXPECT_EQ(cudaDeviceCanAccessPeer(&first_to_second, first.GetOrdinal(), second.GetOrdinal()), cudaSuccess);
+  EXPECT_EQ(cudaDeviceCanAccessPeer(&second_to_first, second.GetOrdinal(), first.GetOrdinal()), cudaSuccess);
+  return first_to_second != 0 && second_to_first != 0;
+}
+
+}  // namespace
 
 TEST(RuntimeMemoryIntegrationTest, CopiesThroughPinnedMemoryAndTreatsMovedBufferAsEmpty) {
   auto sink = std::make_shared<test::RecordingErrorSink>();
@@ -99,6 +118,50 @@ TEST(RuntimeMemoryIntegrationTest, ShutdownCanResumeAfterOutstandingContextIsRel
   }
   runtime.Shutdown();
   EXPECT_EQ(runtime.GetStatus(), RuntimeStatus::CLOSED);
+  EXPECT_TRUE(sink->GetRecords().empty());
+}
+
+TEST(RuntimeMemoryIntegrationTest, WaitsForEventsRecordedOnAnotherDevice) {
+  if (!HasDevices(2)) {
+    GTEST_SKIP() << "requires at least two CUDA devices";
+  }
+  auto sink = std::make_shared<test::RecordingErrorSink>();
+  Runtime runtime{test::MakeRuntimeOptions({Device{0}, Device{1}}, sink)};
+  {
+    auto producer = runtime.CreateExecutionContext(Device{0});
+    auto consumer = runtime.CreateExecutionContext(Device{1});
+    auto source = Full(producer, Shape{1024}, Scalar{7.0F}, DType::FLOAT32);
+    const auto ready = producer.RecordEvent();
+    consumer.Wait(ready);
+    consumer.Synchronize();
+    EXPECT_EQ(source.GetDevice(), Device{0});
+  }
+  runtime.Shutdown();
+  EXPECT_TRUE(sink->GetRecords().empty());
+}
+
+TEST(RuntimeMemoryIntegrationTest, CopiesPeerTensorsInBothDirections) {
+  if (!HasDevices(2) || !HasBidirectionalPeerAccess(Device{0}, Device{1})) {
+    GTEST_SKIP() << "requires bidirectional peer access between two CUDA devices";
+  }
+  auto sink = std::make_shared<test::RecordingErrorSink>();
+  Runtime runtime{test::MakeRuntimeOptions({Device{0}, Device{1}}, sink)};
+  {
+    std::array contexts{
+        runtime.CreateExecutionContext(Device{0}),
+        runtime.CreateExecutionContext(Device{1}),
+    };
+    for (size_t source_index = 0; source_index < contexts.size(); ++source_index) {
+      const auto destination_index = 1 - source_index;
+      const std::vector<int32_t> expected{3, -5, 8, 13};
+      auto source = test::Upload(contexts[source_index], Shape{4}, expected);
+      auto destination = Empty(contexts[destination_index], Shape{4}, DType::INT32);
+      const auto source_ready = contexts[source_index].RecordEvent();
+      CopyPeerOut(contexts[destination_index], destination, source, source_ready);
+      EXPECT_EQ(test::Download<int32_t>(contexts[destination_index], destination), expected);
+    }
+  }
+  runtime.Shutdown();
   EXPECT_TRUE(sink->GetRecords().empty());
 }
 

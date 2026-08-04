@@ -66,7 +66,7 @@ void ReportUnfinishedScope(ErrorSink &error_sink, Device device, uint64_t stream
 
 ParallelOpScope::ParallelOpScope(OpGuard &guard, size_t auxiliary_stream_count, std::source_location location)
     : guard_(guard),
-      impl_(ContextAccess::GetImpl(guard.context_, location)),
+      impl_(ContextAccess::GetImpl(guard.GetContext(), location)),
       auxiliary_stream_count_(auxiliary_stream_count),
       location_(location) {
   if (auxiliary_stream_count_ == 0) {
@@ -79,31 +79,23 @@ ParallelOpScope::ParallelOpScope(OpGuard &guard, size_t auxiliary_stream_count, 
   if (guard_.parallel_scope_active_) {
     throw InvalidArgumentError("nested parallel operator scopes are not supported", location_);
   }
-  if (guard_.capture_state_ == nullptr &&
+  if (!guard_.IsCapturing() &&
       (!impl_.fork_event_.has_value() || impl_.join_events_.size() < auxiliary_stream_count_)) {
     throw InternalError("execution context auxiliary dependency resources are incomplete", location_);
   }
 
   guard_.parallel_scope_active_ = true;
-  const auto &cuda_api = GetCudaApi();
-  const auto primary_stream = StreamAccess::GetNative(impl_.primary_lane_.GetStream());
-  auto &fork_event = guard_.capture_state_ == nullptr ? *impl_.fork_event_ : guard_.capture_state_->GetForkEvent();
-  FirstCudaFailure failure;
-  failure.Observe(cuda_api.record_event_(fork_event.GetNative(), primary_stream), "cudaEventRecord (parallel fork)");
-  if (failure.status_ == cudaSuccess) {
+  if (guard_.IsCapturing()) {
     for (size_t index = 0; index < auxiliary_stream_count_; index++) {
-      if (guard_.capture_state_ != nullptr) {
-        guard_.capture_state_->RetainAuxiliaryStream(StreamAccess::GetState(impl_.auxiliary_lanes_[index].GetStream()));
-      }
-      failure.Observe(cuda_api.stream_wait_event_(StreamAccess::GetNative(impl_.auxiliary_lanes_[index].GetStream()),
-                                                  fork_event.GetNative(), cudaEventWaitDefault),
-                      "cudaStreamWaitEvent (parallel fork)");
+      guard_.GetCaptureState()->RetainAuxiliaryStream(
+          StreamAccess::GetState(impl_.auxiliary_lanes_[index].GetStream()));
     }
   }
 
-  if (failure.status_ != cudaSuccess) {
+  const auto result = EnqueuePrimaryToAuxiliary();
+  if (result.status_ != cudaSuccess) {
     MarkFailed();
-    CheckCuda(failure.status_, failure.operation_, location_);
+    CheckCuda(result.status_, result.operation_, location_);
   }
 }
 
@@ -133,7 +125,7 @@ auto ParallelOpScope::GetNativeAuxiliaryStream(size_t index) const -> cudaStream
 
 auto ParallelOpScope::GetAuxiliaryCublasHandle(size_t index) const -> cublasHandle_t {
   auto &lane = GetAuxiliaryLane(index);
-  if (guard_.capture_state_ != nullptr && !lane.HasBlas()) {
+  if (guard_.IsCapturing() && !lane.HasBlas()) {
     throw CaptureError("auxiliary cuBLAS resources must be warmed up before CUDA graph capture", location_);
   }
   return lane.GetCublasHandle(location_);
@@ -141,7 +133,7 @@ auto ParallelOpScope::GetAuxiliaryCublasHandle(size_t index) const -> cublasHand
 
 auto ParallelOpScope::GetAuxiliaryCublasLtHandle(size_t index) const -> cublasLtHandle_t {
   auto &lane = GetAuxiliaryLane(index);
-  if (guard_.capture_state_ != nullptr && !lane.HasBlas()) {
+  if (guard_.IsCapturing() && !lane.HasBlas()) {
     throw CaptureError("auxiliary cuBLAS resources must be warmed up before CUDA graph capture", location_);
   }
   return lane.GetCublasLtHandle(location_);
@@ -149,7 +141,7 @@ auto ParallelOpScope::GetAuxiliaryCublasLtHandle(size_t index) const -> cublasLt
 
 auto ParallelOpScope::GetAuxiliaryBlasWorkspace(size_t index) const -> void * {
   auto &lane = GetAuxiliaryLane(index);
-  if (guard_.capture_state_ != nullptr && !lane.HasBlas()) {
+  if (guard_.IsCapturing() && !lane.HasBlas()) {
     throw CaptureError("auxiliary cuBLAS resources must be warmed up before CUDA graph capture", location_);
   }
   const auto &storage = lane.GetBlasWorkspaceStorage(location_);
@@ -159,7 +151,7 @@ auto ParallelOpScope::GetAuxiliaryBlasWorkspace(size_t index) const -> void * {
 
 auto ParallelOpScope::GetAuxiliaryBlasWorkspaceBytes(size_t index) const -> size_t {
   auto &lane = GetAuxiliaryLane(index);
-  if (guard_.capture_state_ != nullptr && !lane.HasBlas()) {
+  if (guard_.IsCapturing() && !lane.HasBlas()) {
     throw CaptureError("auxiliary cuBLAS resources must be warmed up before CUDA graph capture", location_);
   }
   const auto &storage = lane.GetBlasWorkspaceStorage(location_);
@@ -173,12 +165,11 @@ auto ParallelOpScope::MakeAuxiliaryScratchScope(size_t index) const -> ScratchAr
     guard_.RetainStorage(lane.GetScratchStorage());
   }
   return lane.MakeScratchScope(
-      guard_.capture_state_ == nullptr ? ScratchGrowthPolicy::GROWABLE : ScratchGrowthPolicy::FIXED_CAPACITY,
-      location_);
+      guard_.IsCapturing() ? ScratchGrowthPolicy::FIXED_CAPACITY : ScratchGrowthPolicy::GROWABLE, location_);
 }
 
 void ParallelOpScope::ReserveAuxiliaryScratch(size_t index, size_t capacity_bytes) const {
-  if (guard_.capture_state_ != nullptr) {
+  if (guard_.IsCapturing()) {
     throw CaptureError("auxiliary scratch capacity cannot be reserved during CUDA graph capture", location_);
   }
   GetAuxiliaryLane(index).ReserveScratch(capacity_bytes, location_);
@@ -198,11 +189,33 @@ void ParallelOpScope::RecordTensor(const Tensor &tensor, size_t auxiliary_stream
 
 void ParallelOpScope::CheckLaunch() const { guard_.CheckLaunch(); }
 
+void ParallelOpScope::PublishPrimaryToAuxiliary() {
+  if (status_ != Status::ACTIVE) {
+    throw InvalidArgumentError("parallel operator scope is not active", location_);
+  }
+  const auto result = EnqueuePrimaryToAuxiliary();
+  if (result.status_ != cudaSuccess) {
+    MarkFailed();
+    CheckCuda(result.status_, result.operation_, location_);
+  }
+}
+
+void ParallelOpScope::PublishAuxiliaryToPrimary() {
+  if (status_ != Status::ACTIVE) {
+    throw InvalidArgumentError("parallel operator scope is not active", location_);
+  }
+  const auto result = EnqueueAuxiliaryToPrimary();
+  if (result.status_ != cudaSuccess) {
+    MarkFailed();
+    CheckCuda(result.status_, result.operation_, location_);
+  }
+}
+
 void ParallelOpScope::Finish() {
   if (status_ != Status::ACTIVE) {
     throw InvalidArgumentError("parallel operator scope is not active", location_);
   }
-  const auto result = EnqueueJoin();
+  const auto result = EnqueueAuxiliaryToPrimary();
   if (result.status_ != cudaSuccess) {
     MarkFailed();
     CheckCuda(result.status_, result.operation_, location_);
@@ -219,7 +232,7 @@ void ParallelOpScope::FailExternalSubmissionNoexcept() noexcept {
 
 void ParallelOpScope::FailNoexcept(bool report_unfinished_scope) noexcept {
   RuntimeState &runtime_state = *impl_.runtime_state_;
-  const auto result = EnqueueJoin();
+  const auto result = EnqueueAuxiliaryToPrimary();
   if (result.status_ != cudaSuccess) {
     const ErrorReportContext error_context{
         .location_ = location_,
@@ -232,7 +245,7 @@ void ParallelOpScope::FailNoexcept(bool report_unfinished_scope) noexcept {
 
   if (report_unfinished_scope) {
     ReportUnfinishedScope(*runtime_state.GetErrorSink(), impl_.primary_lane_.GetStream().GetDevice(),
-                          impl_.primary_lane_.GetStream().GetId(), guard_.operation_, location_);
+                          impl_.primary_lane_.GetStream().GetId(), guard_.GetOperation(), location_);
   }
 }
 
@@ -248,14 +261,34 @@ void ParallelOpScope::MarkFailed() noexcept {
   status_ = Status::FAILED;
 }
 
-auto ParallelOpScope::EnqueueJoin() noexcept -> JoinResult {
+auto ParallelOpScope::EnqueuePrimaryToAuxiliary() noexcept -> DependencyResult {
+  const auto &cuda_api = GetCudaApi();
+  const auto primary_stream = StreamAccess::GetNative(impl_.primary_lane_.GetStream());
+  auto &fork_event = !guard_.IsCapturing() ? *impl_.fork_event_ : guard_.GetCaptureState()->GetForkEvent();
+  FirstCudaFailure failure;
+  failure.Observe(cuda_api.record_event_(fork_event.GetNative(), primary_stream),
+                  "cudaEventRecord (primary-to-auxiliary dependency)");
+  if (failure.status_ == cudaSuccess) {
+    for (size_t index = 0; index < auxiliary_stream_count_; index++) {
+      failure.Observe(cuda_api.stream_wait_event_(StreamAccess::GetNative(impl_.auxiliary_lanes_[index].GetStream()),
+                                                  fork_event.GetNative(), cudaEventWaitDefault),
+                      "cudaStreamWaitEvent (primary-to-auxiliary dependency)");
+    }
+  }
+  return DependencyResult{
+      .status_ = failure.status_,
+      .operation_ = failure.operation_,
+  };
+}
+
+auto ParallelOpScope::EnqueueAuxiliaryToPrimary() noexcept -> DependencyResult {
   const auto &cuda_api = GetCudaApi();
   const auto primary_stream = StreamAccess::GetNative(impl_.primary_lane_.GetStream());
   FirstCudaFailure failure;
 
   for (size_t index = 0; index < auxiliary_stream_count_; index++) {
     auto &join_event =
-        guard_.capture_state_ == nullptr ? impl_.join_events_[index] : guard_.capture_state_->GetJoinEvent(index);
+        !guard_.IsCapturing() ? impl_.join_events_[index] : guard_.GetCaptureState()->GetJoinEvent(index);
     const auto record_status = cuda_api.record_event_(
         join_event.GetNative(), StreamAccess::GetNative(impl_.auxiliary_lanes_[index].GetStream()));
     failure.Observe(record_status, "cudaEventRecord (parallel join)");
@@ -266,7 +299,7 @@ auto ParallelOpScope::EnqueueJoin() noexcept -> JoinResult {
     }
   }
 
-  return JoinResult{
+  return DependencyResult{
       .status_ = failure.status_,
       .operation_ = failure.operation_,
   };

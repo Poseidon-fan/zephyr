@@ -213,6 +213,20 @@ class CudaKernelLaunch::Impl final {
 
   [[nodiscard]] auto IsCapturing() const noexcept -> bool { return guard_.IsCapturing(); }
 
+  void PublishPrimaryToAuxiliary() {
+    if (!parallel_scope_.has_value()) {
+      throw InvalidArgumentError("CUDA kernel launch has no auxiliary streams", operation_location_);
+    }
+    parallel_scope_->PublishPrimaryToAuxiliary();
+  }
+
+  void PublishAuxiliaryToPrimary() {
+    if (!parallel_scope_.has_value()) {
+      throw InvalidArgumentError("CUDA kernel launch has no auxiliary streams", operation_location_);
+    }
+    parallel_scope_->PublishAuxiliaryToPrimary();
+  }
+
   [[nodiscard]] auto GetDeviceErrorContext(DType source_dtype, DType target_dtype) -> CudaDeviceErrorContext {
     if (!device_error_context_.has_value()) {
       device_error_context_.emplace(guard_.RegisterDeviceError(source_dtype, target_dtype));
@@ -246,8 +260,11 @@ class CudaKernelLaunch::Impl final {
     internal::LaunchReservePhilox(guard_.GetNativeStream(),
                                   static_cast<internal::GeneratorState *>(generator_impl.storage_->GetBasePointer()),
                                   block_count, base_counter, error_context, operation_location_);
+    if (parallel_scope_.has_value()) {
+      parallel_scope_->PublishPrimaryToAuxiliary();
+    }
     return CudaPhiloxReservation{
-        .seed_ = generator_impl.seed_.load(std::memory_order_acquire),
+        .generator_state_ = static_cast<const CudaPhiloxGeneratorState *>(generator_impl.storage_->GetBasePointer()),
         .base_counter_ = base_counter,
     };
   }
@@ -309,6 +326,10 @@ auto CudaKernelLaunch::GetAuxiliaryWorkspace(size_t index, std::source_location 
 }
 
 auto CudaKernelLaunch::IsCapturing() const noexcept -> bool { return impl_->IsCapturing(); }
+
+void CudaKernelLaunch::PublishPrimaryToAuxiliary() { impl_->PublishPrimaryToAuxiliary(); }
+
+void CudaKernelLaunch::PublishAuxiliaryToPrimary() { impl_->PublishAuxiliaryToPrimary(); }
 
 auto CudaKernelLaunch::GetDeviceErrorContext(DType source_dtype, DType target_dtype) -> CudaDeviceErrorContext {
   return impl_->GetDeviceErrorContext(source_dtype, target_dtype);

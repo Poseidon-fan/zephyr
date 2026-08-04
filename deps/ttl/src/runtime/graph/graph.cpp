@@ -55,6 +55,15 @@ namespace {
   return CaptureError(error.what(), location);
 }
 
+[[noreturn]] void ThrowCaptureCudaError(cudaError_t status, std::string_view operation, std::source_location location) {
+  try {
+    CheckCuda(status, operation, location);
+  } catch (const CudaError &error) {
+    throw WrapCaptureError(error, location);
+  }
+  throw InternalError("capture CUDA error conversion received cudaSuccess", location);
+}
+
 auto DestroyGraphNoexcept(cudaGraph_t graph, ErrorSink &error_sink, const ErrorReportContext &context) noexcept
     -> bool {
   return graph == nullptr || TryCuda(GetCudaApi().destroy_graph_(graph), "cudaGraphDestroy", error_sink, context);
@@ -65,17 +74,6 @@ auto DestroyGraphExecutableNoexcept(cudaGraphExec_t executable, ErrorSink &error
   return executable == nullptr ||
          TryCuda(GetCudaApi().destroy_graph_executable_(executable), "cudaGraphExecDestroy", error_sink, context);
 }
-
-struct QuarantinedGraphResources final {
-  cudaGraph_t graph_;
-  cudaGraphExec_t executable_;
-  std::shared_ptr<StreamState> primary_stream_;
-  std::vector<std::shared_ptr<StreamState>> auxiliary_streams_;
-  std::vector<PooledEvent> dependency_events_;
-  std::vector<std::shared_ptr<Storage>> storage_;
-  std::vector<std::shared_ptr<CommunicatorGroupState>> communicators_;
-  std::shared_ptr<RuntimeState> runtime_state_;
-};
 
 class CaptureContextUseGuard final {
  public:
@@ -94,49 +92,130 @@ class CaptureContextUseGuard final {
   std::shared_ptr<ExecutionContextImpl> context_;
 };
 
-void QuarantineGraphResources(cudaGraph_t graph, cudaGraphExec_t executable,
-                              std::shared_ptr<StreamState> primary_stream,
-                              std::vector<std::shared_ptr<StreamState>> auxiliary_streams,
-                              std::vector<PooledEvent> dependency_events, std::vector<std::shared_ptr<Storage>> storage,
-                              std::vector<std::shared_ptr<CommunicatorGroupState>> communicators,
-                              std::shared_ptr<RuntimeState> runtime_state) noexcept {
-  [[maybe_unused]] auto *quarantined_resources = new (std::nothrow) QuarantinedGraphResources{
-      .graph_ = graph,
-      .executable_ = executable,
-      .primary_stream_ = std::move(primary_stream),
-      .auxiliary_streams_ = std::move(auxiliary_streams),
-      .dependency_events_ = std::move(dependency_events),
-      .storage_ = std::move(storage),
-      .communicators_ = std::move(communicators),
-      .runtime_state_ = std::move(runtime_state),
-  };
-  if (quarantined_resources == nullptr) {
+void QuarantineGraphResources(
+    cudaGraph_t graph, cudaGraphExec_t executable, std::shared_ptr<StreamState> primary_stream,
+    std::vector<std::shared_ptr<StreamState>> auxiliary_streams, std::vector<PooledEvent> dependency_events,
+    std::map<const Storage *, std::shared_ptr<Storage>> storage,
+    std::map<const CommunicatorGroupState *, std::shared_ptr<CommunicatorGroupState>> communicators,
+    const std::shared_ptr<RuntimeState> &runtime_state, std::source_location location,
+    bool registrations_active) noexcept {
+  auto *cleanup_state = new (std::nothrow) GraphCleanupState{graph,
+                                                             executable,
+                                                             std::move(primary_stream),
+                                                             std::move(auxiliary_streams),
+                                                             std::move(dependency_events),
+                                                             std::move(storage),
+                                                             std::move(communicators),
+                                                             location,
+                                                             registrations_active};
+  if (cleanup_state == nullptr) {
     std::terminate();
   }
+  runtime_state->EnqueueGraphCleanup(cleanup_state);
 }
 
-[[nodiscard]] auto StableStorageVector(std::map<const Storage *, std::shared_ptr<Storage>> retained_storage)
-    -> std::vector<std::shared_ptr<Storage>> {
-  std::vector<std::shared_ptr<Storage>> storage;
-  storage.reserve(retained_storage.size());
-  for (auto &entry : retained_storage) {
-    storage.push_back(std::move(entry.second));
+void CleanupGraphResourcesNoexcept(
+    cudaGraph_t graph, cudaGraphExec_t executable, std::shared_ptr<StreamState> primary_stream,
+    std::vector<std::shared_ptr<StreamState>> auxiliary_streams, std::vector<PooledEvent> dependency_events,
+    std::map<const Storage *, std::shared_ptr<Storage>> storage,
+    std::map<const CommunicatorGroupState *, std::shared_ptr<CommunicatorGroupState>> communicators,
+    const std::shared_ptr<RuntimeState> &runtime_state, std::source_location location,
+    bool registrations_active) noexcept {
+  const auto error_context = MakeErrorContext(*primary_stream, location);
+  CleanupDeviceGuard device_guard{primary_stream->GetDevice(), *runtime_state->GetErrorSink(), error_context,
+                                  "destroy CUDA graph resources", "restore after CUDA graph resource destruction"};
+  auto executable_destroyed = executable == nullptr;
+  auto graph_destroyed = graph == nullptr;
+  if (device_guard) {
+    executable_destroyed = DestroyGraphExecutableNoexcept(executable, *runtime_state->GetErrorSink(), error_context);
+    if (executable_destroyed) {
+      graph_destroyed = DestroyGraphNoexcept(graph, *runtime_state->GetErrorSink(), error_context);
+    }
   }
-  return storage;
+  if (!executable_destroyed || !graph_destroyed) {
+    QuarantineGraphResources(graph_destroyed ? nullptr : graph, executable_destroyed ? nullptr : executable,
+                             std::move(primary_stream), std::move(auxiliary_streams), std::move(dependency_events),
+                             std::move(storage), std::move(communicators), runtime_state, location,
+                             registrations_active);
+    return;
+  }
+  if (registrations_active) {
+    for (auto &entry : communicators) {
+      entry.second->UnregisterGraph();
+    }
+    runtime_state->UnregisterGraph();
+  }
 }
 
-[[nodiscard]] auto StableCommunicatorVector(
-    std::map<const CommunicatorGroupState *, std::shared_ptr<CommunicatorGroupState>> retained_communicators)
-    -> std::vector<std::shared_ptr<CommunicatorGroupState>> {
-  std::vector<std::shared_ptr<CommunicatorGroupState>> communicators;
-  communicators.reserve(retained_communicators.size());
-  for (auto &entry : retained_communicators) {
-    communicators.push_back(std::move(entry.second));
+void RegisterGraphResources(
+    RuntimeState &runtime_state,
+    const std::map<const CommunicatorGroupState *, std::shared_ptr<CommunicatorGroupState>> &communicators,
+    std::source_location location) {
+  runtime_state.RegisterGraph(location);
+  auto registered_communicator_count = size_t{0};
+  try {
+    for (const auto &entry : communicators) {
+      entry.second->RegisterGraph(location);
+      registered_communicator_count++;
+    }
+  } catch (...) {
+    auto iterator = communicators.begin();
+    while (registered_communicator_count > 0) {
+      iterator->second->UnregisterGraph();
+      ++iterator;
+      registered_communicator_count--;
+    }
+    runtime_state.UnregisterGraph();
+    throw;
   }
-  return communicators;
 }
 
 }  // namespace
+
+GraphCleanupState::GraphCleanupState(
+    cudaGraph_t graph, cudaGraphExec_t executable, std::shared_ptr<StreamState> primary_stream,
+    std::vector<std::shared_ptr<StreamState>> auxiliary_streams, std::vector<PooledEvent> dependency_events,
+    std::map<const Storage *, std::shared_ptr<Storage>> storage,
+    std::map<const CommunicatorGroupState *, std::shared_ptr<CommunicatorGroupState>> communicators,
+    std::source_location location, bool registrations_active) noexcept
+    : graph_(graph),
+      executable_(executable),
+      primary_stream_(std::move(primary_stream)),
+      auxiliary_streams_(std::move(auxiliary_streams)),
+      dependency_events_(std::move(dependency_events)),
+      storage_(std::move(storage)),
+      communicators_(std::move(communicators)),
+      location_(location),
+      registrations_active_(registrations_active) {}
+
+auto GraphCleanupState::RetryNoexcept(RuntimeState &runtime_state) noexcept -> bool {
+  const auto error_context = MakeErrorContext(*primary_stream_, location_);
+  CleanupDeviceGuard device_guard{primary_stream_->GetDevice(), *runtime_state.GetErrorSink(), error_context,
+                                  "retry CUDA graph resource cleanup", "restore after CUDA graph cleanup retry"};
+  if (!device_guard) {
+    return false;
+  }
+  if (executable_ != nullptr) {
+    if (!DestroyGraphExecutableNoexcept(executable_, *runtime_state.GetErrorSink(), error_context)) {
+      return false;
+    }
+    executable_ = nullptr;
+  }
+  if (graph_ != nullptr) {
+    if (!DestroyGraphNoexcept(graph_, *runtime_state.GetErrorSink(), error_context)) {
+      return false;
+    }
+    graph_ = nullptr;
+  }
+  if (registrations_active_) {
+    for (auto &entry : communicators_) {
+      entry.second->UnregisterGraph();
+    }
+    runtime_state.UnregisterGraph();
+    registrations_active_ = false;
+  }
+  return true;
+}
 
 CaptureSessionState::CaptureSessionState(std::shared_ptr<ExecutionContextImpl> context,
                                          std::shared_ptr<RuntimeState> runtime_state,
@@ -148,7 +227,16 @@ CaptureSessionState::CaptureSessionState(std::shared_ptr<ExecutionContextImpl> c
       primary_stream_(std::move(primary_stream)),
       dependency_events_(std::move(dependency_events)),
       name_(std::move(name)),
-      location_(location) {}
+      location_(location),
+      registration_(runtime_state_) {}
+
+void CaptureRegistration::Complete() noexcept {
+  if (!active_) {
+    std::terminate();
+  }
+  active_ = false;
+  runtime_state_->EndCapture();
+}
 
 auto CaptureSessionState::Begin(ExecutionContext &context, const GraphCaptureOptions &options,
                                 std::source_location location) -> std::shared_ptr<CaptureSessionState> {
@@ -180,11 +268,12 @@ auto CaptureSessionState::Begin(ExecutionContext &context, const GraphCaptureOpt
 
   impl.runtime_state_->BeginCapture(location);
   try {
+    impl.runtime_state_->TrackCaptureSession(state, location);
     DeviceGuard device_guard{context.GetDevice(), *impl.runtime_state_->GetErrorSink(), location};
     CheckCuda(GetCudaApi().begin_stream_capture_(state->primary_stream_->GetNative(), cudaStreamCaptureModeRelaxed),
               "cudaStreamBeginCapture", location);
   } catch (...) {
-    impl.runtime_state_->EndCapture();
+    state->CancelBeforeNativeCapture();
     throw;
   }
 
@@ -207,14 +296,12 @@ auto CaptureSessionState::Finish(std::source_location location) -> std::unique_p
   DeviceGuard device_guard{primary_stream_->GetDevice(), *runtime_state_->GetErrorSink(), location};
   cudaGraph_t graph = nullptr;
   const auto end_status = GetCudaApi().end_stream_capture_(primary_stream_->GetNative(), &graph);
-  ClearContextRegistration(end_status == cudaSuccess ? CaptureStatus::FINISHED : CaptureStatus::ABORTED);
+  CompleteCapture(end_status == cudaSuccess ? CaptureStatus::FINISHED : CaptureStatus::ABORTED);
   if (end_status != cudaSuccess) {
-    DestroyGraphNoexcept(graph, *runtime_state_->GetErrorSink(), MakeErrorContext(*primary_stream_, location));
-    try {
-      CheckCuda(end_status, "cudaStreamEndCapture", location);
-    } catch (const CudaError &error) {
-      throw WrapCaptureError(error, location);
-    }
+    CleanupGraphResourcesNoexcept(graph, nullptr, std::move(primary_stream_), std::move(auxiliary_streams_),
+                                  std::move(dependency_events_), std::move(retained_storage_),
+                                  std::move(retained_communicators_), runtime_state_, location_, false);
+    ThrowCaptureCudaError(end_status, "cudaStreamEndCapture", location);
   }
   if (graph == nullptr) {
     throw CaptureError("cudaStreamEndCapture returned a null graph", location);
@@ -222,31 +309,33 @@ auto CaptureSessionState::Finish(std::source_location location) -> std::unique_p
 
   size_t node_count = 0;
   cudaGraphExec_t executable = nullptr;
+  auto registrations_active = false;
   try {
     CheckCuda(GetCudaApi().get_graph_nodes_(graph, nullptr, &node_count), "cudaGraphGetNodes", location);
     CheckCuda(GetCudaApi().instantiate_graph_(&executable, graph, 0), "cudaGraphInstantiate", location);
     if (executable == nullptr) {
       throw CaptureError("cudaGraphInstantiate returned a null executable", location);
     }
+    RegisterGraphResources(*runtime_state_, retained_communicators_, location);
+    registrations_active = true;
 
     auto graph_state = std::make_unique<CapturedGraphState>(
         primary_stream_->GetDevice(), primary_stream_->GetId(), graph, executable, primary_stream_,
-        std::move(auxiliary_streams_), std::move(dependency_events_), StableStorageVector(std::move(retained_storage_)),
-        StableCommunicatorVector(std::move(retained_communicators_)), runtime_state_, std::move(name_), node_count,
-        location_);
+        std::move(auxiliary_streams_), std::move(dependency_events_), std::move(retained_storage_),
+        std::move(retained_communicators_), runtime_state_, std::move(name_), node_count, location_);
     graph = nullptr;
     executable = nullptr;
     status_.store(CaptureStatus::FINISHED, std::memory_order_release);
     return graph_state;
   } catch (const CudaError &error) {
-    DestroyGraphExecutableNoexcept(executable, *runtime_state_->GetErrorSink(),
-                                   MakeErrorContext(*primary_stream_, location));
-    DestroyGraphNoexcept(graph, *runtime_state_->GetErrorSink(), MakeErrorContext(*primary_stream_, location));
+    CleanupGraphResourcesNoexcept(graph, executable, std::move(primary_stream_), std::move(auxiliary_streams_),
+                                  std::move(dependency_events_), std::move(retained_storage_),
+                                  std::move(retained_communicators_), runtime_state_, location_, registrations_active);
     throw WrapCaptureError(error, location);
   } catch (...) {
-    DestroyGraphExecutableNoexcept(executable, *runtime_state_->GetErrorSink(),
-                                   MakeErrorContext(*primary_stream_, location));
-    DestroyGraphNoexcept(graph, *runtime_state_->GetErrorSink(), MakeErrorContext(*primary_stream_, location));
+    CleanupGraphResourcesNoexcept(graph, executable, std::move(primary_stream_), std::move(auxiliary_streams_),
+                                  std::move(dependency_events_), std::move(retained_storage_),
+                                  std::move(retained_communicators_), runtime_state_, location_, registrations_active);
     throw;
   }
 }
@@ -274,19 +363,20 @@ void CaptureSessionState::Abort() noexcept {
       TryCuda(end_status, "cudaStreamEndCapture", "abort CUDA graph capture", *runtime_state_->GetErrorSink(),
               error_context);
     }
-    DestroyGraphNoexcept(graph, *runtime_state_->GetErrorSink(), error_context);
   }
-  const auto capture_ended =
-      device_guard && (end_status == cudaSuccess || end_status == cudaErrorStreamCaptureInvalidated);
-  if (!capture_ended) {
+  if (!device_guard) {
     context_->status_.store(ExecutionContextStatus::FAILED, std::memory_order_release);
-    for (auto &event : dependency_events_) {
-      event.Discard();
-    }
-    status_.store(CaptureStatus::INVALIDATED, std::memory_order_release);
+    pending_cleanup_.store(true, std::memory_order_release);
+    pending_owner_ = shared_from_this();
     return;
   }
-  ClearContextRegistration(CaptureStatus::ABORTED);
+  if (end_status != cudaSuccess && end_status != cudaErrorStreamCaptureInvalidated) {
+    context_->status_.store(ExecutionContextStatus::FAILED, std::memory_order_release);
+  }
+  CompleteCapture(CaptureStatus::ABORTED);
+  CleanupGraphResourcesNoexcept(graph, nullptr, std::move(primary_stream_), std::move(auxiliary_streams_),
+                                std::move(dependency_events_), std::move(retained_storage_),
+                                std::move(retained_communicators_), runtime_state_, location_, false);
 }
 
 void CaptureSessionState::Invalidate() noexcept {
@@ -364,20 +454,58 @@ auto CaptureSessionState::GetJoinEvent(size_t index) noexcept -> PooledEvent & {
   return dependency_events_[index + 1];
 }
 
-void CaptureSessionState::ClearContextRegistration(CaptureStatus final_status) noexcept {
+void CaptureSessionState::CompleteCapture(CaptureStatus final_status) noexcept {
   const auto registered_state = context_->capture_state_.lock();
   if (registered_state.get() != this) {
     context_->status_.store(ExecutionContextStatus::FAILED, std::memory_order_release);
     ReportCleanupFailure("execution context lost its active CUDA graph capture registration");
-    status_.store(final_status, std::memory_order_release);
+  } else {
+    context_->capture_state_.reset();
+    if (context_->status_.load(std::memory_order_acquire) != ExecutionContextStatus::FAILED) {
+      context_->status_.store(ExecutionContextStatus::READY, std::memory_order_release);
+    }
+  }
+  registration_.Complete();
+  status_.store(final_status, std::memory_order_release);
+}
+
+void CaptureSessionState::CancelBeforeNativeCapture() noexcept {
+  registration_.Complete();
+  status_.store(CaptureStatus::ABORTED, std::memory_order_release);
+}
+
+auto CaptureSessionState::HasPendingCleanup() const noexcept -> bool {
+  return pending_cleanup_.load(std::memory_order_acquire);
+}
+
+void CaptureSessionState::RetryPendingCleanupNoexcept() noexcept {
+  if (!HasPendingCleanup()) {
     return;
   }
-  context_->capture_state_.reset();
-  if (context_->status_.load(std::memory_order_acquire) != ExecutionContextStatus::FAILED) {
-    context_->status_.store(ExecutionContextStatus::READY, std::memory_order_release);
+  std::optional<CaptureContextUseGuard> use_guard;
+  try {
+    use_guard.emplace(context_, location_);
+  } catch (...) {
+    return;
   }
-  runtime_state_->EndCapture();
-  status_.store(final_status, std::memory_order_release);
+  const ErrorReportContext error_context = MakeErrorContext(*primary_stream_, location_);
+  CleanupDeviceGuard device_guard{primary_stream_->GetDevice(), *runtime_state_->GetErrorSink(), error_context,
+                                  "retry CUDA graph capture cleanup", "restore after CUDA graph cleanup retry"};
+  if (!device_guard) {
+    return;
+  }
+  cudaGraph_t graph = nullptr;
+  const auto end_status = GetCudaApi().end_stream_capture_(primary_stream_->GetNative(), &graph);
+  if (end_status != cudaSuccess && end_status != cudaErrorStreamCaptureInvalidated) {
+    TryCuda(end_status, "cudaStreamEndCapture", "retry CUDA graph capture cleanup", *runtime_state_->GetErrorSink(),
+            error_context);
+  }
+  CompleteCapture(CaptureStatus::ABORTED);
+  pending_cleanup_.store(false, std::memory_order_release);
+  pending_owner_.reset();
+  CleanupGraphResourcesNoexcept(graph, nullptr, std::move(primary_stream_), std::move(auxiliary_streams_),
+                                std::move(dependency_events_), std::move(retained_storage_),
+                                std::move(retained_communicators_), runtime_state_, location_, false);
 }
 
 void CaptureSessionState::ReportCleanupFailure(std::string_view message) noexcept {
@@ -394,14 +522,13 @@ void CaptureSessionState::ReportCleanupFailure(std::string_view message) noexcep
   }
 }
 
-CapturedGraphState::CapturedGraphState(Device device, uint64_t stream_id, cudaGraph_t graph, cudaGraphExec_t executable,
-                                       std::shared_ptr<StreamState> primary_stream,
-                                       std::vector<std::shared_ptr<StreamState>> auxiliary_streams,
-                                       std::vector<PooledEvent> dependency_events,
-                                       std::vector<std::shared_ptr<Storage>> storage,
-                                       std::vector<std::shared_ptr<CommunicatorGroupState>> communicators,
-                                       std::shared_ptr<RuntimeState> runtime_state, std::string name, size_t node_count,
-                                       std::source_location location)
+CapturedGraphState::CapturedGraphState(
+    Device device, uint64_t stream_id, cudaGraph_t graph, cudaGraphExec_t executable,
+    std::shared_ptr<StreamState> primary_stream, std::vector<std::shared_ptr<StreamState>> auxiliary_streams,
+    std::vector<PooledEvent> dependency_events, std::map<const Storage *, std::shared_ptr<Storage>> storage,
+    std::map<const CommunicatorGroupState *, std::shared_ptr<CommunicatorGroupState>> communicators,
+    std::shared_ptr<RuntimeState> runtime_state, std::string name, size_t node_count,
+    std::source_location location) noexcept
     : device_(device),
       stream_id_(stream_id),
       graph_(graph),
@@ -414,57 +541,19 @@ CapturedGraphState::CapturedGraphState(Device device, uint64_t stream_id, cudaGr
       runtime_state_(std::move(runtime_state)),
       name_(std::move(name)),
       node_count_(node_count),
-      location_(location) {
-  runtime_state_->RegisterGraph(location);
-  size_t registered_communicators = 0;
-  try {
-    for (const auto &communicator : communicators_) {
-      communicator->RegisterGraph(location);
-      registered_communicators++;
-    }
-  } catch (...) {
-    while (registered_communicators > 0) {
-      registered_communicators--;
-      communicators_[registered_communicators]->UnregisterGraph();
-    }
-    runtime_state_->UnregisterGraph();
-    throw;
-  }
-}
+      location_(location) {}
 
 CapturedGraphState::~CapturedGraphState() noexcept {
-  const ErrorReportContext error_context{
-      .location_ = location_,
-      .device_ = device_,
-      .stream_id_ = stream_id_,
-  };
-  CleanupDeviceGuard device_guard{device_, *runtime_state_->GetErrorSink(), error_context, "destroy CUDA graph",
-                                  "restore after CUDA graph destruction"};
-  auto executable_destroyed = false;
-  auto graph_destroyed = false;
-  if (device_guard) {
-    executable_destroyed = DestroyGraphExecutableNoexcept(executable_, *runtime_state_->GetErrorSink(), error_context);
-    graph_destroyed = DestroyGraphNoexcept(graph_, *runtime_state_->GetErrorSink(), error_context);
-  }
-  if (!executable_destroyed || !graph_destroyed) {
-    QuarantineGraphResources(graph_destroyed ? nullptr : graph_, executable_destroyed ? nullptr : executable_,
-                             std::move(primary_stream_), std::move(auxiliary_streams_), std::move(dependency_events_),
-                             std::move(storage_), std::move(communicators_), std::move(runtime_state_));
-    return;
-  }
-  executable_ = nullptr;
-  graph_ = nullptr;
-  for (auto &communicator : communicators_) {
-    communicator->UnregisterGraph();
-  }
-  runtime_state_->UnregisterGraph();
+  CleanupGraphResourcesNoexcept(graph_, executable_, std::move(primary_stream_), std::move(auxiliary_streams_),
+                                std::move(dependency_events_), std::move(storage_), std::move(communicators_),
+                                runtime_state_, location_, true);
 }
 
 void CapturedGraphState::FailLaunchNoexcept(ExecutionContextImpl &context) noexcept {
   failed_.store(true, std::memory_order_release);
   context.status_.store(ExecutionContextStatus::FAILED, std::memory_order_release);
-  for (const auto &communicator : communicators_) {
-    communicator->MarkFailed();
+  for (const auto &entry : communicators_) {
+    entry.second->MarkFailed();
   }
 }
 
@@ -484,13 +573,13 @@ void CapturedGraphState::Launch(ExecutionContext &context, std::source_location 
   if (launch_count_.load(std::memory_order_relaxed) == std::numeric_limits<uint64_t>::max()) {
     throw OverflowError("captured graph launch count overflow", location);
   }
-  for (const auto &communicator : communicators_) {
-    communicator->ValidateGraphLaunch(location);
+  for (const auto &entry : communicators_) {
+    entry.second->ValidateGraphLaunch(location);
   }
 
   DeviceGuard device_guard{device_, *runtime_state_->GetErrorSink(), location};
-  for (const auto &storage : storage_) {
-    storage->RecordUsage(context.GetStream());
+  for (const auto &entry : storage_) {
+    entry.second->RecordUsage(context.GetStream());
   }
   try {
     CheckCuda(GetCudaApi().launch_graph_(executable_, primary_stream_->GetNative()), "cudaGraphLaunch", location);

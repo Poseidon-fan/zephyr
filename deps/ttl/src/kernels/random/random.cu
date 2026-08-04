@@ -81,7 +81,8 @@ __global__ void RandomKernel(RandomParameters parameters, const GeneratorState *
   const auto block_count = (parameters.num_elements_ + 3U) / 4U;
   const auto step = static_cast<uint64_t>(gridDim.x) * blockDim.x;
   while (block_index < block_count) {
-    const auto random = GenerateCudaPhilox(*base_counter + block_index, state->seed_);
+    const auto random = GenerateCudaPhilox(
+        CudaPhiloxReservation{.generator_state_ = state, .base_counter_ = base_counter}, block_index);
     auto generated = float4{};
     if constexpr (distribution == RandomDistribution::UNIFORM) {
       generated.x = parameters.first_parameter_ + ((parameters.second_parameter_ - parameters.first_parameter_) *

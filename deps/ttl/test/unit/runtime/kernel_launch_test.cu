@@ -38,6 +38,15 @@ __global__ void DelayedAddOneKernel(const float *input, float *output, size_t co
   }
 }
 
+__global__ void DelayedSetKernel(float *output, size_t index, float value, uint64_t delay_cycles) {
+  const auto start = static_cast<uint64_t>(clock64());
+  while (static_cast<uint64_t>(clock64()) - start < delay_cycles) {
+  }
+  if (threadIdx.x == 0) {
+    output[index] = value;
+  }
+}
+
 __global__ void ReportInvalidValueKernel(CudaDeviceErrorContext error_context) {
   if (threadIdx.x == 0) {
     ReportCudaDeviceError(error_context, CudaDeviceErrorCode::INVALID_VALUE, 7, 42, 11);
@@ -46,7 +55,7 @@ __global__ void ReportInvalidValueKernel(CudaDeviceErrorContext error_context) {
 
 __global__ void WritePhiloxKernel(CudaPhiloxReservation reservation, int64_t *output) {
   if (threadIdx.x == 0) {
-    const auto result = GenerateCudaPhilox(*reservation.base_counter_, reservation.seed_);
+    const auto result = GenerateCudaPhilox(reservation, 0);
     for (size_t index = 0; index < 4; ++index) {
       output[index] = static_cast<int64_t>(result.values_[index]);
     }
@@ -151,6 +160,31 @@ TEST(CudaKernelLaunchTest, RunsOneSubmissionAcrossPrimaryAndAuxiliaryStreams) {
       });
 
   EXPECT_EQ(test::Download<float>(context, output), (std::vector<float>{-1.0F, 1.0F, 2.0F, 5.0F, 10.0F, 17.0F}));
+}
+
+TEST(CudaKernelLaunchTest, PublishesDependenciesBetweenPrimaryAndAuxiliaryStreams) {
+  test::RuntimeSession session;
+  auto context =
+      session.GetRuntime().CreateExecutionContext(Device{0}, ExecutionContextOptions{.max_auxiliary_stream_count_ = 1});
+  auto output = Empty(context, Shape{2}, DType::FLOAT32);
+  const std::array<Tensor, 0> inputs{};
+  const std::array outputs{&output};
+
+  SubmitCudaKernel(
+      context, "reusable lane dependencies", inputs, outputs,
+      [&](CudaKernelLaunch &launch) {
+        auto *output_data = launch.GetOutputDataAs<float>(output);
+        DelayedSetKernel<<<1, 1, 0, launch.GetStream()>>>(output_data, 0, 41.0F, 5'000'000);
+        launch.PublishPrimaryToAuxiliary();
+        AddOneKernel<<<1, 1, 0, launch.GetAuxiliaryStream(0)>>>(output_data, output_data, 1);
+
+        DelayedSetKernel<<<1, 1, 0, launch.GetAuxiliaryStream(0)>>>(output_data, 1, 41.0F, 5'000'000);
+        launch.PublishAuxiliaryToPrimary();
+        AddOneKernel<<<1, 1, 0, launch.GetStream()>>>(output_data + 1, output_data + 1, 1);
+      },
+      CudaKernelLaunchOptions{.auxiliary_stream_count_ = 1});
+
+  EXPECT_EQ(test::Download<float>(context, output), (std::vector<float>{42.0F, 42.0F}));
 }
 
 TEST(CudaKernelLaunchTest, RejectsUnregisteredAndWronglyTypedPointers) {
@@ -272,6 +306,72 @@ TEST(CudaKernelLaunchTest, ReservesGraphSafePhiloxBlocksForExternalKernel) {
   generator.SetSeed(context, 1234);
   submit(second);
   EXPECT_EQ(test::Download<int64_t>(context, second), first_values);
+}
+
+TEST(CudaKernelLaunchTest, PublishesPhiloxReservationToAuxiliaryStreams) {
+  test::RuntimeSession session;
+  auto context =
+      session.GetRuntime().CreateExecutionContext(Device{0}, ExecutionContextOptions{.max_auxiliary_stream_count_ = 1});
+  Generator generator{context, 1234};
+  auto expected = Empty(context, Shape{4}, DType::INT64);
+  auto actual = Empty(context, Shape{4}, DType::INT64);
+  const std::array<Tensor, 0> inputs{};
+
+  const auto submit = [&](Tensor &output, bool use_auxiliary) {
+    const std::array outputs{&output};
+    SubmitCudaKernel(
+        context, "external auxiliary Philox", inputs, outputs,
+        [&](CudaKernelLaunch &launch) {
+          const auto reservation = launch.ReservePhilox(generator, 1);
+          const auto stream = use_auxiliary ? launch.GetAuxiliaryStream(0) : launch.GetStream();
+          WritePhiloxKernel<<<1, 1, 0, stream>>>(reservation, launch.GetOutputDataAs<int64_t>(output));
+        },
+        CudaKernelLaunchOptions{.auxiliary_stream_count_ = 1});
+  };
+
+  submit(expected, false);
+  generator.SetSeed(context, 1234);
+  submit(actual, true);
+  EXPECT_EQ(test::Download<int64_t>(context, actual), test::Download<int64_t>(context, expected));
+}
+
+TEST(CudaKernelLaunchTest, CapturedPhiloxReservationReadsCurrentDeviceSeedOnReplay) {
+  test::RuntimeSession session;
+  auto &context = session.GetContext();
+  Generator generator{context, 1234};
+  auto output = Empty(context, Shape{4}, DType::INT64);
+  const std::array<Tensor, 0> inputs{};
+  const std::array outputs{&output};
+  const auto submit = [&] {
+    SubmitCudaKernel(
+        context, "captured external Philox", inputs, outputs,
+        [&](CudaKernelLaunch &launch) {
+          const auto reservation = launch.ReservePhilox(generator, 1);
+          WritePhiloxKernel<<<1, 1, 0, launch.GetStream()>>>(reservation, launch.GetOutputDataAs<int64_t>(output));
+        },
+        CudaKernelLaunchOptions{
+            .workspace_ = {.size_bytes_ = sizeof(uint64_t), .alignment_ = alignof(uint64_t)},
+            .capture_policy_ = CudaCapturePolicy::SAFE,
+        });
+  };
+
+  submit();
+  context.Synchronize();
+  auto capture = context.BeginCapture(GraphCaptureOptions{.name_ = "external Philox seed"});
+  submit();
+  auto graph = capture.Finish();
+
+  generator.SetSeed(context, 1234);
+  graph.Launch(context);
+  const auto first_seed_values = test::Download<int64_t>(context, output);
+  generator.SetSeed(context, 5678);
+  graph.Launch(context);
+  const auto second_seed_values = test::Download<int64_t>(context, output);
+  EXPECT_NE(second_seed_values, first_seed_values);
+
+  generator.SetSeed(context, 1234);
+  graph.Launch(context);
+  EXPECT_EQ(test::Download<int64_t>(context, output), first_seed_values);
 }
 
 TEST(CudaKernelLaunchTest, FailsContextAndPreservesExceptionAfterPartialSubmission) {

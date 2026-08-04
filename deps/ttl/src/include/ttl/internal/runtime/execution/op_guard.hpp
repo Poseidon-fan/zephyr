@@ -32,6 +32,45 @@ enum class CapturePolicy : uint8_t {
   SAFE,
 };
 
+/** Common context, device, capture, and resource-retention scope for one CUDA submission. */
+class SubmissionScope final {
+ public:
+  SubmissionScope(ExecutionContext &context, std::string_view operation,
+                  std::source_location location = std::source_location::current(),
+                  CapturePolicy capture_policy = CapturePolicy::FORBIDDEN);
+
+  SubmissionScope(const SubmissionScope &) = delete;
+  auto operator=(const SubmissionScope &) -> SubmissionScope & = delete;
+  SubmissionScope(SubmissionScope &&) = delete;
+  auto operator=(SubmissionScope &&) -> SubmissionScope & = delete;
+
+  void ValidateTensor(const Tensor &tensor) const;
+  void RecordTensor(const Tensor &tensor, const Stream &stream);
+  void RecordRemoteTensor(const Tensor &tensor, const Stream &stream);
+  void RetainStorage(const std::shared_ptr<Storage> &storage);
+  void RetainCommunicator(const std::shared_ptr<CommunicatorGroupState> &communicator);
+  void CheckLaunch() const;
+  void FailAfterPartialSubmissionNoexcept() noexcept;
+
+  [[nodiscard]] auto GetStream() const noexcept -> const Stream &;
+  [[nodiscard]] auto GetNativeStream() const noexcept -> cudaStream_t;
+  [[nodiscard]] auto GetContext() const noexcept -> ExecutionContext &;
+  [[nodiscard]] auto GetOperation() const noexcept -> std::string_view;
+  [[nodiscard]] auto GetLocation() const noexcept -> std::source_location;
+  [[nodiscard]] auto GetCaptureState() const noexcept -> const std::shared_ptr<CaptureSessionState> &;
+  [[nodiscard]] auto IsCapturing() const noexcept -> bool;
+
+ private:
+  void RecordStorage(const Tensor &tensor, const Stream &stream);
+
+  ExecutionContext &context_;
+  std::string_view operation_;
+  std::source_location location_;
+  ContextUseGuard use_guard_;
+  DeviceGuard device_guard_;
+  std::shared_ptr<CaptureSessionState> capture_state_;
+};
+
 /** Common checked entry scope for CUDA operator wrappers. */
 class OpGuard final {
  public:
@@ -70,13 +109,13 @@ class OpGuard final {
 
   void RecordTensorOnStream(const Tensor &tensor, const Stream &stream);
 
-  ExecutionContext &context_;
-  std::string_view operation_;
-  std::source_location location_;
-  ContextUseGuard use_guard_;
-  DeviceGuard device_guard_;
+  [[nodiscard]] auto GetContext() const noexcept -> ExecutionContext &;
+  [[nodiscard]] auto GetOperation() const noexcept -> std::string_view;
+  [[nodiscard]] auto GetLocation() const noexcept -> std::source_location;
+  [[nodiscard]] auto GetCaptureState() const noexcept -> const std::shared_ptr<CaptureSessionState> &;
+
+  SubmissionScope submission_;
   bool parallel_scope_active_{false};
-  std::shared_ptr<CaptureSessionState> capture_state_;
 };
 
 }  // namespace ttl::internal

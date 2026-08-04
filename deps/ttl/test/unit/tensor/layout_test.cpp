@@ -35,6 +35,10 @@ TEST(LayoutTest, CreatesViewsAndMaterializesOnlyWhenRequired) {
   auto selected = Select(input, -1, 1);
   EXPECT_EQ(selected.GetShape(), Shape({2}));
   EXPECT_EQ(test::Download<int32_t>(context, Contiguous(context, selected)), (std::vector<int32_t>{1, 4}));
+
+  auto empty_slice = Slice(input, 1, 2, 1, 1);
+  EXPECT_EQ(empty_slice.GetShape(), Shape({2, 0}));
+  EXPECT_TRUE(test::Download<int32_t>(context, Contiguous(context, empty_slice)).empty());
 }
 
 TEST(LayoutTest, CoversSqueezeExpandSplitChunkAndInferenceErrors) {

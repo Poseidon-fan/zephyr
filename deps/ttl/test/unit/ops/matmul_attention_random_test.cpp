@@ -9,6 +9,7 @@
 #include "ttl/ops/matmul.hpp"
 #include "ttl/ops/random.hpp"
 #include "ttl/runtime/generator.hpp"
+#include "ttl/tensor/layout.hpp"
 
 namespace ttl {
 
@@ -27,6 +28,28 @@ TEST(MatmulTest, ComputesMatrixProductAndLinearBias) {
                                      .gelu_approximation_ = GeluApproximation::NONE,
                                      .matmul_ = MatmulOptions{.allow_tf32_ = false}});
   EXPECT_EQ(test::Download<float>(context, linear), (std::vector<float>{11, 0, 14, 1}));
+}
+
+TEST(MatmulTest, AppliesStridedLinearBiasBeforeActivation) {
+  test::RuntimeSession session;
+  auto &context = session.GetContext();
+  auto input = test::Upload(context, Shape{2, 3}, std::vector<float>{1, 2, 3, 4, 5, 6});
+  auto weight = test::Upload(context, Shape{2, 3}, std::vector<float>{1, 0, 0, 0, 1, 1});
+  auto bias_storage = test::Upload(context, Shape{4}, std::vector<float>{10, 1000, -10, 1000});
+  auto bias = Slice(bias_storage, 0, 0, 4, 2);
+  ASSERT_FALSE(bias.IsContiguous());
+
+  const auto without_activation = Linear(context, input, weight, std::optional<Tensor>{bias},
+                                         LinearOptions{.activation_ = LinearActivation::NONE,
+                                                       .gelu_approximation_ = GeluApproximation::NONE,
+                                                       .matmul_ = MatmulOptions{.allow_tf32_ = false}});
+  EXPECT_EQ(test::Download<float>(context, without_activation), (std::vector<float>{11, -5, 14, 1}));
+
+  const auto with_relu = Linear(context, input, weight, std::optional<Tensor>{bias},
+                                LinearOptions{.activation_ = LinearActivation::RELU,
+                                              .gelu_approximation_ = GeluApproximation::NONE,
+                                              .matmul_ = MatmulOptions{.allow_tf32_ = false}});
+  EXPECT_EQ(test::Download<float>(context, with_relu), (std::vector<float>{11, 0, 14, 1}));
 }
 
 TEST(AttentionTest, ComputesReferenceScaledDotProductAttention) {

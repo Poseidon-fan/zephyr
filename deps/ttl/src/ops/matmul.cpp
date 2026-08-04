@@ -10,6 +10,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 
 #include <cublasLt.h>
 #include <cublas_v2.h>
@@ -74,6 +75,19 @@ struct MutableMatrixInfo final {
 struct MatmulExecutionResult final {
   bool bias_fused_;
   bool activation_fused_;
+};
+
+enum class LinearBiasMode : uint8_t {
+  NONE,
+  FUSED_CONTIGUOUS,
+  POST_ADD,
+};
+
+struct MatmulProblem final {
+  MatmulKind kind_;
+  MatmulShapeInfo shape_;
+  LinearOptions linear_options_;
+  LinearBiasMode bias_mode_;
 };
 
 [[nodiscard]] auto GetName(MatmulKind kind) noexcept -> std::string_view {
@@ -179,22 +193,60 @@ void ValidateLinearOptions(const LinearOptions &options, std::source_location lo
   };
 }
 
-void ValidateCommonSchema(internal::OpGuard &guard, Tensor &output, const Tensor &lhs, const Tensor &rhs,
-                          const MatmulShapeInfo &shape_info, MatmulKind kind, std::source_location location) {
+[[nodiscard]] auto BuildMatmulProblem(ExecutionContext &context, const Tensor &lhs, const Tensor &rhs, MatmulKind kind,
+                                      const std::optional<Tensor> &bias, const LinearOptions &linear_options,
+                                      std::source_location location) -> MatmulProblem {
   const auto name = GetName(kind);
-  guard.ValidateTensor(output);
+  if (kind == MatmulKind::LINEAR) {
+    ValidateLinearOptions(linear_options, location);
+  }
+  internal::OpGuard guard{context, name, location, internal::CapturePolicy::SAFE};
   guard.ValidateTensor(lhs);
   guard.ValidateTensor(rhs);
   ValidateFloatingDType(lhs.GetDType(), name, location);
+  if (rhs.GetDType() != lhs.GetDType()) {
+    throw InvalidArgumentError(kind == MatmulKind::LINEAR ? "Linear input and weight must have the same dtype"
+                                                          : "matmul operands must have the same dtype",
+                               location);
+  }
+  auto shape = InferMatmulShape(lhs, rhs, kind, location);
+  auto bias_mode = LinearBiasMode::NONE;
+  if (bias.has_value()) {
+    if (kind != MatmulKind::LINEAR) {
+      throw InternalError("non-Linear matmul problem received a bias", location);
+    }
+    guard.ValidateTensor(*bias);
+    if (bias->GetDType() != lhs.GetDType() || bias->GetShape() != Shape{shape.n_}) {
+      throw InvalidArgumentError("Linear bias must have shape [out_features] and match the input dtype", location);
+    }
+    bias_mode = bias->IsContiguous() ? LinearBiasMode::FUSED_CONTIGUOUS : LinearBiasMode::POST_ADD;
+  }
+  return MatmulProblem{
+      .kind_ = kind,
+      .shape_ = shape,
+      .linear_options_ = linear_options,
+      .bias_mode_ = bias_mode,
+  };
+}
+
+void ValidateMatmulOutput(internal::OpGuard &guard, Tensor &output, const Tensor &lhs, const Tensor &rhs,
+                          const std::optional<Tensor> &bias, const MatmulProblem &problem,
+                          std::source_location location) {
+  const auto name = GetName(problem.kind_);
+  guard.ValidateTensor(output);
   if (rhs.GetDType() != lhs.GetDType() || output.GetDType() != lhs.GetDType()) {
     throw InvalidArgumentError("matmul operands and output must have the same dtype", location);
   }
-  if (output.GetShape() != shape_info.output_shape_) {
+  if (output.GetShape() != problem.shape_.output_shape_) {
     throw InvalidArgumentError("matmul output shape does not match inference", location);
   }
   internal::ValidateWritableOutput(output, name, location);
   const std::array<const Tensor *, 2> inputs{&lhs, &rhs};
   internal::ValidateAlias(internal::AliasPolicy::NO_ALIAS, output, inputs, name, location);
+  if (bias.has_value()) {
+    const std::array<const Tensor *, 1> bias_input{&*bias};
+    internal::ValidateAlias(internal::AliasPolicy::NO_ALIAS, output, bias_input, name, location);
+  }
 }
 
 [[nodiscard]] auto GetCudaDataType(DType dtype, std::source_location location) -> cudaDataType_t {
@@ -620,45 +672,39 @@ void InitializeLayout(cublasLtMatrixLayout_t descriptor, cudaDataType_t dtype, c
   return true;
 }
 
-[[nodiscard]] auto GetRequestedEpilogue(const std::optional<Tensor> &bias, const LinearOptions &options) noexcept
-    -> cublasLtEpilogue_t {
-  if (options.activation_ == LinearActivation::RELU) {
-    return bias.has_value() ? CUBLASLT_EPILOGUE_RELU_BIAS : CUBLASLT_EPILOGUE_RELU;
+[[nodiscard]] auto GetRequestedEpilogue(bool fuse_bias, bool fuse_relu) noexcept -> cublasLtEpilogue_t {
+  if (fuse_relu) {
+    return fuse_bias ? CUBLASLT_EPILOGUE_RELU_BIAS : CUBLASLT_EPILOGUE_RELU;
   }
-  return bias.has_value() ? CUBLASLT_EPILOGUE_BIAS : CUBLASLT_EPILOGUE_DEFAULT;
+  return fuse_bias ? CUBLASLT_EPILOGUE_BIAS : CUBLASLT_EPILOGUE_DEFAULT;
 }
 
 [[nodiscard]] auto ExecuteMatmul(ExecutionContext &context, Tensor &output, const Tensor &lhs, const Tensor &rhs,
-                                 const MatmulShapeInfo &shape_info, MatmulKind kind, const std::optional<Tensor> &bias,
-                                 const LinearOptions &linear_options, std::source_location location)
-    -> MatmulExecutionResult {
-  internal::OpGuard guard{context, GetName(kind), location, internal::CapturePolicy::SAFE};
-  ValidateCommonSchema(guard, output, lhs, rhs, shape_info, kind, location);
-  if (bias.has_value()) {
-    guard.ValidateTensor(*bias);
-  }
+                                 const std::optional<Tensor> &bias, const MatmulProblem &problem,
+                                 std::source_location location) -> MatmulExecutionResult {
+  internal::OpGuard guard{context, GetName(problem.kind_), location, internal::CapturePolicy::SAFE};
+  ValidateMatmulOutput(guard, output, lhs, rhs, bias, problem, location);
   if (output.GetNumElements() == 0) {
     return {};
   }
 
-  const auto is_linear = kind == MatmulKind::LINEAR;
-  const auto batch_count = shape_info.batch_count_;
-  const auto lhs_rows = static_cast<uint64_t>(shape_info.m_);
-  const auto lhs_columns = static_cast<uint64_t>(shape_info.k_);
-  const auto rhs_rows = static_cast<uint64_t>(is_linear ? shape_info.n_ : shape_info.k_);
-  const auto rhs_columns = static_cast<uint64_t>(is_linear ? shape_info.k_ : shape_info.n_);
-  const auto output_rows = static_cast<uint64_t>(shape_info.m_);
-  const auto output_columns = static_cast<uint64_t>(shape_info.n_);
+  const auto &shape = problem.shape_;
+  const auto is_linear = problem.kind_ == MatmulKind::LINEAR;
+  const auto batch_count = shape.batch_count_;
+  const auto lhs_rows = static_cast<uint64_t>(shape.m_);
+  const auto lhs_columns = static_cast<uint64_t>(shape.k_);
+  const auto rhs_rows = static_cast<uint64_t>(is_linear ? shape.n_ : shape.k_);
+  const auto rhs_columns = static_cast<uint64_t>(is_linear ? shape.k_ : shape.n_);
+  const auto output_rows = static_cast<uint64_t>(shape.m_);
+  const auto output_columns = static_cast<uint64_t>(shape.n_);
   auto scratch = guard.MakeScratchScope();
 
   const auto lhs_logical_shape =
-      is_linear ? lhs.GetShape()
-                : MakeBatchedMatrixShape(shape_info.batch_shape_, shape_info.m_, shape_info.k_, location);
+      is_linear ? lhs.GetShape() : MakeBatchedMatrixShape(shape.batch_shape_, shape.m_, shape.k_, location);
   const auto rhs_logical_shape =
-      is_linear ? rhs.GetShape()
-                : MakeBatchedMatrixShape(shape_info.batch_shape_, shape_info.k_, shape_info.n_, location);
+      is_linear ? rhs.GetShape() : MakeBatchedMatrixShape(shape.batch_shape_, shape.k_, shape.n_, location);
 
-  auto lhs_matrix = TryDirectMatrix(lhs, shape_info.batch_shape_, lhs_rows, lhs_columns, is_linear, location);
+  auto lhs_matrix = TryDirectMatrix(lhs, shape.batch_shape_, lhs_rows, lhs_columns, is_linear, location);
   if (!lhs_matrix.has_value()) {
     const auto bytes =
         internal::CheckedBytes(lhs_logical_shape.GetNumElements(), GetDTypeSize(lhs.GetDType(), location), location);
@@ -669,7 +715,7 @@ void InitializeLayout(cublasLtMatrixLayout_t descriptor, cudaDataType_t dtype, c
     lhs_matrix = MakeContiguousMatrix(allocation.GetData(), lhs_rows, lhs_columns, batch_count, location);
   }
 
-  auto rhs_matrix = TryDirectMatrix(rhs, shape_info.batch_shape_, rhs_rows, rhs_columns, false, location);
+  auto rhs_matrix = TryDirectMatrix(rhs, shape.batch_shape_, rhs_rows, rhs_columns, false, location);
   if (!rhs_matrix.has_value()) {
     const auto bytes =
         internal::CheckedBytes(rhs_logical_shape.GetNumElements(), GetDTypeSize(rhs.GetDType(), location), location);
@@ -680,8 +726,7 @@ void InitializeLayout(cublasLtMatrixLayout_t descriptor, cudaDataType_t dtype, c
     rhs_matrix = MakeContiguousMatrix(allocation.GetData(), rhs_rows, rhs_columns, batch_count, location);
   }
 
-  auto output_matrix =
-      TryDirectOutput(output, shape_info.batch_shape_, output_rows, output_columns, is_linear, location);
+  auto output_matrix = TryDirectOutput(output, shape.batch_shape_, output_rows, output_columns, is_linear, location);
   auto output_scratch = static_cast<void *>(nullptr);
   if (!output_matrix.has_value()) {
     const auto bytes =
@@ -698,18 +743,20 @@ void InitializeLayout(cublasLtMatrixLayout_t descriptor, cudaDataType_t dtype, c
     guard.RecordTensor(*bias);
   }
 
-  const auto requested_epilogue = is_linear ? GetRequestedEpilogue(bias, linear_options) : CUBLASLT_EPILOGUE_DEFAULT;
-  const auto requested_bias =
-      is_linear && bias.has_value() ? internal::TensorAccess::GetData(*bias, location) : nullptr;
+  const auto fuse_bias = problem.bias_mode_ == LinearBiasMode::FUSED_CONTIGUOUS;
+  const auto fuse_relu = is_linear && problem.linear_options_.activation_ == LinearActivation::RELU &&
+                         problem.bias_mode_ != LinearBiasMode::POST_ADD;
+  const auto requested_epilogue = is_linear ? GetRequestedEpilogue(fuse_bias, fuse_relu) : CUBLASLT_EPILOGUE_DEFAULT;
+  const auto requested_bias = fuse_bias ? internal::TensorAccess::GetData(*bias, location) : nullptr;
   auto launched = TryLaunchCublasLt(guard, *lhs_matrix, *rhs_matrix, *output_matrix, output.GetDType(), batch_count,
                                     CUBLAS_OP_N, is_linear ? CUBLAS_OP_T : CUBLAS_OP_N, requested_epilogue,
-                                    requested_bias, linear_options.matmul_, location);
+                                    requested_bias, problem.linear_options_.matmul_, location);
   auto bias_fused = requested_bias != nullptr;
-  auto activation_fused = is_linear && linear_options.activation_ == LinearActivation::RELU;
+  auto activation_fused = fuse_relu;
   if (!launched && requested_epilogue != CUBLASLT_EPILOGUE_DEFAULT) {
     launched = TryLaunchCublasLt(guard, *lhs_matrix, *rhs_matrix, *output_matrix, output.GetDType(), batch_count,
                                  CUBLAS_OP_N, is_linear ? CUBLAS_OP_T : CUBLAS_OP_N, CUBLASLT_EPILOGUE_DEFAULT, nullptr,
-                                 linear_options.matmul_, location);
+                                 problem.linear_options_.matmul_, location);
     bias_fused = false;
     activation_fused = false;
   }
@@ -750,43 +797,39 @@ void ApplyLinearFallback(ExecutionContext &context, Tensor &output, const std::o
   throw InternalError("invalid Linear activation reached fallback", location);
 }
 
-void MatmulOutImpl(ExecutionContext &context, Tensor &output, const Tensor &lhs, const Tensor &rhs, MatmulKind kind,
-                   const MatmulOptions &options, std::source_location location) {
-  MatmulShapeInfo shape_info;
-  {
-    internal::OpGuard guard{context, GetName(kind), location, internal::CapturePolicy::SAFE};
-    guard.ValidateTensor(lhs);
-    guard.ValidateTensor(rhs);
-    shape_info = InferMatmulShape(lhs, rhs, kind, location);
-  }
-  if (shape_info.k_ == 0) {
+void ExecuteMatmulProblem(ExecutionContext &context, Tensor &output, const Tensor &lhs, const Tensor &rhs,
+                          const std::optional<Tensor> &bias, const MatmulProblem &problem,
+                          std::source_location location) {
+  if (problem.shape_.k_ == 0) {
     {
-      internal::OpGuard guard{context, GetName(kind), location, internal::CapturePolicy::SAFE};
-      ValidateCommonSchema(guard, output, lhs, rhs, shape_info, kind, location);
+      internal::OpGuard guard{context, GetName(problem.kind_), location, internal::CapturePolicy::SAFE};
+      ValidateMatmulOutput(guard, output, lhs, rhs, bias, problem, location);
     }
     FillOut(context, output, Scalar{int64_t{0}}, location);
+    if (problem.kind_ == MatmulKind::LINEAR) {
+      ApplyLinearFallback(context, output, bias, problem.linear_options_, {}, location);
+    }
     return;
   }
-  const auto linear_options = LinearOptions{.matmul_ = options};
-  [[maybe_unused]] const auto execution =
-      ExecuteMatmul(context, output, lhs, rhs, shape_info, kind, std::nullopt, linear_options, location);
+  const auto execution = ExecuteMatmul(context, output, lhs, rhs, bias, problem, location);
+  if (problem.kind_ == MatmulKind::LINEAR) {
+    ApplyLinearFallback(context, output, bias, problem.linear_options_, execution, location);
+  }
+}
+
+void MatmulOutImpl(ExecutionContext &context, Tensor &output, const Tensor &lhs, const Tensor &rhs, MatmulKind kind,
+                   const MatmulOptions &options, std::source_location location) {
+  const auto problem =
+      BuildMatmulProblem(context, lhs, rhs, kind, std::nullopt, LinearOptions{.matmul_ = options}, location);
+  ExecuteMatmulProblem(context, output, lhs, rhs, std::nullopt, problem, location);
 }
 
 [[nodiscard]] auto MatmulImpl(ExecutionContext &context, const Tensor &lhs, const Tensor &rhs, MatmulKind kind,
                               const MatmulOptions &options, std::source_location location) -> Tensor {
-  MatmulShapeInfo shape_info;
-  {
-    internal::OpGuard guard{context, GetName(kind), location};
-    guard.ValidateTensor(lhs);
-    guard.ValidateTensor(rhs);
-    ValidateFloatingDType(lhs.GetDType(), GetName(kind), location);
-    if (rhs.GetDType() != lhs.GetDType()) {
-      throw InvalidArgumentError("matmul operands must have the same dtype", location);
-    }
-    shape_info = InferMatmulShape(lhs, rhs, kind, location);
-  }
-  auto output = Empty(context, shape_info.output_shape_, lhs.GetDType(), location);
-  MatmulOutImpl(context, output, lhs, rhs, kind, options, location);
+  const auto problem =
+      BuildMatmulProblem(context, lhs, rhs, kind, std::nullopt, LinearOptions{.matmul_ = options}, location);
+  auto output = Empty(context, problem.shape_.output_shape_, lhs.GetDType(), location);
+  ExecuteMatmulProblem(context, output, lhs, rhs, std::nullopt, problem, location);
   return output;
 }
 
@@ -814,56 +857,15 @@ auto BatchedMatmul(ExecutionContext &context, const Tensor &lhs, const Tensor &r
 
 void LinearOut(ExecutionContext &context, Tensor &output, const Tensor &input, const Tensor &weight,
                const std::optional<Tensor> &bias, const LinearOptions &options, std::source_location location) {
-  ValidateLinearOptions(options, location);
-  MatmulShapeInfo shape_info;
-  {
-    internal::OpGuard guard{context, "LinearOut", location, internal::CapturePolicy::SAFE};
-    guard.ValidateTensor(input);
-    guard.ValidateTensor(weight);
-    shape_info = InferMatmulShape(input, weight, MatmulKind::LINEAR, location);
-    ValidateCommonSchema(guard, output, input, weight, shape_info, MatmulKind::LINEAR, location);
-    if (bias.has_value()) {
-      guard.ValidateTensor(*bias);
-      if (bias->GetDType() != input.GetDType() || bias->GetShape() != Shape{shape_info.n_}) {
-        throw InvalidArgumentError("Linear bias must have shape [out_features] and match the input dtype", location);
-      }
-      const std::array<const Tensor *, 1> bias_input{&*bias};
-      internal::ValidateAlias(internal::AliasPolicy::NO_ALIAS, output, bias_input, "LinearOut", location);
-    }
-  }
-
-  if (shape_info.k_ == 0) {
-    FillOut(context, output, Scalar{int64_t{0}}, location);
-    ApplyLinearFallback(context, output, bias, options, {}, location);
-    return;
-  }
-  const auto execution =
-      ExecuteMatmul(context, output, input, weight, shape_info, MatmulKind::LINEAR, bias, options, location);
-  ApplyLinearFallback(context, output, bias, options, execution, location);
+  const auto problem = BuildMatmulProblem(context, input, weight, MatmulKind::LINEAR, bias, options, location);
+  ExecuteMatmulProblem(context, output, input, weight, bias, problem, location);
 }
 
 auto Linear(ExecutionContext &context, const Tensor &input, const Tensor &weight, const std::optional<Tensor> &bias,
             const LinearOptions &options, std::source_location location) -> Tensor {
-  ValidateLinearOptions(options, location);
-  MatmulShapeInfo shape_info;
-  {
-    internal::OpGuard guard{context, "Linear", location};
-    guard.ValidateTensor(input);
-    guard.ValidateTensor(weight);
-    ValidateFloatingDType(input.GetDType(), "Linear", location);
-    if (weight.GetDType() != input.GetDType()) {
-      throw InvalidArgumentError("Linear input and weight must have the same dtype", location);
-    }
-    shape_info = InferMatmulShape(input, weight, MatmulKind::LINEAR, location);
-    if (bias.has_value()) {
-      guard.ValidateTensor(*bias);
-      if (bias->GetDType() != input.GetDType() || bias->GetShape() != Shape{shape_info.n_}) {
-        throw InvalidArgumentError("Linear bias must have shape [out_features] and match the input dtype", location);
-      }
-    }
-  }
-  auto output = Empty(context, shape_info.output_shape_, input.GetDType(), location);
-  LinearOut(context, output, input, weight, bias, options, location);
+  const auto problem = BuildMatmulProblem(context, input, weight, MatmulKind::LINEAR, bias, options, location);
+  auto output = Empty(context, problem.shape_.output_shape_, input.GetDType(), location);
+  ExecuteMatmulProblem(context, output, input, weight, bias, problem, location);
   return output;
 }
 

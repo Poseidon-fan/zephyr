@@ -13,7 +13,7 @@ struct CudaPhiloxGeneratorState final {
 
 /** One stream-ordered reservation of 128-bit Philox blocks. Pointers are valid for the enclosing launch callback. */
 struct CudaPhiloxReservation final {
-  uint64_t seed_;
+  const CudaPhiloxGeneratorState *generator_state_;
   const uint64_t *base_counter_;
 };
 

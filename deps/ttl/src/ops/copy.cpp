@@ -32,6 +32,67 @@
 namespace ttl {
 namespace {
 
+class PeerTransferGuard final {
+ public:
+  PeerTransferGuard(ExecutionContext &destination_context, Tensor &destination, const Tensor &source,
+                    const Event &source_ready, std::source_location location)
+      : submission_(destination_context, "CopyPeerOut", location),
+        destination_context_(destination_context),
+        destination_(destination),
+        source_(source),
+        source_ready_(source_ready),
+        location_(location),
+        destination_device_(destination_context.GetDevice()),
+        source_device_(source.GetDevice()) {
+    submission_.ValidateTensor(destination_);
+    if (source_device_ == destination_device_) {
+      throw InvalidArgumentError("CopyPeerOut requires source and destination on different devices", location_);
+    }
+    if (source_ready_.GetDevice() != source_device_) {
+      throw InvalidArgumentError("CopyPeerOut source event must be recorded on the source device", location_);
+    }
+    if (destination_.GetShape() != source_.GetShape()) {
+      throw InvalidArgumentError("CopyPeerOut requires equal source and destination shapes", location_);
+    }
+    if (destination_.GetDType() != source_.GetDType()) {
+      throw InvalidArgumentError("CopyPeerOut requires equal source and destination dtypes", location_);
+    }
+    if (!destination_.IsContiguous() || !source_.IsContiguous()) {
+      throw InvalidArgumentError("CopyPeerOut requires contiguous source and destination tensors", location_);
+    }
+    if (!internal::ContextAccess::CanAccessPeer(destination_context_, source_device_, location_)) {
+      throw NotSupportedError("destination device cannot directly access the source device", location_);
+    }
+  }
+
+  void Submit() {
+    if (destination_.GetNumElements() == 0) {
+      return;
+    }
+    const auto &stream = submission_.GetStream();
+    internal::EventAccess::Wait(stream, source_ready_, location_);
+    submission_.RecordTensor(destination_, stream);
+    submission_.RecordRemoteTensor(source_, stream);
+    const auto bytes = internal::CheckedBytes(destination_.GetNumElements(),
+                                              GetDTypeSize(destination_.GetDType(), location_), location_);
+    internal::CheckCuda(internal::GetCudaApi().memcpy_peer_async_(
+                            internal::TensorAccess::GetMutableData(destination_, location_),
+                            destination_device_.GetOrdinal(), internal::TensorAccess::GetData(source_, location_),
+                            source_device_.GetOrdinal(), bytes, submission_.GetNativeStream()),
+                        "cudaMemcpyPeerAsync (CopyPeerOut)", location_);
+  }
+
+ private:
+  internal::SubmissionScope submission_;
+  ExecutionContext &destination_context_;
+  Tensor &destination_;
+  const Tensor &source_;
+  const Event &source_ready_;
+  std::source_location location_;
+  Device destination_device_;
+  Device source_device_;
+};
+
 void CopyOutImpl(internal::OpGuard &guard, Tensor &output, const Tensor &input, bool require_contiguous_output,
                  std::source_location location) {
   guard.ValidateTensor(output);
@@ -163,49 +224,8 @@ auto Contiguous(ExecutionContext &context, const Tensor &input, std::source_loca
 
 void CopyPeerOut(ExecutionContext &destination_context, Tensor &destination, const Tensor &source,
                  const Event &source_ready, std::source_location location) {
-  internal::ContextUseGuard use_guard{destination_context, internal::ContextUseMode::SUBMIT, location};
-  if (internal::GetCaptureState(destination_context, location) != nullptr) {
-    throw CaptureError("CopyPeerOut with a public source event is not allowed during CUDA graph capture", location);
-  }
-  const auto destination_device = destination_context.GetDevice();
-  const auto source_device = source.GetDevice();
-  if (destination.GetDevice() != destination_device) {
-    throw InvalidArgumentError("CopyPeerOut destination must be on the destination context device", location);
-  }
-  if (source_device == destination_device) {
-    throw InvalidArgumentError("CopyPeerOut requires source and destination on different devices", location);
-  }
-  if (source_ready.GetDevice() != source_device) {
-    throw InvalidArgumentError("CopyPeerOut source event must be recorded on the source device", location);
-  }
-  if (destination.GetShape() != source.GetShape()) {
-    throw InvalidArgumentError("CopyPeerOut requires equal source and destination shapes", location);
-  }
-  if (destination.GetDType() != source.GetDType()) {
-    throw InvalidArgumentError("CopyPeerOut requires equal source and destination dtypes", location);
-  }
-  if (!destination.IsContiguous() || !source.IsContiguous()) {
-    throw InvalidArgumentError("CopyPeerOut requires contiguous source and destination tensors", location);
-  }
-
-  if (!internal::ContextAccess::CanAccessPeer(destination_context, source_device, location)) {
-    throw NotSupportedError("destination device cannot directly access the source device", location);
-  }
-  if (destination.GetNumElements() == 0) {
-    return;
-  }
-
-  const auto &destination_stream = destination_context.GetStream();
-  internal::EventAccess::Wait(destination_stream, source_ready, location);
-  internal::TensorAccess::RecordUsage(destination, destination_stream, location);
-  internal::TensorAccess::RecordUsage(source, destination_stream, location);
-  const auto bytes =
-      internal::CheckedBytes(destination.GetNumElements(), GetDTypeSize(destination.GetDType(), location), location);
-  internal::CheckCuda(internal::GetCudaApi().memcpy_peer_async_(
-                          internal::TensorAccess::GetMutableData(destination, location),
-                          destination_device.GetOrdinal(), internal::TensorAccess::GetData(source, location),
-                          source_device.GetOrdinal(), bytes, internal::StreamAccess::GetNative(destination_stream)),
-                      "cudaMemcpyPeerAsync (CopyPeerOut)", location);
+  PeerTransferGuard guard{destination_context, destination, source, source_ready, location};
+  guard.Submit();
 }
 
 void CopyFromPinnedAsync(ExecutionContext &context, Tensor &output, const PinnedBuffer &source,

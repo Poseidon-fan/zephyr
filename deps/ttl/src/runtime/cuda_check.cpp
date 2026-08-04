@@ -109,10 +109,6 @@ void CheckNccl(ncclResult_t status, std::string_view operation, std::source_loca
   }
 }
 
-void CheckCudaKernelLaunch(std::string_view kernel, std::source_location location) {
-  CheckCuda(cudaGetLastError(), kernel, location);
-}
-
 auto TryCuda(cudaError_t status, std::string_view operation, ErrorSink &error_sink,
              const ErrorReportContext &context) noexcept -> bool {
   if (status == cudaSuccess) {

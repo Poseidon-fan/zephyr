@@ -28,6 +28,8 @@ struct NcclOptions;
 namespace ttl::internal {
 
 class CommunicatorGroupState;
+class CaptureSessionState;
+class GraphCleanupState;
 
 class DeviceContext final {
  public:
@@ -79,6 +81,8 @@ class RuntimeState final : public std::enable_shared_from_this<RuntimeState> {
   void UnregisterGraph() noexcept;
   void BeginCapture(std::source_location location);
   void EndCapture() noexcept;
+  void TrackCaptureSession(const std::shared_ptr<CaptureSessionState> &state, std::source_location location);
+  void EnqueueGraphCleanup(GraphCleanupState *state) noexcept;
   [[nodiscard]] auto HasActiveCapture() const noexcept -> bool;
   [[nodiscard]] auto CreateCommunicatorGroup(std::span<const Device> rank_order, const NcclOptions &options,
                                              std::source_location location) -> std::shared_ptr<CommunicatorGroupState>;
@@ -92,6 +96,7 @@ class RuntimeState final : public std::enable_shared_from_this<RuntimeState> {
  private:
   [[nodiscard]] auto FindDeviceIndex(Device device, std::source_location location) const -> size_t;
   [[nodiscard]] auto HasOpenCommunicatorGroups() noexcept -> bool;
+  void PollGraphCleanupsNoexcept() noexcept;
 
   std::vector<Device> devices_;
   std::vector<std::shared_ptr<DeviceContext>> device_contexts_;
@@ -99,6 +104,8 @@ class RuntimeState final : public std::enable_shared_from_this<RuntimeState> {
   std::shared_ptr<ErrorSink> error_sink_;
   std::shared_ptr<PinnedAllocator> pinned_allocator_;
   std::vector<std::weak_ptr<CommunicatorGroupState>> communicator_groups_;
+  std::vector<std::weak_ptr<CaptureSessionState>> capture_sessions_;
+  GraphCleanupState *pending_graph_cleanup_head_{nullptr};
   std::source_location location_;
 
   // Shutdown progress is retained after a component failure so a retry only resumes at the failed component.
@@ -108,6 +115,7 @@ class RuntimeState final : public std::enable_shared_from_this<RuntimeState> {
   bool pinned_allocator_shutdown_{false};
 
   mutable std::mutex lifecycle_latch_;
+  std::mutex graph_cleanup_latch_;
   std::atomic<RuntimeStatus> status_{RuntimeStatus::RUNNING};
   std::atomic<size_t> execution_context_count_{0};
   std::atomic<size_t> graph_count_{0};

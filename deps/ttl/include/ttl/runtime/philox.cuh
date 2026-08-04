@@ -42,4 +42,10 @@ __device__ inline auto GenerateCudaPhilox(uint64_t counter, uint64_t seed) noexc
   return {{counter_0, counter_1, counter_2, counter_3}};
 }
 
+/** Generate a result at one block offset within a stream-ordered reservation. */
+__device__ inline auto GenerateCudaPhilox(CudaPhiloxReservation reservation, uint64_t block_offset) noexcept
+    -> CudaPhiloxResult {
+  return GenerateCudaPhilox(*reservation.base_counter_ + block_offset, reservation.generator_state_->seed_);
+}
+
 }  // namespace ttl

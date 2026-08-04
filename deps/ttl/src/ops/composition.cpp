@@ -32,13 +32,15 @@ enum class CompositionKind : uint8_t {
   return kind == CompositionKind::CONCAT ? "ConcatOut" : "StackOut";
 }
 
-struct CompositionShapeInfo final {
+struct CompositionProblem final {
+  CompositionKind kind_;
   Shape shape_;
   size_t axis_;
+  DType dtype_;
 };
 
 [[nodiscard]] auto InferCompositionShape(std::span<const Tensor> inputs, int64_t raw_axis, CompositionKind kind,
-                                         std::source_location location) -> CompositionShapeInfo {
+                                         std::source_location location) -> CompositionProblem {
   if (inputs.empty()) {
     throw InvalidArgumentError("Concat and Stack require at least one input", location);
   }
@@ -70,8 +72,10 @@ struct CompositionShapeInfo final {
       }
     }
     return {
+        .kind_ = kind,
         .shape_ = Shape{std::span<const int64_t>{dimensions.data(), rank + 1}, location},
         .axis_ = axis,
+        .dtype_ = inputs.front().GetDType(),
     };
   }
 
@@ -91,33 +95,37 @@ struct CompositionShapeInfo final {
         current == axis ? concatenated_extent : inputs.front().GetShape().GetDimension(current, location);
   }
   return {
+      .kind_ = kind,
       .shape_ = Shape{std::span<const int64_t>{dimensions.data(), rank}, location},
       .axis_ = axis,
+      .dtype_ = inputs.front().GetDType(),
   };
 }
 
-void ValidateComposition(ExecutionContext &context, Tensor *output, std::span<const Tensor> inputs, int64_t raw_axis,
-                         CompositionKind kind, CompositionShapeInfo &shape_info, std::source_location location) {
+[[nodiscard]] auto BuildCompositionProblem(ExecutionContext &context, std::span<const Tensor> inputs, int64_t raw_axis,
+                                           CompositionKind kind, std::source_location location) -> CompositionProblem {
   const auto name = GetName(kind);
-  internal::OpGuard guard{context, name, location};
+  internal::OpGuard guard{context, name, location, internal::CapturePolicy::SAFE};
   for (const auto &input : inputs) {
     guard.ValidateTensor(input);
   }
-  shape_info = InferCompositionShape(inputs, raw_axis, kind, location);
-  if (output == nullptr) {
-    return;
-  }
-  guard.ValidateTensor(*output);
-  if (output->GetShape() != shape_info.shape_ || output->GetDType() != inputs.front().GetDType()) {
+  return InferCompositionShape(inputs, raw_axis, kind, location);
+}
+
+void ValidateCompositionOutput(internal::OpGuard &guard, Tensor &output, std::span<const Tensor> inputs,
+                               const CompositionProblem &problem, std::source_location location) {
+  const auto name = GetName(problem.kind_);
+  guard.ValidateTensor(output);
+  if (output.GetShape() != problem.shape_ || output.GetDType() != problem.dtype_) {
     throw InvalidArgumentError("composition output shape or dtype does not match inference", location);
   }
-  internal::ValidateWritableOutput(*output, name, location);
+  internal::ValidateWritableOutput(output, name, location);
   std::vector<const Tensor *> input_pointers;
   input_pointers.reserve(inputs.size());
   for (const auto &input : inputs) {
     input_pointers.push_back(&input);
   }
-  internal::ValidateAlias(internal::AliasPolicy::NO_ALIAS, *output, input_pointers, name, location);
+  internal::ValidateAlias(internal::AliasPolicy::NO_ALIAS, output, input_pointers, name, location);
 }
 
 [[nodiscard]] auto BuildCompositionParameters(Tensor &output, const Tensor &input, size_t output_axis,
@@ -149,26 +157,11 @@ void ValidateComposition(ExecutionContext &context, Tensor *output, std::span<co
   return parameters;
 }
 
-void CompositionOutImpl(ExecutionContext &context, Tensor &output, std::span<const Tensor> inputs, int64_t raw_axis,
-                        CompositionKind kind, std::source_location location) {
-  const auto name = GetName(kind);
+void ExecuteComposition(ExecutionContext &context, Tensor &output, std::span<const Tensor> inputs,
+                        const CompositionProblem &problem, std::source_location location) {
+  const auto name = GetName(problem.kind_);
   internal::OpGuard guard{context, name, location, internal::CapturePolicy::SAFE};
-  auto shape_info = CompositionShapeInfo{};
-  guard.ValidateTensor(output);
-  for (const auto &input : inputs) {
-    guard.ValidateTensor(input);
-  }
-  shape_info = InferCompositionShape(inputs, raw_axis, kind, location);
-  if (output.GetShape() != shape_info.shape_ || output.GetDType() != inputs.front().GetDType()) {
-    throw InvalidArgumentError("composition output shape or dtype does not match inference", location);
-  }
-  internal::ValidateWritableOutput(output, name, location);
-  std::vector<const Tensor *> input_pointers;
-  input_pointers.reserve(inputs.size());
-  for (const auto &input : inputs) {
-    input_pointers.push_back(&input);
-  }
-  internal::ValidateAlias(internal::AliasPolicy::NO_ALIAS, output, input_pointers, name, location);
+  ValidateCompositionOutput(guard, output, inputs, problem, location);
   if (output.GetNumElements() == 0) {
     return;
   }
@@ -177,17 +170,17 @@ void CompositionOutImpl(ExecutionContext &context, Tensor &output, std::span<con
   for (size_t input_index = 0; input_index < inputs.size(); ++input_index) {
     const auto &input = inputs[input_index];
     if (input.GetNumElements() != 0) {
-      const auto output_axis_offset = kind == CompositionKind::STACK
+      const auto output_axis_offset = problem.kind_ == CompositionKind::STACK
                                           ? internal::CheckedNarrow<int64_t>(input_index, "Stack input index", location)
                                           : offset;
       const auto parameters =
-          BuildCompositionParameters(output, input, shape_info.axis_, output_axis_offset, kind, location);
+          BuildCompositionParameters(output, input, problem.axis_, output_axis_offset, problem.kind_, location);
       const auto index_width = internal::GetCompositionIndexWidth(parameters);
       guard.RecordTensor(input);
       internal::LaunchCompositionCopy(guard.GetNativeStream(), output.GetDType(), index_width, parameters, location);
     }
-    if (kind == CompositionKind::CONCAT) {
-      offset = internal::CheckedAdd(offset, input.GetShape().GetDimension(shape_info.axis_, location),
+    if (problem.kind_ == CompositionKind::CONCAT) {
+      offset = internal::CheckedAdd(offset, input.GetShape().GetDimension(problem.axis_, location),
                                     "Concat copy offset", location);
     }
   }
@@ -197,10 +190,9 @@ void CompositionOutImpl(ExecutionContext &context, Tensor &output, std::span<con
 
 [[nodiscard]] auto CompositionImpl(ExecutionContext &context, std::span<const Tensor> inputs, int64_t raw_axis,
                                    CompositionKind kind, std::source_location location) -> Tensor {
-  auto shape_info = CompositionShapeInfo{};
-  ValidateComposition(context, nullptr, inputs, raw_axis, kind, shape_info, location);
-  auto output = Empty(context, shape_info.shape_, inputs.front().GetDType(), location);
-  CompositionOutImpl(context, output, inputs, raw_axis, kind, location);
+  const auto problem = BuildCompositionProblem(context, inputs, raw_axis, kind, location);
+  auto output = Empty(context, problem.shape_, problem.dtype_, location);
+  ExecuteComposition(context, output, inputs, problem, location);
   return output;
 }
 
@@ -208,7 +200,8 @@ void CompositionOutImpl(ExecutionContext &context, Tensor &output, std::span<con
 
 void ConcatOut(ExecutionContext &context, Tensor &output, std::span<const Tensor> inputs, int64_t axis,
                std::source_location location) {
-  CompositionOutImpl(context, output, inputs, axis, CompositionKind::CONCAT, location);
+  const auto problem = BuildCompositionProblem(context, inputs, axis, CompositionKind::CONCAT, location);
+  ExecuteComposition(context, output, inputs, problem, location);
 }
 
 auto Concat(ExecutionContext &context, std::span<const Tensor> inputs, int64_t axis, std::source_location location)
@@ -218,7 +211,8 @@ auto Concat(ExecutionContext &context, std::span<const Tensor> inputs, int64_t a
 
 void StackOut(ExecutionContext &context, Tensor &output, std::span<const Tensor> inputs, int64_t axis,
               std::source_location location) {
-  CompositionOutImpl(context, output, inputs, axis, CompositionKind::STACK, location);
+  const auto problem = BuildCompositionProblem(context, inputs, axis, CompositionKind::STACK, location);
+  ExecuteComposition(context, output, inputs, problem, location);
 }
 
 auto Stack(ExecutionContext &context, std::span<const Tensor> inputs, int64_t axis, std::source_location location)

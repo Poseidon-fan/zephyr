@@ -98,6 +98,12 @@ class CudaKernelLaunch final {
       -> CudaWorkspace;
   [[nodiscard]] auto IsCapturing() const noexcept -> bool;
 
+  /** Make every auxiliary lane wait for primary-lane work submitted before this call. */
+  void PublishPrimaryToAuxiliary();
+
+  /** Make the primary lane wait for work submitted on every auxiliary lane before this call. */
+  void PublishAuxiliaryToPrimary();
+
   /** Register this submission with the context's sticky first-error channel. */
   [[nodiscard]] auto GetDeviceErrorContext(DType source_dtype = DType::BOOL, DType target_dtype = DType::BOOL)
       -> CudaDeviceErrorContext;
