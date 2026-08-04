@@ -37,7 +37,7 @@ namespace {
 [[noreturn]] void ThrowUnsupportedDType(std::string_view operation, DType dtype, std::source_location location) {
   std::string message{operation};
   message.append(" does not support dtype ");
-  message.append(GetDTypeName(dtype, location));
+  message.append(GetDTypeInfo(dtype, location).name_);
   throw NotSupportedError(std::move(message), location);
 }
 

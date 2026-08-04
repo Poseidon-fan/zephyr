@@ -64,7 +64,7 @@ namespace {
       .rank_ = static_cast<uint8_t>(input.GetRank()),
       .axis_ = static_cast<uint8_t>(axis),
   };
-  const auto element_size = GetDTypeSize(input.GetDType(), location);
+  const auto element_size = GetDTypeInfo(input.GetDType(), location).size_bytes_;
   for (size_t current = 0; current < input.GetRank(); ++current) {
     parameters.shape_[current] = static_cast<uint64_t>(input.GetShape().GetDimension(current, location));
     parameters.output_strides_bytes_[current] =

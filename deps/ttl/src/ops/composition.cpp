@@ -131,7 +131,7 @@ void ValidateCompositionOutput(internal::OpGuard &guard, Tensor &output, std::sp
 [[nodiscard]] auto BuildCompositionParameters(Tensor &output, const Tensor &input, size_t output_axis,
                                               int64_t output_axis_offset, CompositionKind kind,
                                               std::source_location location) -> internal::CompositionParameters64 {
-  const auto element_size = GetDTypeSize(input.GetDType(), location);
+  const auto element_size = GetDTypeInfo(input.GetDType(), location).size_bytes_;
   const auto output_axis_stride =
       internal::CheckedBytes(output.GetStrides().GetStride(output_axis, location), element_size, location);
   const auto output_byte_offset = internal::CheckedMultiply(

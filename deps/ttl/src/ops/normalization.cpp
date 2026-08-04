@@ -103,7 +103,7 @@ void ValidateAuxiliary(const std::optional<Tensor> &tensor, const Tensor &input,
                                             DType dtype, std::source_location location)
     -> internal::NormalizationAuxiliaryParameters64 {
   auto parameters = internal::NormalizationAuxiliaryParameters64{};
-  const auto element_size = GetDTypeSize(dtype, location);
+  const auto element_size = GetDTypeInfo(dtype, location).size_bytes_;
   if (weight.has_value()) {
     parameters.weight_ = static_cast<const std::byte *>(internal::TensorAccess::GetData(*weight, location));
     for (size_t axis = 0; axis < weight->GetRank(); ++axis) {

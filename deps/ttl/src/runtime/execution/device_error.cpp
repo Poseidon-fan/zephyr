@@ -53,9 +53,9 @@ namespace {
   message.append(" cannot convert ");
   message.append(DecodeOffendingValue(source_dtype, record.offending_value_bits_));
   message.append(" from ");
-  message.append(GetDTypeName(source_dtype));
+  message.append(GetDTypeInfo(source_dtype).name_);
   message.append(" to ");
-  message.append(GetDTypeName(target_dtype));
+  message.append(GetDTypeInfo(target_dtype).name_);
   message.append(" at iterator index ");
   message.append(std::to_string(record.linear_index_));
   return message;
@@ -65,7 +65,7 @@ namespace {
   std::string message{"DivideOut operation "};
   message.append(std::to_string(record.operation_sequence_));
   message.append(" encountered integer division by zero for ");
-  message.append(GetDTypeName(dtype));
+  message.append(GetDTypeInfo(dtype).name_);
   message.append(" at iterator index ");
   message.append(std::to_string(record.linear_index_));
   return message;

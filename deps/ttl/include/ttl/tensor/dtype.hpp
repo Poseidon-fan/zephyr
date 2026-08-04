@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
@@ -63,106 +64,69 @@ static_assert(std::is_standard_layout_v<BFloat16>);
 struct DTypeInfo final {
   DType dtype_;
   std::string_view name_;
-  uint8_t size_bytes_;
-  uint8_t alignment_bytes_;
+  size_t size_bytes_;
+  size_t alignment_bytes_;
   DTypeCategory category_;
 
   [[nodiscard]] constexpr auto operator==(const DTypeInfo &) const noexcept -> bool = default;
 };
 
+inline constexpr size_t TTL_DTYPE_COUNT = 7;
+
+inline constexpr std::array<DTypeInfo, TTL_DTYPE_COUNT> TTL_DTYPE_INFOS{
+    DTypeInfo{.dtype_ = DType::BOOL,
+              .name_ = "bool",
+              .size_bytes_ = sizeof(bool),
+              .alignment_bytes_ = alignof(bool),
+              .category_ = DTypeCategory::BOOLEAN},
+    DTypeInfo{.dtype_ = DType::UINT8,
+              .name_ = "uint8",
+              .size_bytes_ = sizeof(uint8_t),
+              .alignment_bytes_ = alignof(uint8_t),
+              .category_ = DTypeCategory::UNSIGNED_INTEGER},
+    DTypeInfo{.dtype_ = DType::INT32,
+              .name_ = "int32",
+              .size_bytes_ = sizeof(int32_t),
+              .alignment_bytes_ = alignof(int32_t),
+              .category_ = DTypeCategory::SIGNED_INTEGER},
+    DTypeInfo{.dtype_ = DType::INT64,
+              .name_ = "int64",
+              .size_bytes_ = sizeof(int64_t),
+              .alignment_bytes_ = alignof(int64_t),
+              .category_ = DTypeCategory::SIGNED_INTEGER},
+    DTypeInfo{.dtype_ = DType::FLOAT16,
+              .name_ = "float16",
+              .size_bytes_ = sizeof(Float16),
+              .alignment_bytes_ = alignof(Float16),
+              .category_ = DTypeCategory::FLOATING},
+    DTypeInfo{.dtype_ = DType::BFLOAT16,
+              .name_ = "bfloat16",
+              .size_bytes_ = sizeof(BFloat16),
+              .alignment_bytes_ = alignof(BFloat16),
+              .category_ = DTypeCategory::FLOATING},
+    DTypeInfo{.dtype_ = DType::FLOAT32,
+              .name_ = "float32",
+              .size_bytes_ = sizeof(float),
+              .alignment_bytes_ = alignof(float),
+              .category_ = DTypeCategory::FLOATING},
+};
+
 /** Parse an untrusted uint8_t from device or wire storage into a DType, or return nullopt. */
 [[nodiscard]] constexpr auto ParseDType(uint8_t raw) noexcept -> std::optional<DType> {
-  switch (static_cast<DType>(raw)) {
-    case DType::BOOL:
-    case DType::UINT8:
-    case DType::INT32:
-    case DType::INT64:
-    case DType::FLOAT16:
-    case DType::BFLOAT16:
-    case DType::FLOAT32:
-      return static_cast<DType>(raw);
+  if (raw >= TTL_DTYPE_COUNT) {
+    return std::nullopt;
   }
-  return std::nullopt;
+  return static_cast<DType>(raw);
 }
 
 /** Return complete metadata for a dtype, or reject an invalid enum value. */
 [[nodiscard]] constexpr auto GetDTypeInfo(DType dtype, std::source_location location = std::source_location::current())
     -> DTypeInfo {
-  switch (dtype) {
-    case DType::BOOL:
-      return {
-          .dtype_ = DType::BOOL,
-          .name_ = "bool",
-          .size_bytes_ = sizeof(bool),
-          .alignment_bytes_ = alignof(bool),
-          .category_ = DTypeCategory::BOOLEAN,
-      };
-    case DType::UINT8:
-      return {
-          .dtype_ = DType::UINT8,
-          .name_ = "uint8",
-          .size_bytes_ = sizeof(uint8_t),
-          .alignment_bytes_ = alignof(uint8_t),
-          .category_ = DTypeCategory::UNSIGNED_INTEGER,
-      };
-    case DType::INT32:
-      return {
-          .dtype_ = DType::INT32,
-          .name_ = "int32",
-          .size_bytes_ = sizeof(int32_t),
-          .alignment_bytes_ = alignof(int32_t),
-          .category_ = DTypeCategory::SIGNED_INTEGER,
-      };
-    case DType::INT64:
-      return {
-          .dtype_ = DType::INT64,
-          .name_ = "int64",
-          .size_bytes_ = sizeof(int64_t),
-          .alignment_bytes_ = alignof(int64_t),
-          .category_ = DTypeCategory::SIGNED_INTEGER,
-      };
-    case DType::FLOAT16:
-      return {
-          .dtype_ = DType::FLOAT16,
-          .name_ = "float16",
-          .size_bytes_ = sizeof(Float16),
-          .alignment_bytes_ = alignof(Float16),
-          .category_ = DTypeCategory::FLOATING,
-      };
-    case DType::BFLOAT16:
-      return {
-          .dtype_ = DType::BFLOAT16,
-          .name_ = "bfloat16",
-          .size_bytes_ = sizeof(BFloat16),
-          .alignment_bytes_ = alignof(BFloat16),
-          .category_ = DTypeCategory::FLOATING,
-      };
-    case DType::FLOAT32:
-      return {
-          .dtype_ = DType::FLOAT32,
-          .name_ = "float32",
-          .size_bytes_ = sizeof(float),
-          .alignment_bytes_ = alignof(float),
-          .category_ = DTypeCategory::FLOATING,
-      };
+  const auto idx = static_cast<uint8_t>(dtype);
+  if (idx >= TTL_DTYPE_COUNT) {
+    throw InvalidArgumentError("invalid dtype", location);
   }
-  throw InvalidArgumentError("invalid dtype", location);
-}
-
-[[nodiscard]] constexpr auto GetDTypeName(DType dtype, std::source_location location = std::source_location::current())
-    -> std::string_view {
-  return GetDTypeInfo(dtype, location).name_;
-}
-
-[[nodiscard]] constexpr auto GetDTypeSize(DType dtype, std::source_location location = std::source_location::current())
-    -> size_t {
-  return GetDTypeInfo(dtype, location).size_bytes_;
-}
-
-[[nodiscard]] constexpr auto GetDTypeAlignment(DType dtype,
-                                               std::source_location location = std::source_location::current())
-    -> size_t {
-  return GetDTypeInfo(dtype, location).alignment_bytes_;
+  return TTL_DTYPE_INFOS[idx];
 }
 
 [[nodiscard]] constexpr auto IsBoolean(DType dtype, std::source_location location = std::source_location::current())

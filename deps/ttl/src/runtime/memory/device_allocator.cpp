@@ -739,7 +739,7 @@ class DeviceAllocatorImpl final {
     }
     if (context.dtype_.has_value()) {
       message.append(", dtype=");
-      message.append(GetDTypeName(*context.dtype_, context.location_));
+      message.append(GetDTypeInfo(*context.dtype_, context.location_).name_);
     }
     message.append(", logical_live=");
     message.append(std::to_string(logical_live_bytes_.load(std::memory_order_relaxed)));

@@ -74,7 +74,7 @@ class PeerTransferGuard final {
     submission_.RecordTensor(destination_, stream);
     submission_.RecordRemoteTensor(source_, stream);
     const auto bytes = internal::CheckedBytes(destination_.GetNumElements(),
-                                              GetDTypeSize(destination_.GetDType(), location_), location_);
+                                              GetDTypeInfo(destination_.GetDType(), location_).size_bytes_, location_);
     internal::CheckCuda(internal::GetCudaApi().memcpy_peer_async_(
                             internal::TensorAccess::GetMutableData(destination_, location_),
                             destination_device_.GetOrdinal(), internal::TensorAccess::GetData(source_, location_),
@@ -120,8 +120,8 @@ void CopyOutImpl(internal::OpGuard &guard, Tensor &output, const Tensor &input, 
   guard.RecordTensor(output);
   guard.RecordTensor(input);
   if (output.IsContiguous() && input.IsContiguous()) {
-    const auto bytes =
-        internal::CheckedBytes(output.GetNumElements(), GetDTypeSize(output.GetDType(), location), location);
+    const auto bytes = internal::CheckedBytes(output.GetNumElements(),
+                                              GetDTypeInfo(output.GetDType(), location).size_bytes_, location);
     internal::CheckCuda(internal::GetCudaApi().memcpy_async_(internal::TensorAccess::GetMutableData(output, location),
                                                              internal::TensorAccess::GetData(input, location), bytes,
                                                              cudaMemcpyDeviceToDevice, guard.GetNativeStream()),
@@ -141,7 +141,7 @@ auto ValidateHostTransfer(internal::OpGuard &guard, const Tensor &tensor, size_t
     throw InvalidArgumentError(std::move(message), location);
   }
   const auto expected_bytes =
-      internal::CheckedBytes(tensor.GetNumElements(), GetDTypeSize(tensor.GetDType(), location), location);
+      internal::CheckedBytes(tensor.GetNumElements(), GetDTypeInfo(tensor.GetDType(), location).size_bytes_, location);
   if (host_bytes != expected_bytes) {
     std::string message{operation};
     message.append(" requires host and tensor byte counts to match");

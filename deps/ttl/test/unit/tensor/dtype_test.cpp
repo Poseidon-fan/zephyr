@@ -24,9 +24,9 @@ TEST(DTypeTest, ReportsCompleteMetadata) {
   };
   for (const auto &info : expected) {
     EXPECT_EQ(GetDTypeInfo(info.dtype_), info);
-    EXPECT_EQ(GetDTypeName(info.dtype_), info.name_);
-    EXPECT_EQ(GetDTypeSize(info.dtype_), info.size_bytes_);
-    EXPECT_EQ(GetDTypeAlignment(info.dtype_), info.alignment_bytes_);
+    EXPECT_EQ(GetDTypeInfo(info.dtype_).name_, info.name_);
+    EXPECT_EQ(GetDTypeInfo(info.dtype_).size_bytes_, info.size_bytes_);
+    EXPECT_EQ(GetDTypeInfo(info.dtype_).alignment_bytes_, info.alignment_bytes_);
   }
 }
 

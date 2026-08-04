@@ -145,9 +145,9 @@ void ValidateIndexDType(DType dtype, std::string_view operation, std::source_loc
       .rank_ = static_cast<uint8_t>(output.GetRank()),
       .axis_ = static_cast<uint8_t>(axis),
   };
-  const auto output_element_size = GetDTypeSize(output.GetDType(), location);
-  const auto input_element_size = GetDTypeSize(input.GetDType(), location);
-  const auto index_element_size = GetDTypeSize(index.GetDType(), location);
+  const auto output_element_size = GetDTypeInfo(output.GetDType(), location).size_bytes_;
+  const auto input_element_size = GetDTypeInfo(input.GetDType(), location).size_bytes_;
+  const auto index_element_size = GetDTypeInfo(index.GetDType(), location).size_bytes_;
   for (size_t current = 0; current < output.GetRank(); ++current) {
     const auto output_extent = output.GetShape().GetDimension(current, location);
     parameters.shape_[current] = static_cast<uint64_t>(output_extent);
@@ -289,15 +289,15 @@ void IndexingOutImpl(ExecutionContext &context, Tensor &output, const Tensor &in
       .table_ = static_cast<const std::byte *>(internal::TensorAccess::GetData(table, location)),
       .indices_ = static_cast<const std::byte *>(internal::TensorAccess::GetData(indices, location)),
       .table_row_stride_bytes_ = internal::CheckedBytes(table.GetStrides().GetStride(0, location),
-                                                        GetDTypeSize(table.GetDType(), location), location),
+                                                        GetDTypeInfo(table.GetDType(), location).size_bytes_, location),
       .num_elements_ = static_cast<uint64_t>(output.GetNumElements()),
       .row_count_ = table.GetShape().GetDimension(0, location),
       .output_rank_ = static_cast<uint8_t>(output.GetRank()),
       .index_rank_ = static_cast<uint8_t>(indices.GetRank()),
   };
-  const auto output_element_size = GetDTypeSize(output.GetDType(), location);
-  const auto table_element_size = GetDTypeSize(table.GetDType(), location);
-  const auto index_element_size = GetDTypeSize(indices.GetDType(), location);
+  const auto output_element_size = GetDTypeInfo(output.GetDType(), location).size_bytes_;
+  const auto table_element_size = GetDTypeInfo(table.GetDType(), location).size_bytes_;
+  const auto index_element_size = GetDTypeInfo(indices.GetDType(), location).size_bytes_;
   for (size_t axis = 0; axis < output.GetRank(); ++axis) {
     parameters.output_shape_[axis] = static_cast<uint64_t>(output.GetShape().GetDimension(axis, location));
     parameters.output_strides_bytes_[axis] =
@@ -402,8 +402,8 @@ void ValidateScatterElementsOutput(Tensor &output, const Tensor &input, const Te
       .rank_ = static_cast<uint8_t>(output.GetRank()),
       .axis_ = static_cast<uint8_t>(axis),
   };
-  const auto value_size = GetDTypeSize(output.GetDType(), location);
-  const auto index_size = GetDTypeSize(index.GetDType(), location);
+  const auto value_size = GetDTypeInfo(output.GetDType(), location).size_bytes_;
+  const auto index_size = GetDTypeInfo(index.GetDType(), location).size_bytes_;
   for (size_t current = 0; current < output.GetRank(); ++current) {
     parameters.shape_[current] = static_cast<uint64_t>(index.GetShape().GetDimension(current, location));
     parameters.output_strides_bytes_[current] =

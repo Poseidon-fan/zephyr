@@ -304,7 +304,7 @@ void ValidateMatmulOutput(internal::OpGuard &guard, Tensor &output, const Tensor
 
 [[nodiscard]] auto BuildMaterializationParameters(void *output, const Tensor &input, const Shape &logical_shape,
                                                   std::source_location location) -> internal::CompositionParameters64 {
-  const auto element_size = GetDTypeSize(input.GetDType(), location);
+  const auto element_size = GetDTypeInfo(input.GetDType(), location).size_bytes_;
   const auto contiguous_strides = GetContiguousByteStrides(logical_shape, element_size, location);
   auto parameters = internal::CompositionParameters64{
       .output_ = static_cast<std::byte *>(output),
@@ -332,7 +332,7 @@ void ValidateMatmulOutput(internal::OpGuard &guard, Tensor &output, const Tensor
 
 [[nodiscard]] auto BuildCopyBackParameters(Tensor &output, const void *input, std::source_location location)
     -> internal::CompositionParameters64 {
-  const auto element_size = GetDTypeSize(output.GetDType(), location);
+  const auto element_size = GetDTypeInfo(output.GetDType(), location).size_bytes_;
   const auto contiguous_strides = GetContiguousByteStrides(output.GetShape(), element_size, location);
   auto parameters = internal::CompositionParameters64{
       .output_ = static_cast<std::byte *>(internal::TensorAccess::GetMutableData(output, location)),
@@ -706,8 +706,8 @@ void InitializeLayout(cublasLtMatrixLayout_t descriptor, cudaDataType_t dtype, c
 
   auto lhs_matrix = TryDirectMatrix(lhs, shape.batch_shape_, lhs_rows, lhs_columns, is_linear, location);
   if (!lhs_matrix.has_value()) {
-    const auto bytes =
-        internal::CheckedBytes(lhs_logical_shape.GetNumElements(), GetDTypeSize(lhs.GetDType(), location), location);
+    const auto bytes = internal::CheckedBytes(lhs_logical_shape.GetNumElements(),
+                                              GetDTypeInfo(lhs.GetDType(), location).size_bytes_, location);
     const auto allocation = scratch.AllocateBytes(bytes, 256, location);
     const auto parameters = BuildMaterializationParameters(allocation.GetData(), lhs, lhs_logical_shape, location);
     internal::LaunchCompositionCopy(guard.GetNativeStream(), lhs.GetDType(),
@@ -717,8 +717,8 @@ void InitializeLayout(cublasLtMatrixLayout_t descriptor, cudaDataType_t dtype, c
 
   auto rhs_matrix = TryDirectMatrix(rhs, shape.batch_shape_, rhs_rows, rhs_columns, false, location);
   if (!rhs_matrix.has_value()) {
-    const auto bytes =
-        internal::CheckedBytes(rhs_logical_shape.GetNumElements(), GetDTypeSize(rhs.GetDType(), location), location);
+    const auto bytes = internal::CheckedBytes(rhs_logical_shape.GetNumElements(),
+                                              GetDTypeInfo(rhs.GetDType(), location).size_bytes_, location);
     const auto allocation = scratch.AllocateBytes(bytes, 256, location);
     const auto parameters = BuildMaterializationParameters(allocation.GetData(), rhs, rhs_logical_shape, location);
     internal::LaunchCompositionCopy(guard.GetNativeStream(), rhs.GetDType(),
@@ -729,8 +729,8 @@ void InitializeLayout(cublasLtMatrixLayout_t descriptor, cudaDataType_t dtype, c
   auto output_matrix = TryDirectOutput(output, shape.batch_shape_, output_rows, output_columns, is_linear, location);
   auto output_scratch = static_cast<void *>(nullptr);
   if (!output_matrix.has_value()) {
-    const auto bytes =
-        internal::CheckedBytes(output.GetNumElements(), GetDTypeSize(output.GetDType(), location), location);
+    const auto bytes = internal::CheckedBytes(output.GetNumElements(),
+                                              GetDTypeInfo(output.GetDType(), location).size_bytes_, location);
     const auto allocation = scratch.AllocateBytes(bytes, 256, location);
     output_scratch = allocation.GetData();
     output_matrix = MakeContiguousOutput(output_scratch, output_rows, output_columns, batch_count, location);

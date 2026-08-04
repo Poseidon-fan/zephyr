@@ -99,7 +99,7 @@ struct VariableCallPlan final {
   if (alias != AliasKind::DISJOINT && (state->GetWorldSize() != 1 || alias != AliasKind::EXACT)) {
     throw InvalidArgumentError("AllToAllVOut supports exact input/output aliasing only for world size one", location);
   }
-  const auto element_size = GetDTypeSize(input.GetDType(), location);
+  const auto element_size = GetDTypeInfo(input.GetDType(), location).size_bytes_;
   auto sends =
       BuildCountPlan(send_counts, state->GetWorldSize(), input.GetNumElements(), element_size, "send", location);
   auto receives =
@@ -141,7 +141,7 @@ void SubmitSelfCopy(PreparedVariableCall &call, size_t rank, cudaStream_t stream
     return;
   }
   const auto bytes =
-      internal::CheckedBytes(count, GetDTypeSize(call.tensors_.GetInput().GetDType(), location), location);
+      internal::CheckedBytes(count, GetDTypeInfo(call.tensors_.GetInput().GetDType(), location).size_bytes_, location);
   const auto source = internal::CollectiveByteOffset(
       internal::TensorAccess::GetData(call.tensors_.GetInput(), location), call.sends_.offsets_bytes_[rank]);
   auto *destination = internal::MutableCollectiveByteOffset(

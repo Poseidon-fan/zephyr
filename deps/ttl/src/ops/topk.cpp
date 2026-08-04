@@ -73,7 +73,7 @@ void ValidateTopKOutputs(Tensor &values, Tensor &indices, const Tensor &input, c
 [[nodiscard]] auto BuildTopKParameters(Tensor &values, Tensor &indices, const Tensor &input,
                                        const TopKShapeInfo &shape_info, const TopKOptions &options,
                                        std::source_location location) -> internal::TopKParameters {
-  const auto value_size = GetDTypeSize(values.GetDType(), location);
+  const auto value_size = GetDTypeInfo(values.GetDType(), location).size_bytes_;
   auto parameters = internal::TopKParameters{
       .values_ = static_cast<std::byte *>(internal::TensorAccess::GetMutableData(values, location)),
       .indices_ = internal::TensorAccess::GetMutableData<int64_t>(indices, location),

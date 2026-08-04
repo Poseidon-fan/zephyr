@@ -103,7 +103,7 @@ void ValidateMask(const Tensor &mask, const Tensor &query, const Shape &score_sh
                                        const std::optional<Tensor> &mask, const SdpaOptions &options,
                                        const SdpaShapeInfo &shape_info, std::source_location location)
     -> internal::SdpaParameters {
-  const auto element_size = GetDTypeSize(query.GetDType(), location);
+  const auto element_size = GetDTypeInfo(query.GetDType(), location).size_bytes_;
   auto parameters = internal::SdpaParameters{
       .output_ = static_cast<std::byte *>(internal::TensorAccess::GetMutableData(output, location)),
       .query_ = static_cast<const std::byte *>(internal::TensorAccess::GetData(query, location)),
@@ -136,7 +136,7 @@ void ValidateMask(const Tensor &mask, const Tensor &query, const Shape &score_sh
         internal::CheckedBytes(value.GetStrides().GetStride(axis, location), element_size, location);
   }
   if (mask.has_value()) {
-    const auto mask_size = GetDTypeSize(mask->GetDType(), location);
+    const auto mask_size = GetDTypeInfo(mask->GetDType(), location).size_bytes_;
     const auto rank_offset = size_t{4} - mask->GetRank();
     for (size_t axis = 0; axis < 4; ++axis) {
       if (axis < rank_offset) {

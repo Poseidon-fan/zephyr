@@ -199,7 +199,7 @@ void ValidateAlias(CollectiveKind kind, const Tensor &output, const Tensor &inpu
   if (!input.IsContiguous() || !output.IsContiguous()) {
     throw InvalidArgumentError("collective in-place layout must be contiguous", location);
   }
-  const auto element_size = GetDTypeSize(input.GetDType(), location);
+  const auto element_size = GetDTypeInfo(input.GetDType(), location).size_bytes_;
   const auto input_data = internal::TensorAccess::GetData(input, location);
   const auto output_data = internal::TensorAccess::GetData(output, location);
   if (kind == CollectiveKind::ALL_GATHER || (kind == CollectiveKind::GATHER && rank == root)) {
@@ -283,8 +283,9 @@ void SubmitSelfCopy(CollectiveKind kind, PreparedCall &call, size_t rank, size_t
     return;
   }
   const auto chunk_count = GetChunkCount(kind, call, world_size);
-  const auto chunk_bytes = internal::CheckedMultiply(chunk_count, GetDTypeSize(call.GetInput().GetDType(), location),
-                                                     "collective self-copy byte count", location);
+  const auto chunk_bytes =
+      internal::CheckedMultiply(chunk_count, GetDTypeInfo(call.GetInput().GetDType(), location).size_bytes_,
+                                "collective self-copy byte count", location);
   const auto offset = internal::CheckedMultiply(rank, chunk_bytes, "collective self-copy offset", location);
   const void *source = nullptr;
   void *destination = nullptr;
@@ -348,8 +349,9 @@ void IssueCollective(CollectiveKind kind, PreparedCall &call, ncclComm_t communi
       return;
     case CollectiveKind::ALL_TO_ALL: {
       const auto chunk_count = input_count / world_size;
-      const auto chunk_bytes = internal::CheckedMultiply(
-          chunk_count, GetDTypeSize(call.GetInput().GetDType(), location), "AllToAllOut chunk bytes", location);
+      const auto chunk_bytes =
+          internal::CheckedMultiply(chunk_count, GetDTypeInfo(call.GetInput().GetDType(), location).size_bytes_,
+                                    "AllToAllOut chunk bytes", location);
       for (size_t peer = 0; peer < world_size; peer++) {
         if (peer == rank) {
           continue;
@@ -363,8 +365,8 @@ void IssueCollective(CollectiveKind kind, PreparedCall &call, ncclComm_t communi
     }
     case CollectiveKind::GATHER:
       if (rank == root) {
-        const auto chunk_bytes = internal::CheckedBytes(call.GetInput().GetNumElements(),
-                                                        GetDTypeSize(call.GetInput().GetDType(), location), location);
+        const auto chunk_bytes = internal::CheckedBytes(
+            call.GetInput().GetNumElements(), GetDTypeInfo(call.GetInput().GetDType(), location).size_bytes_, location);
         for (size_t peer = 0; peer < world_size; peer++) {
           if (peer != rank) {
             statuses.push_back(nccl_api.receive_(MutableCollectiveByteOffset(output, peer * chunk_bytes), input_count,
@@ -377,8 +379,9 @@ void IssueCollective(CollectiveKind kind, PreparedCall &call, ncclComm_t communi
       return;
     case CollectiveKind::SCATTER:
       if (rank == root) {
-        const auto chunk_bytes = internal::CheckedBytes(call.GetOutput().GetNumElements(),
-                                                        GetDTypeSize(call.GetOutput().GetDType(), location), location);
+        const auto chunk_bytes =
+            internal::CheckedBytes(call.GetOutput().GetNumElements(),
+                                   GetDTypeInfo(call.GetOutput().GetDType(), location).size_bytes_, location);
         for (size_t peer = 0; peer < world_size; peer++) {
           if (peer != rank) {
             statuses.push_back(nccl_api.send_(CollectiveByteOffset(input, peer * chunk_bytes), output_count, dtype,

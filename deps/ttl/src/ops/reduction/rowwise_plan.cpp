@@ -168,8 +168,8 @@ auto BuildRowwisePlan(Tensor &output, const Tensor &input, std::span<const size_
   const auto dimensions = input.GetShape().GetDimensions();
   const auto input_strides = input.GetStrides().GetValues();
   const auto output_strides = output.GetStrides().GetValues();
-  const auto input_element_size = GetDTypeSize(input.GetDType(), location);
-  const auto output_element_size = GetDTypeSize(output.GetDType(), location);
+  const auto input_element_size = GetDTypeInfo(input.GetDType(), location).size_bytes_;
+  const auto output_element_size = GetDTypeInfo(output.GetDType(), location).size_bytes_;
 
   std::array<bool, TTL_MAX_RANK> reduced{};
   for (const auto axis : axes) {

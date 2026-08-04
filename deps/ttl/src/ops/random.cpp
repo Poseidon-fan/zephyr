@@ -77,7 +77,7 @@ void ValidateGeneratorContext(const internal::GeneratorImpl &impl, const Executi
 
 [[nodiscard]] auto BuildRandomParameters(Tensor &output, float first_parameter, float second_parameter,
                                          std::source_location location) -> internal::RandomParameters {
-  const auto element_size = GetDTypeSize(output.GetDType(), location);
+  const auto element_size = GetDTypeInfo(output.GetDType(), location).size_bytes_;
   auto parameters = internal::RandomParameters{
       .output_ = static_cast<std::byte *>(internal::TensorAccess::GetMutableData(output, location)),
       .num_elements_ = static_cast<uint64_t>(output.GetNumElements()),

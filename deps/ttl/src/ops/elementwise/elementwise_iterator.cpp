@@ -397,11 +397,11 @@ auto ElementwiseIterator::Builder::Build(std::string_view operation, std::source
   }
 
   std::array<size_t, TTL_MAX_ITERATOR_OPERANDS> element_sizes{};
-  element_sizes[0] = GetDTypeSize(output_dtype, location);
+  element_sizes[0] = GetDTypeInfo(output_dtype, location).size_bytes_;
   iterator.pointers_[0] = static_cast<std::byte *>(TensorAccess::GetMutableData(*iterator.operands_[0], location));
   for (size_t input = 0; input < input_count_; ++input) {
     const auto operand = input + 1;
-    element_sizes[operand] = GetDTypeSize(iterator.operands_[operand]->GetDType(), location);
+    element_sizes[operand] = GetDTypeInfo(iterator.operands_[operand]->GetDType(), location).size_bytes_;
     iterator.pointers_[operand] = const_cast<std::byte *>(
         static_cast<const std::byte *>(TensorAccess::GetData(*iterator.operands_[operand], location)));
   }

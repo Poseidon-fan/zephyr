@@ -177,8 +177,8 @@ void FillOut(ExecutionContext &context, Tensor &output, Scalar value, std::sourc
 
   guard.RecordTensor(output);
   if (use_memset) {
-    const auto bytes =
-        internal::CheckedBytes(output.GetNumElements(), GetDTypeSize(output.GetDType(), location), location);
+    const auto bytes = internal::CheckedBytes(output.GetNumElements(),
+                                              GetDTypeInfo(output.GetDType(), location).size_bytes_, location);
     internal::CheckCuda(internal::GetCudaApi().memset_async_(internal::TensorAccess::GetMutableData(output, location),
                                                              0, bytes, guard.GetNativeStream()),
                         "cudaMemsetAsync (FillOut)", location);

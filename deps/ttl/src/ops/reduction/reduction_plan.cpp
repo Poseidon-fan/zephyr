@@ -243,7 +243,7 @@ auto BuildReductionPlan(Tensor &output, const Tensor &input, std::span<const siz
   const auto input_dimensions = input.GetShape().GetDimensions();
   const auto input_strides = input.GetStrides().GetValues();
   const auto output_strides = output.GetStrides().GetValues();
-  const auto element_size = GetDTypeSize(input.GetDType(), location);
+  const auto element_size = GetDTypeInfo(input.GetDType(), location).size_bytes_;
 
   std::array<bool, TTL_MAX_RANK> reduced{};
   for (const auto axis : axes) {
@@ -274,7 +274,7 @@ auto BuildReductionPlan(Tensor &output, const Tensor &input, std::span<const siz
     parameters.output_shape_[plan_axis] = extent;
     parameters.output_input_strides_bytes_[plan_axis] = input_stride_bytes;
     parameters.output_strides_bytes_[plan_axis] =
-        CheckedBytes(output_strides[output_axis], GetDTypeSize(output.GetDType(), location), location);
+        CheckedBytes(output_strides[output_axis], GetDTypeInfo(output.GetDType(), location).size_bytes_, location);
     ++parameters.output_rank_;
     ++output_axis;
   }

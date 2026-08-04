@@ -97,7 +97,7 @@ namespace {
 
 [[nodiscard]] auto CreateScratchTensor(ExecutionContext &context, ScratchArena::Scope &scratch_scope,
                                        const Tensor &prototype, std::source_location location) -> Tensor {
-  const auto element_size = GetDTypeSize(prototype.GetDType(), location);
+  const auto element_size = GetDTypeInfo(prototype.GetDType(), location).size_bytes_;
   const auto bytes = CheckedBytes(prototype.GetNumElements(), element_size, location);
   const auto allocation = scratch_scope.AllocateBytes(bytes, 256, location);
   if (allocation.GetOffsetBytes() % element_size != 0) {

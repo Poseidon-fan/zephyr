@@ -138,9 +138,9 @@ void ValidateTensorStorage(const Storage &storage, const TensorByteRange &byte_r
 
 [[nodiscard]] auto FormatDTypeMismatch(DType expected, DType actual, std::source_location location) -> std::string {
   std::string message{"tensor data requested as "};
-  message.append(GetDTypeName(expected, location));
+  message.append(GetDTypeInfo(expected, location).name_);
   message.append(" but tensor dtype is ");
-  message.append(GetDTypeName(actual, location));
+  message.append(GetDTypeInfo(actual, location).name_);
   return message;
 }
 
@@ -287,8 +287,8 @@ auto Tensor::GetDataPointer(DType expected_dtype, std::source_location location)
   if (base_pointer == nullptr) {
     return nullptr;
   }
-  const auto byte_offset =
-      internal::CheckedElementOffsetToBytes(impl.GetStorageOffset(), GetDTypeSize(impl.GetDType(), location), location);
+  const auto byte_offset = internal::CheckedElementOffsetToBytes(
+      impl.GetStorageOffset(), GetDTypeInfo(impl.GetDType(), location).size_bytes_, location);
   return base_pointer + byte_offset;
 }
 
@@ -309,10 +309,10 @@ auto ClassifyAlias(const Tensor &lhs, const Tensor &rhs, std::source_location lo
 
   const auto lhs_range =
       internal::ComputeTensorByteRange(lhs_impl.GetShape(), lhs_impl.GetStrides(), lhs_impl.GetStorageOffset(),
-                                       GetDTypeSize(lhs_impl.GetDType(), location), location);
+                                       GetDTypeInfo(lhs_impl.GetDType(), location).size_bytes_, location);
   const auto rhs_range =
       internal::ComputeTensorByteRange(rhs_impl.GetShape(), rhs_impl.GetStrides(), rhs_impl.GetStorageOffset(),
-                                       GetDTypeSize(rhs_impl.GetDType(), location), location);
+                                       GetDTypeInfo(rhs_impl.GetDType(), location).size_bytes_, location);
   if (shares_storage && (lhs_range.end_ <= rhs_range.begin_ || rhs_range.end_ <= lhs_range.begin_)) {
     return AliasKind::DISJOINT;
   }
