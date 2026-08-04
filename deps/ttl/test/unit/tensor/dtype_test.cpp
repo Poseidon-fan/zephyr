@@ -23,7 +23,6 @@ TEST(DTypeTest, ReportsCompleteMetadata) {
       DTypeInfo{DType::FLOAT32, "float32", 4, 4, DTypeCategory::FLOATING},
   };
   for (const auto &info : expected) {
-    EXPECT_TRUE(IsValidDType(info.dtype_));
     EXPECT_EQ(GetDTypeInfo(info.dtype_), info);
     EXPECT_EQ(GetDTypeName(info.dtype_), info.name_);
     EXPECT_EQ(GetDTypeSize(info.dtype_), info.size_bytes_);
@@ -32,9 +31,9 @@ TEST(DTypeTest, ReportsCompleteMetadata) {
 }
 
 TEST(DTypeTest, RejectsInvalidEnumInReleaseChecks) {
-  constexpr auto invalid = static_cast<DType>(255);
-  EXPECT_FALSE(IsValidDType(invalid));
-  EXPECT_THROW(static_cast<void>(GetDTypeInfo(invalid)), InvalidArgumentError);
+  constexpr auto raw = uint8_t{255};
+  EXPECT_EQ(TryParseDType(raw), std::nullopt);
+  EXPECT_THROW(static_cast<void>(GetDTypeInfo(static_cast<DType>(raw))), InvalidArgumentError);
 }
 
 TEST(DTypeTest, ClassifiesDTypesWithoutTreatingBoolAsIntegral) {

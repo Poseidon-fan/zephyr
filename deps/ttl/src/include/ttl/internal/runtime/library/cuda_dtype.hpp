@@ -130,10 +130,6 @@ concept CudaDTypeVisitorFor = (CudaDTypeVisitorForOne<Function, Types> && ...);
 
 [[noreturn]] inline void ThrowUnsupportedCudaDType(std::string_view operation, DType dtype,
                                                    std::string_view expected_category, std::source_location location) {
-  if (!IsValidDType(dtype)) {
-    ThrowInvalidCudaDType(operation, dtype, location);
-  }
-
   const auto dtype_name = GetDTypeName(dtype);
   std::string message;
   message.reserve(operation.size() + dtype_name.size() + expected_category.size() + 40);

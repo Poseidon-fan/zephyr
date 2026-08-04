@@ -178,9 +178,6 @@ DeviceErrorState::~DeviceErrorState() noexcept = default;
 
 auto DeviceErrorState::Register(const Stream &stream, DType source_dtype, DType target_dtype,
                                 std::source_location location) -> DeviceErrorLaunchContext {
-  if (!IsValidDType(source_dtype) || !IsValidDType(target_dtype)) {
-    throw InternalError("device error registration received an invalid dtype", location);
-  }
   if (stream.GetDevice() != storage_->GetDevice()) {
     throw InternalError("device error registration used a stream on the wrong device", location);
   }
@@ -216,19 +213,19 @@ void DeviceErrorState::ConsumeAndReset(cudaStream_t stream, std::source_location
     return;
   }
 
-  const auto source_dtype = static_cast<DType>(record.source_dtype_);
-  const auto target_dtype = static_cast<DType>(record.target_dtype_);
-  if (!IsValidDType(source_dtype) || !IsValidDType(target_dtype)) {
+  const auto source_dtype = ParseDType(record.source_dtype_);
+  const auto target_dtype = ParseDType(record.target_dtype_);
+  if (!source_dtype.has_value() || !target_dtype.has_value()) {
     throw InternalError("device error record contains an invalid dtype", location);
   }
 
   switch (static_cast<DeviceErrorCode>(record.code_)) {
     case DeviceErrorCode::CAST_OUT_OF_RANGE:
-      throw DeviceError(FormatCastError(record, source_dtype, target_dtype), location);
+      throw DeviceError(FormatCastError(record, *source_dtype, *target_dtype), location);
     case DeviceErrorCode::INTEGER_DIVIDE_BY_ZERO:
-      throw DeviceError(FormatIntegerDivisionError(record, source_dtype), location);
+      throw DeviceError(FormatIntegerDivisionError(record, *source_dtype), location);
     case DeviceErrorCode::INDEX_OUT_OF_BOUNDS:
-      throw DeviceError(FormatIndexError(record, source_dtype), location);
+      throw DeviceError(FormatIndexError(record, *source_dtype), location);
     case DeviceErrorCode::RNG_COUNTER_OVERFLOW:
       throw DeviceError(FormatRandomCounterError(record), location);
     case DeviceErrorCode::INVALID_VALUE:

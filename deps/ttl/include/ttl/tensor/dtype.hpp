@@ -3,6 +3,7 @@
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <source_location>
 #include <string_view>
 #include <type_traits>
@@ -69,9 +70,9 @@ struct DTypeInfo final {
   [[nodiscard]] constexpr auto operator==(const DTypeInfo &) const noexcept -> bool = default;
 };
 
-/** Return whether a raw DType enum value names a supported TTL dtype. */
-[[nodiscard]] constexpr auto IsValidDType(DType dtype) noexcept -> bool {
-  switch (dtype) {
+/** Parse an untrusted uint8_t from device or wire storage into a DType, or return nullopt. */
+[[nodiscard]] constexpr auto ParseDType(uint8_t raw) noexcept -> std::optional<DType> {
+  switch (static_cast<DType>(raw)) {
     case DType::BOOL:
     case DType::UINT8:
     case DType::INT32:
@@ -79,9 +80,9 @@ struct DTypeInfo final {
     case DType::FLOAT16:
     case DType::BFLOAT16:
     case DType::FLOAT32:
-      return true;
+      return static_cast<DType>(raw);
   }
-  return false;
+  return std::nullopt;
 }
 
 /** Return complete metadata for a dtype, or reject an invalid enum value. */

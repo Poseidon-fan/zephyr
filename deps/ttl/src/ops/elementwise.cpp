@@ -127,9 +127,8 @@ void ValidateBinaryDType(DType dtype, std::string_view operation, std::source_lo
 
 void ValidateComparisonDType(DType dtype, internal::ComparisonElementwiseOp operation, std::string_view name,
                              std::source_location location) {
-  if ((operation == internal::ComparisonElementwiseOp::EQUAL ||
-       operation == internal::ComparisonElementwiseOp::NOT_EQUAL) &&
-      IsValidDType(dtype)) {
+  if (operation == internal::ComparisonElementwiseOp::EQUAL ||
+      operation == internal::ComparisonElementwiseOp::NOT_EQUAL) {
     return;
   }
   if (dtype == DType::UINT8 || IsSignedInteger(dtype, location) || IsFloating(dtype, location)) {
