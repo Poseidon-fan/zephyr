@@ -42,9 +42,9 @@ class ExecutionContext final {
   ExecutionContext() = delete;
   ExecutionContext(const ExecutionContext &) = delete;
   auto operator=(const ExecutionContext &) -> ExecutionContext & = delete;
-  ExecutionContext(ExecutionContext &&) noexcept;
-  auto operator=(ExecutionContext &&) noexcept -> ExecutionContext &;
-  ~ExecutionContext() noexcept;
+  ExecutionContext(ExecutionContext &&) noexcept = default;
+  auto operator=(ExecutionContext &&) noexcept -> ExecutionContext & = default;
+  ~ExecutionContext() noexcept = default;
 
   [[nodiscard]] auto GetDevice(std::source_location location = std::source_location::current()) const -> Device;
   [[nodiscard]] auto GetStream(std::source_location location = std::source_location::current()) const -> const Stream &;

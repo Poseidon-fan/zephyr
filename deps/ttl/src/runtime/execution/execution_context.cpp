@@ -262,12 +262,6 @@ void SynchronizeAndCheckDeviceErrors(internal::ExecutionContextImpl &impl, std::
 ExecutionContext::ExecutionContext(std::shared_ptr<internal::ExecutionContextImpl> impl) noexcept
     : impl_(std::move(impl)) {}
 
-ExecutionContext::ExecutionContext(ExecutionContext &&) noexcept = default;
-
-auto ExecutionContext::operator=(ExecutionContext &&) noexcept -> ExecutionContext & = default;
-
-ExecutionContext::~ExecutionContext() noexcept = default;
-
 auto ExecutionContext::GetDevice(std::source_location location) const -> Device {
   if (impl_ == nullptr) {
     throw InvalidArgumentError("execution context is in a moved-from state", location);
