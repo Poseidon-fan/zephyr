@@ -106,7 +106,7 @@ class ContextUseGuard final {
   ~ContextUseGuard() noexcept;
 
  private:
-  ExecutionContextImpl &impl_;
+  ExecutionContextImpl &ctx_impl_;
 };
 
 /** Private construction and resource gateway for Runtime and operator implementations. */

@@ -82,27 +82,27 @@ ExecutionContextImpl::~ExecutionContextImpl() noexcept {
 }
 
 ContextUseGuard::ContextUseGuard(ExecutionContext &context, ContextUseMode mode, std::source_location location)
-    : impl_(ContextAccess::GetImpl(context, location)) {
-  const auto status = impl_.runtime_state_->GetStatus();
+    : ctx_impl_(ContextAccess::GetImpl(context, location)) {
+  const auto status = ctx_impl_.runtime_state_->GetStatus();
   const auto is_cleanup = mode == ContextUseMode::CLEANUP;
   const auto is_available = status == RuntimeStatus::RUNNING || (is_cleanup && status == RuntimeStatus::CLOSING);
   if (!is_available) {
     throw InvalidArgumentError("execution context runtime is not available", location);
   }
-  if (impl_.in_use_.test_and_set(std::memory_order_acquire)) {
+  if (ctx_impl_.in_use_.test_and_set(std::memory_order_acquire)) {
     throw InvalidArgumentError("execution context is already in use by another host thread", location);
   }
-  if (impl_.status_.load(std::memory_order_acquire) == ExecutionContextStatus::FAILED && !is_cleanup) {
-    impl_.in_use_.clear(std::memory_order_release);
+  if (ctx_impl_.status_.load(std::memory_order_acquire) == ExecutionContextStatus::FAILED && !is_cleanup) {
+    ctx_impl_.in_use_.clear(std::memory_order_release);
     throw InvalidArgumentError("execution context is in a failed state", location);
   }
-  if (!impl_.capture_state_.expired() && is_cleanup) {
-    impl_.in_use_.clear(std::memory_order_release);
+  if (!ctx_impl_.capture_state_.expired() && is_cleanup) {
+    ctx_impl_.in_use_.clear(std::memory_order_release);
     throw CaptureError("synchronization and polling are forbidden during CUDA graph capture", location);
   }
 }
 
-ContextUseGuard::~ContextUseGuard() noexcept { impl_.in_use_.clear(std::memory_order_release); }
+ContextUseGuard::~ContextUseGuard() noexcept { ctx_impl_.in_use_.clear(std::memory_order_release); }
 
 auto ContextAccess::Create(const std::shared_ptr<RuntimeState> &runtime_state,
                            ExecutionContextRegistration registration, std::shared_ptr<DeviceContext> device_context,
