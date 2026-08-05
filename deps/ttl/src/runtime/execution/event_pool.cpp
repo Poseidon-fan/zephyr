@@ -74,6 +74,8 @@ class EventPoolState final : public std::enable_shared_from_this<EventPoolState>
       }
     }
 
+    // Native event creation runs outside the latch. Re-check closed/count state before publishing the event because a
+    // concurrent Close may have won while cudaEventCreateWithFlags was in progress.
     cudaEvent_t event = nullptr;
     DeviceGuard device_guard{device_, *error_sink_, location};
     CheckCuda(GetCudaApi().create_event_with_flags_(&event, cudaEventDisableTiming), "cudaEventCreateWithFlags",

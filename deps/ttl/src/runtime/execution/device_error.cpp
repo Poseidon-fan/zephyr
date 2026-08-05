@@ -107,6 +107,8 @@ namespace {
 
 }  // namespace
 
+// The host mirror is page-locked so an ordered D2H copy can snapshot the device record without synchronizing the
+// device.
 class PinnedDeviceErrorRecord final {
  public:
   PinnedDeviceErrorRecord(Device device, std::shared_ptr<ErrorSink> error_sink, std::source_location location)
@@ -185,6 +187,8 @@ auto DeviceErrorState::Register(const Stream &stream, DType source_dtype, DType 
     throw OverflowError("device error operation sequence exhausted", location);
   }
 
+  // Every registered kernel receives the same sticky record and a monotonically increasing sequence. Device-side CAS
+  // preserves the first failure until the context reaches its explicit check boundary.
   storage_->RecordUsage(stream);
   const auto sequence = next_operation_sequence_;
   next_operation_sequence_++;
@@ -200,6 +204,8 @@ void DeviceErrorState::EnqueueRead(cudaStream_t stream, std::source_location loc
   if (stream == nullptr) {
     throw InternalError("device error read requires a non-null stream", location);
   }
+  // The copy is enqueued on the execution stream after submitted kernels, so stream ordering makes every record field
+  // visible in the pinned mirror when the surrounding check synchronizes its completion event.
   CheckCuda(GetCudaApi().memcpy_async_(host_record_->Get(), storage_->GetBasePointer(), sizeof(DeviceErrorRecord),
                                        cudaMemcpyDeviceToHost, stream),
             "cudaMemcpyAsync (read device error record)", location);
@@ -207,6 +213,7 @@ void DeviceErrorState::EnqueueRead(cudaStream_t stream, std::source_location loc
 
 void DeviceErrorState::ConsumeAndReset(cudaStream_t stream, std::source_location location) {
   const auto record = *host_record_->Get();
+  // Reset before translating the snapshot. Even when translation throws, later submissions start with an empty record.
   CheckCuda(GetCudaApi().memset_async_(storage_->GetBasePointer(), 0, sizeof(DeviceErrorRecord), stream),
             "cudaMemsetAsync (reset device error record)", location);
   if (record.code_ == static_cast<uint32_t>(DeviceErrorCode::NONE)) {

@@ -19,6 +19,12 @@ enum class RowwisePath : uint8_t {
   TWO_STAGE,
 };
 
+/**
+ * @brief Trivially copyable host-to-kernel ABI produced by a RowwisePlan.
+ *
+ * Group dimensions select independent rows; reduction dimensions select elements fused within each row. Every stride
+ * is a byte offset. partial_count is greater than one only when multiple blocks cooperate through scratch storage.
+ */
 template <typename Index>
 struct RowwiseParameters final {
   std::byte *output_;

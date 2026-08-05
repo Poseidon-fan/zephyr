@@ -32,7 +32,7 @@ struct ExecutionContextOptions final {
 };
 
 /**
- * Move-only execution lane bound to one CUDA device and one non-default stream.
+ * @brief Move-only execution lane bound to one CUDA device and one non-default stream.
  *
  * Work submitted through one context is ordered by its stream. Different contexts have no implicit data dependency;
  * callers must connect them with RecordEvent and Wait. A context may be used by only one host thread at a time.

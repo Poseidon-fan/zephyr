@@ -142,7 +142,7 @@ concept CudaDTypeVisitorFor = (CudaDTypeVisitorForOne<Function, Types> && ...);
 }
 
 /**
- * Invoke a templated callable with the CUDA computation type for any supported dtype.
+ * @brief Invoke a templated callable with the CUDA computation type for any supported dtype.
  *
  * The callable must accept `std::type_identity<T>` for every CUDA storage type T.
  * Every specialization must return one common type.

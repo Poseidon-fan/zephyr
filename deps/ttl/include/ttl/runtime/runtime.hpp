@@ -118,7 +118,7 @@ struct RuntimeStatistics final {
 };
 
 /**
- * Description of an existing CUDA device allocation.
+ * @brief Description of an existing CUDA device allocation.
  *
  * A null owner means borrowed memory. A non-null owner is retained until all recorded stream usage has completed.
  */
@@ -130,7 +130,7 @@ struct ExternalMemory final {
 };
 
 /**
- * Process-local owner of the CUDA devices and memory services registered with TTL.
+ * @brief Process-local owner of the CUDA devices and memory services registered with TTL.
  *
  * Public methods may be called concurrently. Shutdown closes admission before checking child registrations, so a
  * racing resource-creation call either commits before that transition or fails and releases its reservation.

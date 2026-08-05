@@ -13,6 +13,12 @@
 
 namespace ttl::internal {
 
+/**
+ * @brief Trivially copyable host-to-kernel ABI for cumulative sum over arbitrary strided tensors.
+ *
+ * Strides are byte offsets. slice_count is the product of dimensions other than axis; each slice is scanned serially
+ * by one CUDA thread so reads and writes remain correct for every legal non-overlapping output layout.
+ */
 template <typename Index>
 struct CumulativeSumParameters final {
   std::byte *output_;

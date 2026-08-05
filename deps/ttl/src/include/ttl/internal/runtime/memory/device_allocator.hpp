@@ -59,7 +59,7 @@ struct DeviceAllocatorStats final {
 };
 
 /**
- * Per-device stream-ordered allocator backed by one private CUDA memory pool.
+ * @brief Per-device stream-ordered allocator backed by one private CUDA memory pool.
  *
  * Create is the only construction path because every Storage must retain a shared allocator owner. Allocate and
  * WrapExternal are thread-safe. Shutdown is an explicit, potentially blocking lifecycle boundary.

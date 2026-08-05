@@ -8,7 +8,7 @@
 namespace ttl::internal {
 
 /**
- * Query and validate one CUDA device without changing the calling thread's current device.
+ * @brief Query and validate one CUDA device without changing the calling thread's current device.
  *
  * The returned device satisfies TTL's SM80, warp-size, memory-pool, and launch-resource requirements.
  */

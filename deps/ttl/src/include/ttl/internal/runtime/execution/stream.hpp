@@ -45,7 +45,7 @@ class StreamState final {
 };
 
 /**
- * Private construction and native-handle gateway for Runtime, ExecutionContext, Event, and tests.
+ * @brief Private construction and native-handle gateway for Runtime, ExecutionContext, Event, and tests.
  */
 class StreamAccess final {
  public:

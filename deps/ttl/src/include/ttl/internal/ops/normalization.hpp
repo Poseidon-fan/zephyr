@@ -18,6 +18,12 @@ enum class NormalizationOp : uint8_t {
   RMS_NORM,
 };
 
+/**
+ * @brief Broadcastable affine operands and epsilon passed alongside a rowwise normalization plan.
+ *
+ * Weight and bias strides are byte offsets over the plan's normalized dimensions. A null bias is valid for layer
+ * normalization without bias and for RMS normalization.
+ */
 template <typename Index>
 struct NormalizationAuxiliaryParameters final {
   const std::byte *weight_;

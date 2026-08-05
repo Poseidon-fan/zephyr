@@ -11,7 +11,7 @@
 namespace ttl::internal {
 
 /**
- * Sets the CUDA device for the calling host thread and restores the previous device on scope exit.
+ * @brief Sets the CUDA device for the calling host thread and restores the previous device on scope exit.
  *
  * The referenced ErrorSink must outlive the guard. Construction may throw; destruction never throws and reports a
  * failed restoration through ErrorSink. This class must not be used from a CUDA host callback.
@@ -36,7 +36,7 @@ class DeviceGuard final {
 };
 
 /**
- * Non-throwing device guard for destructors and other cleanup boundaries.
+ * @brief Non-throwing device guard for destructors and other cleanup boundaries.
  *
  * CUDA failures are reported through ErrorSink. A false guard means the target device could not be established and
  * device-specific cleanup must be skipped. The sink and restore-operation string must outlive the guard.

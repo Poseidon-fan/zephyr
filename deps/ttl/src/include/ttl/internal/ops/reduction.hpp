@@ -35,6 +35,13 @@ enum class ReductionPath : uint8_t {
   TWO_STAGE,
 };
 
+/**
+ * @brief Trivially copyable host-to-kernel ABI produced by a ReductionPlan.
+ *
+ * The output arrays describe dimensions retained after reduction and map them to input and output byte offsets. The
+ * reduction arrays describe the flattened reduced domain in input byte offsets. partial_count is greater than one only
+ * for the two-stage path.
+ */
 template <typename Index>
 struct ReductionParameters final {
   std::byte *output_;

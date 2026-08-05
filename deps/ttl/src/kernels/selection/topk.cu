@@ -47,6 +47,8 @@ using SegmentOffsetIterator = cub::TransformInputIterator<int32_t, SegmentOffset
 
 template <CudaStorageType T>
 __device__ auto GetOrderedKey(T value) noexcept -> uint64_t {
+  // Map every supported scalar to an unsigned key whose natural order matches TopK order. Both float zeros share a key,
+  // and NaNs map above all numeric values; the source index supplies the stable tie break.
   if constexpr (CUDA_DTYPE_OF<T> == DType::UINT8) {
     return value;
   } else if constexpr (CUDA_DTYPE_OF<T> == DType::INT32) {
@@ -121,6 +123,8 @@ __global__ void SmallTopKKernel(TopKParameters parameters) {
     }
     __syncthreads();
 
+    // Sort a fixed power-of-two shared-memory array. Sentinel entries pad short axes without entering the first k
+    // items.
     for (uint32_t stage = 2; stage <= TOPK_SMALL_CAPACITY; stage <<= 1U) {
       for (uint32_t distance = stage >> 1U; distance > 0; distance >>= 1U) {
         for (auto index = static_cast<uint32_t>(threadIdx.x); index < TOPK_SMALL_CAPACITY; index += blockDim.x) {
@@ -248,6 +252,8 @@ void LaunchSortTyped(cudaStream_t stream, const TopKParameters &parameters, uint
   const auto begin_offsets = MakeSegmentOffsetIterator(0, narrowed_axis_size);
   const auto end_offsets = MakeSegmentOffsetIterator(1, narrowed_axis_size);
   auto required_bytes = workspace_bytes;
+  // Each logical slice is one CUB segment. Sorting (key, source-index) pairs preserves the lowest source index for
+  // equal keys because CUB's radix sort is stable and indices enter in ascending order.
   const auto status =
       parameters.largest_
           ? cub::DeviceSegmentedRadixSort::SortPairsDescending(
@@ -264,6 +270,8 @@ void LaunchSortTyped(cudaStream_t stream, const TopKParameters &parameters, uint
 
 template <CudaStorageType T>
 void LaunchSerialTyped(cudaStream_t stream, const TopKParameters &parameters, std::source_location location) {
+  // This path needs no temporary storage and is intentionally quadratic in k; it is the fallback when a sort workspace
+  // cannot be represented or reserved by the host plan.
   SerialTopKKernel<T>
       <<<GetBlockCount(parameters.slice_count_, location), TOPK_THREADS_PER_BLOCK, 0, stream>>>(parameters);
 }

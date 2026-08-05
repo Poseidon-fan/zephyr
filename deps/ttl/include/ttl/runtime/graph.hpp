@@ -31,7 +31,7 @@ struct GraphCaptureOptions final {
 class CapturedGraph;
 
 /**
- * Explicit owner of one active stream-capture transaction.
+ * @brief Explicit owner of one active stream-capture transaction.
  *
  * Operations, Finish, and Abort must not run concurrently. The transaction may move between host threads because TTL
  * uses relaxed CUDA stream capture so a noexcept destructor can always terminate the native capture. Destruction
@@ -99,7 +99,7 @@ struct GraphGroupCaptureOptions final {
 };
 
 /**
- * Process-local multi-GPU graph owner.
+ * @brief Process-local multi-GPU graph owner.
  *
  * Capture takes ownership of one warmed-up context per rank. A fixed worker thread per rank performs capture and every
  * replay so NCCL graph launches are never issued sequentially by one host thread.

@@ -18,7 +18,7 @@ class StreamState;
 namespace ttl {
 
 /**
- * A copyable handle to one owned or externally managed non-default CUDA stream.
+ * @brief Copyable handle to one owned or externally managed non-default CUDA stream.
  *
  * Copies share the same stream identity and lifetime. Stream deliberately exposes no arbitrary submission,
  * synchronization, or native-handle API; execution contexts and the CUDA interop layer provide those operations.

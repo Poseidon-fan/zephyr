@@ -25,6 +25,12 @@ namespace ttl::internal {
 
 class CommunicatorGroupState;
 
+/**
+ * @brief Prepared rank-local collective call with any dense staging storage it requires.
+ *
+ * The scratch scope owns packed input and output storage until NCCL submission and the optional output unpack complete.
+ * GetInput and GetOutput select the staged tensors when present and the caller-owned tensors otherwise.
+ */
 struct PreparedCollectiveCall final {
   ExecutionContext *context_;
   Tensor *output_;

@@ -63,7 +63,7 @@ class ExecutionContext;
                          std::source_location location = std::source_location::current()) -> std::vector<Tensor>;
 
 /**
- * Partition one dimension into at most the requested number of nonempty metadata-only views.
+ * @brief Partition one dimension into at most the requested number of nonempty metadata-only views.
  *
  * An empty selected dimension produces exactly `chunks` empty views.
  */

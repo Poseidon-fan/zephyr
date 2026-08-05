@@ -55,6 +55,8 @@ constexpr size_t INDEXED_VALUE_BYTES = 16;
     return 1;
   }
 
+  // Split only while each block retains enough serial work and the extra blocks help fill the device. The hard cap
+  // bounds scratch size and the cost of the final reduction independently of unusually large reduction dimensions.
   const auto useful_partials = CeilDivide(reduction_count, TARGET_VALUES_PER_PARTIAL);
   const auto target_blocks =
       CheckedMultiply(static_cast<uint64_t>(properties.multiprocessor_count_), TARGET_BLOCKS_PER_MULTIPROCESSOR,
@@ -283,6 +285,8 @@ auto BuildReductionPlan(Tensor &output, const Tensor &input, std::span<const siz
 
   const auto partial_count = GetPartialCount(parameters.output_count_, reduction_count, properties, location);
   parameters.partial_count_ = partial_count;
+  // A warp is sufficient for short rows. Longer rows use one block unless additional blocks improve occupancy enough
+  // to justify materializing partial accumulators for a second kernel.
   if (reduction_count <= 32) {
     plan.path_ = ReductionPath::WARP;
   } else if (partial_count > 1) {
@@ -292,6 +296,7 @@ auto BuildReductionPlan(Tensor &output, const Tensor &input, std::span<const siz
   }
 
   if (plan.path_ == ReductionPath::TWO_STAGE) {
+    // Scratch stores the operation's accumulator representation, which may differ from both input and output dtypes.
     const auto partial_values = CheckedMultiply(parameters.output_count_, static_cast<uint64_t>(partial_count),
                                                 "reduction partial accumulator count", location);
     plan.scratch_bytes_ =
@@ -299,6 +304,7 @@ auto BuildReductionPlan(Tensor &output, const Tensor &input, std::span<const siz
   }
   plan.launch_block_count_ =
       GetLaunchBlockCount(plan.path_, parameters.output_count_, partial_count, properties, location);
+  // Counts alone are insufficient: every reachable input and output byte offset must also fit the narrow kernel ABI.
   plan.index_width_ = CanUse32BitIndexing(parameters) ? IndexWidth::UINT32 : IndexWidth::UINT64;
   return plan;
 }

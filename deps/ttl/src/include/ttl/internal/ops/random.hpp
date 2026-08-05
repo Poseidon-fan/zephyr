@@ -16,6 +16,12 @@ namespace ttl::internal {
 
 using GeneratorState = CudaPhiloxGeneratorState;
 
+/**
+ * @brief Trivially copyable host-to-kernel ABI for filling an arbitrary non-overlapping tensor with random values.
+ *
+ * Output strides are byte offsets. first_parameter and second_parameter are respectively the lower/upper bounds for a
+ * uniform distribution and the mean/standard deviation for a normal distribution.
+ */
 struct RandomParameters final {
   std::byte *output_;
   uint64_t shape_[TTL_MAX_RANK]{};

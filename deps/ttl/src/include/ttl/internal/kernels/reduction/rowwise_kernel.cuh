@@ -44,6 +44,7 @@ __device__ auto GetRowwiseReductionOffset(const Parameters &parameters, RowwiseI
   using Index = RowwiseIndexType<Parameters>;
   const auto contiguous = output ? parameters.contiguous_output_reduction_ : parameters.contiguous_input_reduction_;
   if (contiguous) {
+    // Coalesced dimensions have one non-unit physical stride; multiplying by it avoids repeated div/mod in hot loops.
     for (size_t remaining = parameters.reduction_rank_; remaining > 0; --remaining) {
       const auto axis = remaining - 1;
       if (parameters.reduction_shape_[axis] > 1) {

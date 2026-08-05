@@ -36,7 +36,7 @@ class ScratchAllocation final {
 };
 
 /**
- * Stream-local bump allocator backed by persistent device Storage.
+ * @brief Stream-local bump allocator backed by persistent device Storage.
  *
  * ScratchArena is not thread-safe. Its owning ExecutionLane is already protected by ContextUseGuard.
  */

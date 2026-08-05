@@ -65,7 +65,7 @@ void ValidateAlias(AliasPolicy policy, const Tensor &output, std::span<const Ten
                    std::string_view operation, std::source_location location = std::source_location::current());
 
 /**
- * Immutable host-side iteration plan for one output and up to three inputs.
+ * @brief Immutable host-side iteration plan for one output and up to three inputs.
  *
  * The iterator validates and lowers layout metadata. It neither allocates nor launches work and its device parameter
  * records contain no host metadata pointers or ownership objects.

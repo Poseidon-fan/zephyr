@@ -17,7 +17,7 @@ class EventState;
 namespace ttl {
 
 /**
- * An immutable, copyable completion token recorded once on a CUDA stream.
+ * @brief Immutable, copyable completion token recorded once on a CUDA stream.
  *
  * Copies share the same native event and lifetime. Query is non-blocking; Synchronize is an explicit host-blocking
  * boundary. Cross-stream waits are submitted through ExecutionContext rather than the Event itself.

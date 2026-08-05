@@ -13,6 +13,12 @@
 
 namespace ttl::internal {
 
+/**
+ * @brief Trivially copyable host-to-kernel ABI for a strided composition copy.
+ *
+ * shape is the common logical iteration space and both stride arrays contain byte offsets. The host selects the
+ * narrowest index width that can represent every reachable offset and the element count.
+ */
 template <typename Index>
 struct CompositionParameters final {
   std::byte *output_;

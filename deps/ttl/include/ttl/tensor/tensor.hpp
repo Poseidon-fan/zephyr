@@ -32,7 +32,7 @@ enum class AliasKind : uint8_t {
 };
 
 /**
- * Immutable tensor metadata and shared device-storage handle.
+ * @brief Immutable tensor metadata and shared device-storage handle.
  *
  * Copying a Tensor shares both its immutable metadata and its Storage. Creating a view produces a new metadata object
  * that shares the same Storage. Data pointers returned by Tensor are CUDA device pointers and must not be dereferenced
@@ -67,7 +67,7 @@ class Tensor final {
   }
 
   /**
-   * Record a direct asynchronous read on a stream before releasing the final Tensor owner.
+   * @brief Record a direct asynchronous read on a stream before releasing the final Tensor owner.
    *
    * This protects allocation lifetime only; it does not establish an execution dependency or retain storage for CUDA
    * Graph capture. Capture and writable access must use SubmitCudaKernel.
@@ -87,7 +87,7 @@ class Tensor final {
 };
 
 /**
- * Classify aliasing without attempting an expensive exact analysis of arbitrary strided holes.
+ * @brief Classify aliasing without attempting an expensive exact analysis of arbitrary strided holes.
  *
  * Different Storage owners are disjoint. Identical metadata over the same Storage is exact. Other non-empty tensors
  * whose conservative reachable byte intervals intersect may overlap.

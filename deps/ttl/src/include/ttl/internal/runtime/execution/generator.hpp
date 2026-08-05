@@ -13,6 +13,12 @@
 
 namespace ttl::internal {
 
+/**
+ * @brief Shared implementation of a Generator bound to one execution-context stream.
+ *
+ * storage contains the stream-ordered Philox state. seed is an atomic host-side snapshot for observers, while in_use
+ * rejects concurrent mutation that would make reservation order nondeterministic.
+ */
 class GeneratorImpl final {
  public:
   GeneratorImpl(std::shared_ptr<Storage> storage, Device device, uint64_t stream_id, uint64_t seed) noexcept
@@ -25,6 +31,7 @@ class GeneratorImpl final {
   std::atomic_flag in_use_ = ATOMIC_FLAG_INIT;
 };
 
+/** @brief Exclusive host-side lease for a generator submission or reseed operation. */
 class GeneratorUseGuard final {
  public:
   GeneratorUseGuard(GeneratorImpl &impl, std::source_location location) : impl_(impl) {

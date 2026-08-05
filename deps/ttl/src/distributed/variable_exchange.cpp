@@ -60,6 +60,7 @@ struct VariableCallPlan final {
         std::string{"AllToAllVOut "} + std::string{role} + " count list must contain one value per communicator rank",
         location);
   }
+  // Convert element counts into checked byte offsets once so the submission path performs no unchecked pointer math.
   CountPlan plan;
   plan.counts_.reserve(world_size);
   plan.offsets_bytes_.reserve(world_size);
@@ -149,6 +150,8 @@ void SubmitSelfCopy(PreparedVariableCall &call, size_t rank, cudaStream_t stream
   if (source == destination) {
     return;
   }
+  // NCCL handles only remote peers; the rank's diagonal matrix entry remains stream-ordered through an explicit D2D
+  // copy and can be elided for exact aliasing.
   internal::CheckCuda(
       internal::GetCudaApi().memcpy_async_(destination, source, bytes, cudaMemcpyDeviceToDevice, stream),
       "cudaMemcpyAsync (AllToAllVOut self copy)", location);
@@ -194,6 +197,8 @@ void RecordCall(internal::OpGuard &guard, PreparedVariableCall &call) {
     throw InvalidArgumentError("AllToAllVLocal requires one call for every communicator rank", location);
   }
   const auto dtype = calls.front().input_->GetDType();
+  // Validate the complete send/receive matrix before allocating staging buffers or opening an NCCL group. Entry
+  // [source][destination] must match receive[destination][source].
   for (size_t rank = 0; rank < calls.size(); ++rank) {
     const auto &call = calls[rank];
     if (call.context_ == nullptr || call.output_ == nullptr || call.input_ == nullptr ||
@@ -269,6 +274,7 @@ void AllToAllVLocal(std::span<const LocalAllToAllVCall> calls, std::source_locat
     }
   }
 
+  // Plan every rank before preparing any one of them so argument failures cannot leave partially staged submissions.
   std::vector<PreparedVariableCall> prepared;
   std::vector<VariableCallPlan> plans;
   plans.reserve(calls.size());
@@ -293,6 +299,8 @@ void AllToAllVLocal(std::span<const LocalAllToAllVCall> calls, std::source_locat
   }
 
   if (has_remote_transfer) {
+    // All remote sends and receives across all local devices enter one NCCL group. Device selection is restored before
+    // native statuses are translated, including the exception cleanup path.
     auto lease = state->AcquireAll(location);
     const auto &cuda_api = internal::GetCudaApi();
     int previous_device = -1;

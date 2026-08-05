@@ -184,6 +184,8 @@ RuntimeState::RuntimeState(RuntimeOptions options, std::source_location location
   event_pool_shutdown_.assign(device_contexts_.size(), uint8_t{0});
   pinned_allocator_ = PinnedAllocator::Create(error_sink_, event_pools, options.pinned_memory_, location);
 
+  // Matrix entry [source][destination] answers whether source may dereference an allocation on destination. Enabling
+  // access belongs to the destination allocator because it owns the memory pool whose access descriptor is updated.
   const auto peer_entry_count =
       CheckedMultiply(devices_.size(), devices_.size(), "runtime peer capability matrix size", location);
   peer_access_.assign(peer_entry_count, uint8_t{0});
@@ -452,6 +454,8 @@ void RuntimeState::TrimPinnedMemory(std::source_location location) {
 
 void RuntimeState::Poll() noexcept {
   const std::scoped_lock lock{lifecycle_latch_};
+  // Capture cleanup must progress before ordinary allocators: graph-owned resources can retain streams, events, and
+  // allocations. Allocator maintenance is skipped during active capture to avoid capture-unsafe CUDA calls.
   std::erase_if(capture_sessions_, [](const auto &weak_session) {
     const auto session = weak_session.lock();
     if (session == nullptr) {
@@ -522,6 +526,8 @@ void RuntimeState::Shutdown(std::source_location location) {
     throw InvalidArgumentError("cannot shut down runtime while an NCCL communicator group remains open", location);
   }
 
+  // Close in dependency order: BLAS workspaces use device allocations, both device and pinned retirement use events,
+  // and event pools must therefore be last. Per-component flags make a throwing shutdown call safely retryable.
   for (size_t index = 0; index < device_contexts_.size(); ++index) {
     if (blas_shutdown_[index] == 0) {
       device_contexts_[index]->GetBlasHandlePool()->Shutdown(location);

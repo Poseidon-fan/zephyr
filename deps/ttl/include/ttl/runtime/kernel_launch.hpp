@@ -68,7 +68,7 @@ void SubmitCudaKernel(ExecutionContext &context, std::string_view operation, std
                       std::source_location location = std::source_location::current());
 
 /**
- * Checked bridge for inference-engine CUDA kernels implemented outside TTL.
+ * @brief Checked bridge for inference-engine CUDA kernels implemented outside TTL.
  *
  * Construction claims exclusive host-side use of the context, selects its device, validates and records all tensor
  * storage on every requested execution lane, and obtains optional stream-local workspaces. Auxiliary lanes form a
@@ -157,7 +157,7 @@ class CudaKernelLaunch final {
 };
 
 /**
- * Run one checked external CUDA submission.
+ * @brief Run one checked external CUDA submission.
  *
  * The callback receives the only valid access path to registered output pointers, native streams, and scratch
  * workspaces. A normal callback return is followed by cudaGetLastError and, when auxiliary streams were requested, a

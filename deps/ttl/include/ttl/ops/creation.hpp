@@ -27,7 +27,7 @@ namespace ttl {
                         std::source_location location = std::source_location::current()) -> Tensor;
 
 /**
- * Create a one-dimensional half-open arithmetic sequence.
+ * @brief Create a one-dimensional half-open arithmetic sequence.
  *
  * Supported output dtypes are INT32, INT64, and FLOAT32. The step must be nonzero; floating-point bounds and step
  * must be finite.

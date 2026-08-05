@@ -28,7 +28,7 @@ struct NcclApi final {
 [[nodiscard]] auto GetNcclApi() noexcept -> const NcclApi &;
 
 /**
- * Process-wide NCCL API override for deterministic unit tests.
+ * @brief Process-wide NCCL API override for deterministic unit tests.
  *
  * Overrides may be nested only in strict LIFO order and must not overlap across host threads.
  */

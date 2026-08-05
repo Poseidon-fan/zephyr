@@ -8,7 +8,7 @@
 namespace ttl::internal {
 
 /**
- * Compute strides for a metadata-only reshape.
+ * @brief Compute strides for a metadata-only reshape.
  *
  * A missing result means the target shape crosses a physically discontinuous chunk and therefore requires a copy.
  */

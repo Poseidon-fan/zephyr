@@ -19,7 +19,7 @@ class PinnedBufferAccess;
 namespace ttl {
 
 /**
- * Copyable owner of a fixed-size CUDA page-locked host allocation.
+ * @brief Copyable owner of a fixed-size CUDA page-locked host allocation.
  *
  * Copies share the same mutable bytes. Releasing the last owner is asynchronous with respect to previously submitted
  * transfers: the underlying allocation is not reused until every recorded CUDA stream has completed. Call

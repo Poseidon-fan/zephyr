@@ -14,6 +14,12 @@
 
 namespace ttl::internal {
 
+/**
+ * @brief Host-to-kernel ABI shared by gather-elements and take-along-axis operations.
+ *
+ * All strides are byte offsets. shape describes the output/index iteration space, and axis_bound is the input extent
+ * used for signed bounds checking on the device.
+ */
 template <typename Index>
 struct IndexingParameters final {
   std::byte *output_;
@@ -29,6 +35,12 @@ struct IndexingParameters final {
   uint8_t axis_;
 };
 
+/**
+ * @brief Host-to-kernel ABI for gathering table rows through an arbitrary-rank index tensor.
+ *
+ * Output and index strides are byte offsets. table_tail_strides_bytes covers table dimensions after the row dimension;
+ * row_count is retained as signed metadata for device-side bounds checking.
+ */
 template <typename Index>
 struct GatherRowsParameters final {
   std::byte *output_;
@@ -45,6 +57,12 @@ struct GatherRowsParameters final {
   uint8_t index_rank_;
 };
 
+/**
+ * @brief Host-to-kernel ABI for scattering source elements to indexed positions along one output axis.
+ *
+ * All strides are byte offsets. shape is the source/index iteration space, and axis_bound is the output extent used for
+ * signed bounds checking on the device.
+ */
 template <typename Index>
 struct ScatterElementsParameters final {
   std::byte *output_;

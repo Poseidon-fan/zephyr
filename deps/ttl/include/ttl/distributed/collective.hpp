@@ -10,6 +10,7 @@
 
 namespace ttl {
 
+/** Elementwise reduction operation used by reduction collectives. */
 enum class ReduceOp : uint8_t {
   SUM,
   MINIMUM,
@@ -51,12 +52,14 @@ struct LocalBarrierCall final {
 };
 
 /**
- * Rank-local asynchronous collective operators.
+ * @name Rank-Local Collective Operations
+ * @brief Rank-local asynchronous collective operators.
  *
  * Every rank must submit the same collective sequence from a distinct host thread. Inputs may use any legal strided
  * layout and outputs must be non-overlapping dense; TTL materializes them around NCCL as needed. A successful return
  * means NCCL has enqueued the operation, not that GPU work has completed. Use the Local variants below when one host
  * thread owns every local rank.
+ * @{
  */
 /** Elementwise reduction to every rank; input and output have equal shape and dtype. */
 void AllReduceOut(ExecutionContext &context, Tensor &output, const Tensor &input, NcclCommunicator &communicator,
@@ -77,7 +80,7 @@ void BroadcastOut(ExecutionContext &context, Tensor &output, const Tensor &input
 void AllToAllOut(ExecutionContext &context, Tensor &output, const Tensor &input, NcclCommunicator &communicator,
                  std::source_location location = std::source_location::current());
 /**
- * Exchange variable contiguous chunks in peer-rank order.
+ * @brief Exchange variable contiguous chunks in peer-rank order.
  *
  * Count lists contain one non-negative element count per peer rank. Every rank must submit a matching call:
  * send_counts[peer] on this rank equals receive_counts[this_rank] on peer. The Local variant validates the complete
@@ -106,33 +109,49 @@ void SendReceiveOut(ExecutionContext &context, const Tensor &send, int32_t send_
 void Barrier(ExecutionContext &context, NcclCommunicator &communicator,
              std::source_location location = std::source_location::current());
 
+/** @} */
+
 /**
- * Single-host-thread submissions containing exactly one rank-ordered call for every communicator rank.
+ * @name Process-Local Grouped Collective Operations
+ * @brief Single-host-thread submissions containing exactly one rank-ordered call for every communicator rank.
  *
  * TTL validates all local signatures and completes every NCCL group before translating native errors to exceptions.
+ * @{
  */
+/** Elementwise reduction to every rank. */
 void AllReduceLocal(std::span<const LocalCollectiveCall> calls, ReduceOp operation,
                     std::source_location location = std::source_location::current());
+/** Elementwise reduction to one root rank. */
 void ReduceLocal(std::span<const LocalCollectiveCall> calls, ReduceOp operation, int32_t root,
                  std::source_location location = std::source_location::current());
+/** Concatenate equal input chunks in rank order into every output. */
 void AllGatherLocal(std::span<const LocalCollectiveCall> calls,
                     std::source_location location = std::source_location::current());
+/** Reduce equal rank-ordered chunks and return one chunk per rank. */
 void ReduceScatterLocal(std::span<const LocalCollectiveCall> calls, ReduceOp operation,
                         std::source_location location = std::source_location::current());
+/** Copy one root input to every rank. */
 void BroadcastLocal(std::span<const LocalCollectiveCall> calls, int32_t root,
                     std::source_location location = std::source_location::current());
+/** Exchange equal rank-ordered chunks between every pair of ranks. */
 void AllToAllLocal(std::span<const LocalCollectiveCall> calls,
                    std::source_location location = std::source_location::current());
 /** Validate the complete peer-count matrix, then issue every variable-size rank exchange in one NCCL group. */
 void AllToAllVLocal(std::span<const LocalAllToAllVCall> calls,
                     std::source_location location = std::source_location::current());
+/** Concatenate equal input chunks at one root rank. */
 void GatherLocal(std::span<const LocalCollectiveCall> calls, int32_t root,
                  std::source_location location = std::source_location::current());
+/** Distribute equal rank-ordered chunks from one root rank. */
 void ScatterLocal(std::span<const LocalCollectiveCall> calls, int32_t root,
                   std::source_location location = std::source_location::current());
+/** Issue each rank's optional send and receive together in one NCCL group. */
 void SendReceiveLocal(std::span<const LocalPointToPointCall> calls,
                       std::source_location location = std::source_location::current());
+/** Establish an NCCL execution barrier across the complete local group. */
 void BarrierLocal(std::span<const LocalBarrierCall> calls,
                   std::source_location location = std::source_location::current());
+
+/** @} */
 
 }  // namespace ttl

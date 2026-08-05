@@ -33,6 +33,8 @@ constexpr uint64_t MAXIMUM_LAUNCH_BLOCKS = 65535;
   if (group_count == 0 || reduction_count <= TARGET_VALUES_PER_PARTIAL) {
     return 1;
   }
+  // Keep roughly eight values per thread in each partial, but add blocks only until the independent groups saturate the
+  // target device occupancy. The cap keeps both scratch consumption and the final combine bounded.
   const auto useful_partials =
       (reduction_count / TARGET_VALUES_PER_PARTIAL) + (reduction_count % TARGET_VALUES_PER_PARTIAL != 0 ? 1 : 0);
   const auto target_blocks = CheckedMultiply(static_cast<uint64_t>(properties.multiprocessor_count_),
@@ -211,6 +213,7 @@ auto BuildRowwisePlan(Tensor &output, const Tensor &input, std::span<const size_
       IsContiguousReduction(output.GetShape(), output.GetStrides(), axes, output_element_size, location);
 
   parameters.partial_count_ = GetPartialCount(group_count, reduction_count, properties, location);
+  // Small rows map one group to a warp. Larger rows map one group to a block unless cooperative partials are useful.
   if (reduction_count <= 32) {
     plan.path_ = RowwisePath::WARP;
   } else if (parameters.partial_count_ > 1) {
@@ -219,12 +222,14 @@ auto BuildRowwisePlan(Tensor &output, const Tensor &input, std::span<const size_
     plan.path_ = RowwisePath::BLOCK;
   }
   if (plan.path_ == RowwisePath::TWO_STAGE) {
+    // Fused operators define their own accumulator type, so the caller supplies its exact scratch element size.
     const auto partials = CheckedMultiply(group_count, static_cast<uint64_t>(parameters.partial_count_),
                                           "row-wise partial count", location);
     plan.scratch_bytes_ = CheckedBytes(partials, accumulator_size, location);
   }
   plan.launch_block_count_ =
       GetLaunchBlockCount(plan.path_, group_count, parameters.partial_count_, properties, location);
+  // Select uint32 only when counts and the complete reachable byte ranges of both tensors are representable.
   plan.index_width_ = CanUse32BitIndexing(parameters) ? IndexWidth::UINT32 : IndexWidth::UINT64;
   return plan;
 }

@@ -104,6 +104,8 @@ __device__ void StoreReductionOutput(const Parameters &parameters, ReductionInde
 
 template <typename Input, typename Output, typename Operation, typename Parameters>
 __global__ void WarpReductionKernel(Parameters parameters, Operation operation) {
+  // One warp owns each output and combines its lane-local strided subsequences. Multiple warps share a block only to
+  // amortize launch overhead; their CUB temporary storage remains independent.
   using Accumulator = typename Operation::Accumulator;
   using WarpReduce = cub::WarpReduce<Accumulator>;
   __shared__ typename WarpReduce::TempStorage warp_storage[REDUCTION_WARPS_PER_BLOCK];
@@ -131,6 +133,7 @@ __global__ void WarpReductionKernel(Parameters parameters, Operation operation) 
 
 template <typename Input, typename Output, typename Operation, typename Parameters>
 __global__ void BlockReductionKernel(Parameters parameters, Operation operation) {
+  // One block owns each output, allowing a larger reduction domain to be combined in shared memory without scratch.
   using Accumulator = typename Operation::Accumulator;
   using BlockReduce = cub::BlockReduce<Accumulator, REDUCTION_THREADS_PER_BLOCK>;
   __shared__ typename BlockReduce::TempStorage block_storage;
@@ -156,6 +159,8 @@ __global__ void BlockReductionKernel(Parameters parameters, Operation operation)
 template <typename Input, typename Operation, typename Parameters>
 __global__ void PartialReductionKernel(Parameters parameters, typename Operation::Accumulator *partials,
                                        Operation operation) {
+  // Each block owns one (output, partial) pair. Partial p consumes every partial_count-th 256-element tile so work is
+  // balanced even when the reduction extent is not divisible by the number of cooperating blocks.
   using Accumulator = typename Operation::Accumulator;
   using BlockReduce = cub::BlockReduce<Accumulator, REDUCTION_THREADS_PER_BLOCK>;
   __shared__ typename BlockReduce::TempStorage block_storage;
@@ -185,6 +190,7 @@ __global__ void PartialReductionKernel(Parameters parameters, typename Operation
 template <typename Output, typename Operation, typename Parameters>
 __global__ void FinalReductionKernel(Parameters parameters, const typename Operation::Accumulator *partials,
                                      Operation operation) {
+  // One block folds every scratch partial for an output and performs the operation-specific final projection once.
   using Accumulator = typename Operation::Accumulator;
   using BlockReduce = cub::BlockReduce<Accumulator, REDUCTION_THREADS_PER_BLOCK>;
   __shared__ typename BlockReduce::TempStorage block_storage;

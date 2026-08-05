@@ -20,7 +20,7 @@ class ExecutionContextImpl;
 class ExecutionLane;
 
 /**
- * Structured fork/join scope for one operator that submits work to context-private auxiliary streams.
+ * @brief Structured fork/join scope for one operator that submits work to context-private auxiliary streams.
  *
  * Tensor usage must be recorded before the first submission on each auxiliary stream. Finish is the throwing success
  * boundary. Destruction of an unfinished scope performs best-effort joining, marks the context failed, and never

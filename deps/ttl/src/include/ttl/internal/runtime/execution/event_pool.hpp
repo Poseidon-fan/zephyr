@@ -22,7 +22,7 @@ struct EventPoolStats final {
 };
 
 /**
- * Move-only lease of one timing-disabled CUDA event.
+ * @brief Move-only lease of one timing-disabled CUDA event.
  *
  * Destruction returns the event to its pool. The owner must therefore retain the lease until the recorded state is no
  * longer observed. Call Discard after a CUDA failure that makes the event unsuitable for reuse. A lease must not be
@@ -55,7 +55,7 @@ class PooledEvent final {
 };
 
 /**
- * Thread-safe, per-device pool of timing-disabled CUDA events for internal high-frequency fences.
+ * @brief Thread-safe, per-device pool of timing-disabled CUDA events for internal high-frequency fences.
  *
  * This pool is independent from the public immutable Event type. Closing rejects new acquisitions, destroys cached
  * events, and makes outstanding leases destroy their events when released.

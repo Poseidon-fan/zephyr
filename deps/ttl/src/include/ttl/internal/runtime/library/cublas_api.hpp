@@ -28,7 +28,7 @@ struct CublasApi final {
 [[nodiscard]] auto GetCublasApi() noexcept -> const CublasApi &;
 
 /**
- * Process-wide cuBLAS API override for deterministic unit tests.
+ * @brief Process-wide cuBLAS API override for deterministic unit tests.
  *
  * Overrides may be nested only in strict LIFO order and must not overlap across host threads.
  */

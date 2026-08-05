@@ -10,7 +10,7 @@
 namespace ttl {
 
 /**
- * ErrorCode is the stable source-level classification for errors reported by TTL.
+ * @brief Stable source-level classification for errors reported by TTL.
  *
  * Native CUDA, cuBLAS, and NCCL status values are deliberately not used as ErrorCode values. Their numeric value and
  * textual description belong in the error message produced by the corresponding API wrapper.
@@ -56,7 +56,7 @@ enum class ErrorCode : uint8_t {
 }
 
 /**
- * Base class for every synchronous C++ exception reported by TTL.
+ * @brief Base class for every synchronous C++ exception reported by TTL.
  *
  * Constructing an Error never writes to stderr or a logger. The application boundary decides whether and where an
  * exception is logged. what() contains the symbolic error code, the original message, and the captured source

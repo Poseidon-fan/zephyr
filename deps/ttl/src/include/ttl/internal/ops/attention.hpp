@@ -11,6 +11,14 @@
 
 namespace ttl::internal {
 
+/**
+ * @brief Trivially copyable host-to-kernel ABI for four-dimensional scaled dot-product attention.
+ *
+ * Query and output use [batch, query_head, query_position, feature] order; key and value use
+ * [batch, key_value_head, key_position, feature]. All strides are bytes. Query heads map to key/value heads in
+ * contiguous equal-sized groups. Each task owns one query row and one value-dimension tile. A Bool mask excludes
+ * positions, while a floating mask is additive; causal alignment is upper-left unless lower_right is set.
+ */
 struct SdpaParameters final {
   std::byte *output_;
   const std::byte *query_;

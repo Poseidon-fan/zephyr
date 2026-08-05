@@ -83,7 +83,7 @@ class PinnedBufferAccess final {
 };
 
 /**
- * Thread-safe process-wide cache of CUDA page-locked host allocations.
+ * @brief Thread-safe process-wide cache of CUDA page-locked host allocations.
  *
  * Live blocks retain this allocator. Shutdown rejects outstanding public buffers, drains retirement fences, and frees
  * every cached allocation.

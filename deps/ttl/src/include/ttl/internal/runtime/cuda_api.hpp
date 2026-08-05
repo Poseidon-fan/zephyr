@@ -8,7 +8,7 @@
 namespace ttl::internal {
 
 /**
- * Injectable CUDA Runtime entry points used at failure-sensitive boundaries.
+ * @brief Injectable CUDA Runtime entry points used at failure-sensitive boundaries.
  *
  * The table contains only calls that require deterministic fault injection. Every function pointer must be non-null.
  */
@@ -64,7 +64,7 @@ struct CudaApi final {
 [[nodiscard]] auto GetCudaApi() noexcept -> const CudaApi &;
 
 /**
- * Process-wide CUDA API override for deterministic unit tests.
+ * @brief Process-wide CUDA API override for deterministic unit tests.
  *
  * Overrides may be nested only in strict LIFO order and must not overlap across host threads. The supplied table must
  * outlive the override, and every operation using it must finish before the override is destroyed.

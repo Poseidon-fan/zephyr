@@ -176,6 +176,8 @@ class CudaKernelLaunch::Impl final {
   }
 
   void Finish() {
+    // Always join auxiliary lanes even when the primary launch check fails. If both operations fail, preserve the
+    // earlier launch error because it is the root failure and the join error is a cleanup consequence.
     std::exception_ptr launch_error;
     try {
       guard_.CheckLaunch();
@@ -199,6 +201,8 @@ class CudaKernelLaunch::Impl final {
   }
 
   void FailAfterCallbackException() noexcept {
+    // The callback exception remains the user-visible failure. Both scopes best-effort close their fork/join state and
+    // report cleanup errors through ErrorSink without throwing across the original exception.
     guard_.FailExternalSubmissionNoexcept();
     if (parallel_scope_.has_value()) {
       parallel_scope_->FailExternalSubmissionNoexcept();

@@ -32,6 +32,13 @@ class CaptureSessionState;
 class ExecutionContextRegistration;
 class GraphCleanupState;
 
+/**
+ * @brief Runtime-owned services and immutable properties for one registered CUDA device.
+ *
+ * The event pool, allocator, and cuBLAS handle pool are shared with resources that may finish asynchronously. Runtime
+ * shutdown closes them in dependency order; DeviceContext itself only groups their ownership and the device-local
+ * matmul algorithm cache.
+ */
 class DeviceContext final {
  public:
   DeviceContext(DeviceProperties properties, std::shared_ptr<EventPool> event_pool,
@@ -57,6 +64,14 @@ class DeviceContext final {
   MatmulAlgorithmCache matmul_algorithm_cache_;
 };
 
+/**
+ * @brief Shared implementation of the process-local Runtime and its lifecycle state machine.
+ *
+ * Execution contexts, graph captures, and communicators retain this object while they use runtime services. The
+ * lifecycle latch makes registration atomic with respect to shutdown, while the counters prevent shutdown from
+ * invalidating live execution resources. Poll performs non-throwing deferred progress. Shutdown is ordered and
+ * retryable: a failed component remains open and a later call resumes from the first incomplete stage.
+ */
 class RuntimeState final : public std::enable_shared_from_this<RuntimeState> {
  public:
   RuntimeState(RuntimeOptions options, std::source_location location);
@@ -103,11 +118,13 @@ class RuntimeState final : public std::enable_shared_from_this<RuntimeState> {
 
   std::vector<Device> devices_;
   std::vector<std::shared_ptr<DeviceContext>> device_contexts_;
+  // Row-major [accessing device][peer device] capability matrix.
   std::vector<uint8_t> peer_access_;
   std::shared_ptr<ErrorSink> error_sink_;
   std::shared_ptr<PinnedAllocator> pinned_allocator_;
   std::vector<std::weak_ptr<CommunicatorGroupState>> communicator_groups_;
   std::vector<std::weak_ptr<CaptureSessionState>> capture_sessions_;
+  // Intrusive ownership list populated by noexcept graph destructors and drained by Poll or Shutdown.
   GraphCleanupState *pending_graph_cleanup_head_{nullptr};
   std::source_location location_;
 
@@ -117,6 +134,7 @@ class RuntimeState final : public std::enable_shared_from_this<RuntimeState> {
   std::vector<uint8_t> event_pool_shutdown_;
   bool pinned_allocator_shutdown_{false};
 
+  // Serializes lifecycle transitions with creation, capture, graph, and communicator registration.
   mutable std::mutex lifecycle_latch_;
   std::mutex graph_cleanup_latch_;
   std::atomic<RuntimeStatus> status_{RuntimeStatus::RUNNING};

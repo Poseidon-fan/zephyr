@@ -11,7 +11,7 @@
 namespace ttl {
 
 /**
- * An owning description of an error that cannot be propagated as a C++ exception.
+ * @brief Owning description of an error that cannot be propagated as a C++ exception.
  *
  * Records may originate from asynchronous execution, resource cleanup, worker threads, or C callbacks. A missing
  * device or stream means the failure is process-wide or cannot be attributed to one execution resource.
@@ -25,7 +25,7 @@ struct ErrorRecord final {
 };
 
 /**
- * Receives errors from execution paths that are forbidden to throw.
+ * @brief Receives errors from execution paths that are forbidden to throw.
  *
  * Report may be called concurrently and from destructors or C callbacks. Implementations must be thread-safe,
  * non-blocking, must not call TTL or NVIDIA APIs, and must internally handle allocation or logging failures. A caller

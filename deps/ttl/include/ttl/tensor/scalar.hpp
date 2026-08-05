@@ -11,7 +11,7 @@
 namespace ttl {
 
 /**
- * Host scalar accepted by tensor creation and scalar operators.
+ * @brief Host scalar accepted by tensor creation and scalar operators.
  *
  * Scalar preserves whether its value originated as boolean, signed integer, or floating point. Conversion to a tensor
  * storage type is explicit and checked.

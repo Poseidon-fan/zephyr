@@ -17,6 +17,8 @@ using SummationAccumulator = cuda::std::conditional_t<IsCudaFloatingType<T>(), f
 
 template <CudaStorageType T>
 struct SumReductionOperation final {
+  // Signed integer sums accumulate modulo 2^N in unsigned storage, avoiding signed-overflow UB while preserving CUDA
+  // tensor arithmetic semantics when the final bit pattern is projected back to the output type.
   using Accumulator = SummationAccumulator<T>;
 
   __device__ auto Identity() const -> Accumulator { return Accumulator{0}; }
@@ -75,6 +77,8 @@ inline constexpr bool VALID_INDEXED_REDUCTION_VALUE = sizeof(IndexedReductionVal
 
 template <CudaStorageType T, ReductionOp operation>
 struct ExtremaReductionOperation final {
+  // NaNs dominate numeric values and equal values select the lowest logical reduction index. The pair operation is
+  // therefore associative across warp, block, and two-stage reduction orders.
   static_assert(operation == ReductionOp::MINIMUM || operation == ReductionOp::MAXIMUM ||
                 operation == ReductionOp::ARG_MIN || operation == ReductionOp::ARG_MAX);
   static_assert(VALID_INDEXED_REDUCTION_VALUE<T>);

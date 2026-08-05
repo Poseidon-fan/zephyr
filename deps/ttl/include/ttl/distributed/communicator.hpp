@@ -41,7 +41,7 @@ struct NcclOptions final {
 };
 
 /**
- * Move-only rank-local view of one communicator in a process-local group.
+ * @brief Move-only rank-local view of one communicator in a process-local group.
  *
  * A communicator is bound to one CUDA device and one rank. Closing or aborting any rank acts on the complete local
  * group because NCCL failures and collective ordering are group-wide.
@@ -76,7 +76,7 @@ class NcclCommunicator final {
 };
 
 /**
- * Owner of every rank-local NCCL communicator for one explicit process-local rank order.
+ * @brief Owner of every rank-local NCCL communicator for one explicit process-local rank order.
  *
  * Construction and close are all-or-nothing. The group has no background progress thread; callers may use Poll, and
  * Runtime::Poll also advances registered groups when they are idle. Runtime::Shutdown rejects an open group.

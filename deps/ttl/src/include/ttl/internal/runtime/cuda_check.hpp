@@ -30,7 +30,7 @@ void CheckCublas(cublasStatus_t status, std::string_view operation,
                  std::source_location location = std::source_location::current());
 
 /**
- * Throw NcclError unless status is ncclSuccess.
+ * @brief Throw NcclError unless status is ncclSuccess.
  *
  * ncclInProgress is a valid state for selected nonblocking NCCL APIs, but is not success. Callers of those APIs must
  * handle it before using this function.

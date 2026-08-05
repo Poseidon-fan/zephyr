@@ -25,7 +25,7 @@ class Storage;
 class StreamState;
 
 /**
- * Move-only lease of one stream-bound cuBLAS handle and its private device workspace.
+ * @brief Move-only lease of one stream-bound cuBLAS handle and its private device workspace.
  *
  * Returning a lease records completion on its stream. The resource is not reused until that event completes.
  */
@@ -59,7 +59,7 @@ class BlasHandleLease final {
 };
 
 /**
- * Per-device pool of cuBLAS handles and fixed workspaces.
+ * @brief Per-device pool of cuBLAS handles and fixed workspaces.
  *
  * Acquire is thread-safe. Shutdown is an explicit blocking lifecycle boundary and must run before allocator shutdown.
  */

@@ -28,7 +28,7 @@ void ContiguousOut(ExecutionContext &context, Tensor &output, const Tensor &inpu
                               std::source_location location = std::source_location::current()) -> Tensor;
 
 /**
- * Copy a contiguous tensor between different runtime-managed CUDA devices.
+ * @brief Copy a contiguous tensor between different runtime-managed CUDA devices.
  *
  * The destination stream first waits for `source_ready`; the dependency is explicit because allocation lifetime does
  * not imply that the source producer has completed.

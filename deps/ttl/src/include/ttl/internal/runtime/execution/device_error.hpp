@@ -24,7 +24,12 @@ using DeviceErrorCode = CudaDeviceErrorCode;
 using DeviceErrorRecord = CudaDeviceErrorRecord;
 using DeviceErrorLaunchContext = CudaDeviceErrorContext;
 
-/** ExecutionContext-owned device record and pinned host mirror. */
+/**
+ * @brief ExecutionContext-owned sticky device error record and pinned host mirror.
+ *
+ * Register assigns stream-ordered operation sequence numbers. EnqueueRead snapshots the device record after prior work;
+ * ConsumeAndReset clears it before translating the first reported semantic failure into a host exception.
+ */
 class DeviceErrorState final {
  public:
   [[nodiscard]] static auto Create(const std::shared_ptr<DeviceAllocator> &allocator, const Stream &stream,

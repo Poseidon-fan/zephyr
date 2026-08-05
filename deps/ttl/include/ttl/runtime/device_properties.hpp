@@ -24,7 +24,7 @@ struct ComputeCapability final {
 };
 
 /**
- * CUDA device metadata used by launch validation, architecture dispatch, stream creation, and memory management.
+ * @brief CUDA device metadata used by launch validation, architecture dispatch, stream creation, and memory management.
  *
  * Runtime queries one validated instance per configured device. Pairwise properties such as peer access are
  * deliberately not stored here.

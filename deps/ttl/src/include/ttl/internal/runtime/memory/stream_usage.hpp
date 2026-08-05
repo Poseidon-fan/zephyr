@@ -12,7 +12,7 @@ namespace ttl::internal {
 class StreamState;
 
 /**
- * Thread-safe stream lifetime leases associated with one allocation.
+ * @brief Thread-safe stream lifetime leases associated with one allocation.
  *
  * The allocation stream is retained separately from streams that use the allocation later. Record may be called
  * concurrently. TakeSideStreams requires exclusive ownership and must only be called after no Record call can begin or

@@ -12,6 +12,7 @@
 
 namespace ttl::internal {
 
+/** Result wrapper that lets an operation report a device error without overwriting the corresponding output element. */
 template <typename T>
 struct ElementwiseResult final {
   T value_;
@@ -93,6 +94,8 @@ __global__ void ContiguousUnaryKernel(Output *output, const Input *input, Index 
     if (write_all) {
       vector_output[vector_index] = output_values;
     } else {
+      // A vector store cannot preserve individual elements whose operations rejected their result. Re-evaluate the
+      // vector and issue only permitted scalar stores; error reporting is sticky and remains idempotent.
 #pragma unroll
       for (size_t element = 0; element < width; ++element) {
         const auto linear_index = static_cast<Index>((vector_index * static_cast<Index>(width)) + element);

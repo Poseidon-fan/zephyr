@@ -24,6 +24,8 @@ constexpr uint32_t MAXIMUM_SCAN_BLOCKS = 65535;
 template <CudaStorageType T>
 using ScanAccumulator = std::conditional_t<IsCudaFloatingType<T>(), float, uint64_t>;
 
+// Integer scans accumulate in unsigned storage. Projection preserves the low N bits, giving defined modular arithmetic
+// for signed types instead of relying on signed-overflow behavior in device code.
 template <CudaStorageType T>
 __device__ auto Lift(T value) -> ScanAccumulator<T> {
   if constexpr (IsCudaFloatingType<T>()) {
@@ -75,6 +77,8 @@ auto ConvertParameters(const CumulativeSumParameters64 &source, std::source_loca
 
 template <CudaStorageType T, typename Parameters>
 __global__ void CumulativeSumKernel(Parameters parameters) {
+  // One thread owns a complete axis slice. This deliberately favors general strided correctness and deterministic
+  // accumulation order over an inter-block prefix protocol; independent slices still execute in parallel.
   using Index = std::remove_cvref_t<decltype(parameters.slice_count_)>;
   auto slice = (static_cast<Index>(blockIdx.x) * static_cast<Index>(blockDim.x)) + static_cast<Index>(threadIdx.x);
   const auto step = static_cast<Index>(gridDim.x) * static_cast<Index>(blockDim.x);

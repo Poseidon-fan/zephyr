@@ -48,7 +48,7 @@ void TakeAlongDimensionOut(ExecutionContext &context, Tensor &output, const Tens
                                       std::source_location location = std::source_location::current()) -> Tensor;
 
 /**
- * Copy input and overwrite elements selected by index along one axis with source values.
+ * @brief Copy input and overwrite elements selected by index along one axis with source values.
  *
  * `index` and `source` have the same rank as `input`. Their extents may not exceed `source`, and non-axis extents may
  * not exceed `input`. Duplicate destination indices have an unspecified winner, matching parallel overwrite-scatter

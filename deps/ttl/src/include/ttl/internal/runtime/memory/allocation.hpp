@@ -20,7 +20,7 @@ enum class ExternalOwnership : uint8_t {
 };
 
 /**
- * Move-only resource record transferred from Storage to allocator retirement.
+ * @brief Move-only resource record transferred from Storage to allocator retirement.
  *
  * Allocation does not release its pointer. DeviceAllocator is the only component that consumes the record and applies
  * the release policy described by kind_.
