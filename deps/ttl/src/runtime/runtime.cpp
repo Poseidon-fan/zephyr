@@ -623,8 +623,9 @@ auto Runtime::WrapExternalStream(Device device, cudaStream_t stream, std::shared
                                          std::move(wrapped_stream), options, location);
 }
 
-auto Runtime::FromBlob(ExecutionContext &context, ExternalMemory memory, const Shape &shape, const Strides &strides,
-                       DType dtype, int64_t storage_offset, std::source_location location) -> Tensor {
+auto Runtime::FromBlob(ExecutionContext &context, ExternalDeviceMemory memory, const Shape &shape,
+                       const Strides &strides, DType dtype, int64_t storage_offset, std::source_location location)
+    -> Tensor {
   internal::ContextUseGuard use_guard{context, internal::ContextUseMode::SUBMIT, location};
   if (impl_->state_->HasActiveCapture()) {
     throw CaptureError("cannot wrap external memory during CUDA graph capture", location);

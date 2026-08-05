@@ -78,7 +78,7 @@ struct PinnedMemoryStatistics final {
 };
 
 /** Existing CUDA device allocation and optional shared lifetime owner. */
-struct ExternalMemory final {
+struct ExternalDeviceMemory final {
   void *pointer_;
   size_t capacity_bytes_;
   Device device_;

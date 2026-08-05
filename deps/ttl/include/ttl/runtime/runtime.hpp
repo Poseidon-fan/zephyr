@@ -104,7 +104,7 @@ class Runtime final {
    *
    * A null `memory.owner_` creates borrowed storage; otherwise the owner is retained through asynchronous retirement.
    */
-  [[nodiscard]] auto FromBlob(ExecutionContext &context, ExternalMemory memory, const Shape &shape,
+  [[nodiscard]] auto FromBlob(ExecutionContext &context, ExternalDeviceMemory memory, const Shape &shape,
                               const Strides &strides, DType dtype, int64_t storage_offset = 0,
                               std::source_location location = std::source_location::current()) -> Tensor;
 
