@@ -24,8 +24,8 @@
 #include "ttl/internal/runtime/execution/event_pool.hpp"
 #include "ttl/internal/runtime/execution/stream.hpp"
 #include "ttl/internal/runtime/library/cublas_api.hpp"
-#include "ttl/internal/runtime/memory/device_allocator.hpp"
-#include "ttl/internal/tensor/storage.hpp"
+#include "ttl/internal/runtime/memory/device/allocator.hpp"
+#include "ttl/internal/runtime/memory/device/storage.hpp"
 #include "ttl/runtime/stream.hpp"
 
 namespace ttl::internal {

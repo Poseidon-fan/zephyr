@@ -21,7 +21,7 @@
 #include "ttl/internal/runtime/execution/op_guard.hpp"
 #include "ttl/internal/runtime/execution/stream.hpp"
 #include "ttl/internal/runtime/graph/graph.hpp"
-#include "ttl/internal/runtime/memory/pinned_allocator.hpp"
+#include "ttl/internal/runtime/memory/pinned/block.hpp"
 #include "ttl/internal/tensor/tensor_impl.hpp"
 #include "ttl/runtime/event.hpp"
 #include "ttl/runtime/execution_context.hpp"

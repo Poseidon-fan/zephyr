@@ -33,9 +33,9 @@
 #include "ttl/internal/runtime/execution/execution_context.hpp"
 #include "ttl/internal/runtime/execution/stream.hpp"
 #include "ttl/internal/runtime/graph/graph.hpp"
-#include "ttl/internal/runtime/memory/allocation.hpp"
+#include "ttl/internal/runtime/memory/device/allocation.hpp"
+#include "ttl/internal/runtime/memory/device/storage.hpp"
 #include "ttl/internal/runtime/runtime.hpp"
-#include "ttl/internal/tensor/storage.hpp"
 #include "ttl/runtime/execution_context.hpp"
 #include "ttl/runtime/stream.hpp"
 

@@ -14,7 +14,7 @@
 #include "ttl/common/error_sink.hpp"
 #include "ttl/internal/runtime/execution/event_pool.hpp"
 #include "ttl/internal/runtime/execution/execution_lane.hpp"
-#include "ttl/internal/runtime/memory/device_allocator.hpp"
+#include "ttl/internal/runtime/memory/device/allocator.hpp"
 #include "ttl/runtime/execution_context.hpp"
 #include "ttl/runtime/stream.hpp"
 

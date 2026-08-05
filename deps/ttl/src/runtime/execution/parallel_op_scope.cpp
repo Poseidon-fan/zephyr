@@ -23,7 +23,7 @@
 #include "ttl/internal/runtime/execution/op_guard.hpp"
 #include "ttl/internal/runtime/execution/stream.hpp"
 #include "ttl/internal/runtime/graph/graph.hpp"
-#include "ttl/internal/runtime/memory/scratch_arena.hpp"
+#include "ttl/internal/runtime/memory/device/scratch_arena.hpp"
 #include "ttl/internal/runtime/runtime.hpp"
 #include "ttl/runtime/execution_context.hpp"
 #include "ttl/runtime/stream.hpp"

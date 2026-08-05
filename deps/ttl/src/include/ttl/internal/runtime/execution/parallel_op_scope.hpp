@@ -10,7 +10,7 @@
 #include <driver_types.h>
 
 #include "ttl/internal/runtime/execution/op_guard.hpp"
-#include "ttl/internal/runtime/memory/scratch_arena.hpp"
+#include "ttl/internal/runtime/memory/device/scratch_arena.hpp"
 #include "ttl/runtime/stream.hpp"
 #include "ttl/tensor/tensor.hpp"
 

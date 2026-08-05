@@ -24,7 +24,7 @@
 #include "ttl/internal/runtime/cuda_check.hpp"
 #include "ttl/internal/runtime/execution/op_guard.hpp"
 #include "ttl/internal/runtime/library/cublas_api.hpp"
-#include "ttl/internal/runtime/memory/scratch_arena.hpp"
+#include "ttl/internal/runtime/memory/device/scratch_arena.hpp"
 #include "ttl/internal/tensor/tensor_impl.hpp"
 #include "ttl/ops/creation.hpp"
 #include "ttl/ops/elementwise.hpp"

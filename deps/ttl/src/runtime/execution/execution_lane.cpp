@@ -8,9 +8,9 @@
 #include <cublas_v2.h>
 
 #include "ttl/internal/runtime/library/blas_handle_pool.hpp"
-#include "ttl/internal/runtime/memory/device_allocator.hpp"
-#include "ttl/internal/runtime/memory/scratch_arena.hpp"
-#include "ttl/internal/tensor/storage.hpp"
+#include "ttl/internal/runtime/memory/device/allocator.hpp"
+#include "ttl/internal/runtime/memory/device/scratch_arena.hpp"
+#include "ttl/internal/runtime/memory/device/storage.hpp"
 #include "ttl/runtime/stream.hpp"
 
 namespace ttl::internal {

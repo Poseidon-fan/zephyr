@@ -1,12 +1,12 @@
-#include "ttl/internal/runtime/memory/stream_usage.hpp"
+#include "ttl/internal/runtime/memory/device/stream_usage.hpp"
 
 #include <algorithm>
 #include <cstdint>
+#include <exception>
 #include <memory>
 #include <mutex>
 #include <source_location>
 #include <utility>
-#include <vector>
 
 #include "ttl/common/error.hpp"
 #include "ttl/internal/runtime/execution/stream.hpp"
@@ -17,18 +17,22 @@ namespace {
 [[nodiscard]] auto ValidateStream(const std::shared_ptr<StreamState> &stream, std::source_location location)
     -> uint64_t {
   if (stream == nullptr) {
-    throw InvalidArgumentError("stream usage requires a non-null stream state", location);
+    throw InvalidArgumentError("device stream usage requires a non-null stream state", location);
   }
   return stream->GetId();
 }
 
 }  // namespace
 
-StreamUsage::StreamUsage(std::shared_ptr<StreamState> allocation_stream, std::source_location location)
+DeviceStreamUsage::DeviceStreamUsage(std::shared_ptr<StreamState> allocation_stream) noexcept
     : allocation_stream_(std::move(allocation_stream)),
-      most_recent_stream_id_(ValidateStream(allocation_stream_, location)) {}
+      most_recent_stream_id_(allocation_stream_ == nullptr ? uint64_t{0} : allocation_stream_->GetId()) {
+  if (allocation_stream_ == nullptr) {
+    std::terminate();
+  }
+}
 
-void StreamUsage::Record(const std::shared_ptr<StreamState> &stream, std::source_location location) {
+void DeviceStreamUsage::Record(const std::shared_ptr<StreamState> &stream, std::source_location location) {
   const auto stream_id = ValidateStream(stream, location);
   if (most_recent_stream_id_.load(std::memory_order_acquire) == stream_id) {
     return;
@@ -50,10 +54,11 @@ void StreamUsage::Record(const std::shared_ptr<StreamState> &stream, std::source
   most_recent_stream_id_.store(stream_id, std::memory_order_release);
 }
 
-auto StreamUsage::GetAllocationStream() const noexcept -> std::shared_ptr<StreamState> { return allocation_stream_; }
-
-auto StreamUsage::TakeSideStreams() && noexcept -> std::vector<std::shared_ptr<StreamState>> {
-  return std::move(side_streams_);
+auto DeviceStreamUsage::TakeSnapshot() && noexcept -> DeviceStreamUsageSnapshot {
+  return {
+      .allocation_stream_ = std::move(allocation_stream_),
+      .side_streams_ = std::move(side_streams_),
+  };
 }
 
 }  // namespace ttl::internal

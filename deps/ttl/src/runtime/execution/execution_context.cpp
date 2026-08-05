@@ -25,7 +25,7 @@
 #include "ttl/internal/runtime/execution/stream.hpp"
 #include "ttl/internal/runtime/graph/graph.hpp"
 #include "ttl/internal/runtime/library/blas_handle_pool.hpp"
-#include "ttl/internal/runtime/memory/pinned_allocator.hpp"
+#include "ttl/internal/runtime/memory/pinned/allocator.hpp"
 #include "ttl/internal/runtime/runtime.hpp"
 #include "ttl/runtime/event.hpp"
 #include "ttl/runtime/graph.hpp"
@@ -136,8 +136,9 @@ auto ContextAccess::Create(const std::shared_ptr<RuntimeState> &runtime_state,
     }
   }
 
-  auto device_error_state = DeviceErrorState::Create(device_context->GetAllocator(), primary_lane.GetStream(),
-                                                     runtime_state->GetErrorSink(), location);
+  auto device_error_state =
+      DeviceErrorState::Create(device_context->GetAllocator(), primary_lane.GetStream(),
+                               runtime_state->GetPinnedAllocator(), runtime_state->GetErrorSink(), location);
   registration.Commit(location);
   return ExecutionContext{std::make_shared<ExecutionContextImpl>(
       runtime_state, std::move(registration), std::move(device_context), std::move(primary_lane),
@@ -243,7 +244,7 @@ void SynchronizeAndCheckDeviceErrors(internal::ExecutionContextImpl &impl, std::
     internal::CheckCuda(first_status, "cudaStreamSynchronize", location);
   }
 
-  impl.device_error_state_->EnqueueRead(primary_stream, location);
+  impl.device_error_state_->EnqueueRead(impl.primary_lane_.GetStream(), location);
   // The device-to-host copy is ordered after all successful submissions on the primary stream. Synchronizing once
   // therefore observes both native launch failures and the sticky semantic error record.
   first_status = cuda_api.synchronize_stream_(primary_stream);

@@ -32,11 +32,11 @@
 #include "ttl/internal/runtime/execution/stream.hpp"
 #include "ttl/internal/runtime/graph/graph.hpp"
 #include "ttl/internal/runtime/library/blas_handle_pool.hpp"
-#include "ttl/internal/runtime/memory/allocation.hpp"
-#include "ttl/internal/runtime/memory/device_allocator.hpp"
-#include "ttl/internal/runtime/memory/pinned_allocator.hpp"
+#include "ttl/internal/runtime/memory/device/allocation.hpp"
+#include "ttl/internal/runtime/memory/device/allocator.hpp"
+#include "ttl/internal/runtime/memory/device/storage.hpp"
+#include "ttl/internal/runtime/memory/pinned/allocator.hpp"
 #include "ttl/internal/runtime/runtime.hpp"
-#include "ttl/internal/tensor/storage.hpp"
 #include "ttl/internal/tensor/tensor_impl.hpp"
 #include "ttl/runtime/device_properties.hpp"
 #include "ttl/runtime/execution_context.hpp"
@@ -285,9 +285,12 @@ auto RuntimeState::GetStatistics(std::source_location location) const -> Runtime
   }
   const auto pinned = pinned_allocator_->GetStats();
   result.pinned_memory_ = PinnedMemoryStatistics{
-      .live_bytes_ = pinned.live_bytes_,
-      .pending_bytes_ = pinned.pending_bytes_,
-      .cached_bytes_ = pinned.cached_bytes_,
+      .logical_live_bytes_ = pinned.logical_live_bytes_,
+      .live_capacity_bytes_ = pinned.live_capacity_bytes_,
+      .retiring_capacity_bytes_ = pinned.retiring_capacity_bytes_,
+      .cached_capacity_bytes_ = pinned.cached_capacity_bytes_,
+      .budgeted_capacity_bytes_ = pinned.budgeted_capacity_bytes_,
+      .peak_budgeted_capacity_bytes_ = pinned.peak_budgeted_capacity_bytes_,
       .physical_bytes_ = pinned.physical_bytes_,
       .peak_physical_bytes_ = pinned.peak_physical_bytes_,
       .host_allocation_count_ = pinned.host_allocation_count_,

@@ -13,7 +13,7 @@
 #include "ttl/internal/runtime/device_guard.hpp"
 #include "ttl/internal/runtime/execution/device_error.hpp"
 #include "ttl/internal/runtime/execution/execution_context.hpp"
-#include "ttl/internal/runtime/memory/scratch_arena.hpp"
+#include "ttl/internal/runtime/memory/device/scratch_arena.hpp"
 #include "ttl/runtime/execution_context.hpp"
 #include "ttl/runtime/stream.hpp"
 #include "ttl/tensor/dtype.hpp"

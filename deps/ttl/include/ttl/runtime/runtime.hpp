@@ -3,7 +3,6 @@
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
-#include <limits>
 #include <memory>
 #include <source_location>
 #include <span>
@@ -14,6 +13,7 @@
 #include "ttl/common/device.hpp"
 #include "ttl/runtime/device_properties.hpp"
 #include "ttl/runtime/execution_context.hpp"
+#include "ttl/runtime/memory.hpp"
 #include "ttl/runtime/pinned_buffer.hpp"
 #include "ttl/tensor/dtype.hpp"
 #include "ttl/tensor/shape.hpp"
@@ -28,22 +28,6 @@ namespace internal {
 class RuntimeAccess;
 
 }  // namespace internal
-
-/** @brief Configures one CUDA device's stream-ordered memory pool. */
-struct DeviceMemoryOptions final {
-  /** Bytes the CUDA pool may retain after frees; defaults to no automatic release. */
-  uint64_t release_threshold_bytes_{std::numeric_limits<uint64_t>::max()};
-  /** Maximum bytes allocated or asynchronously retiring; zero disables the TTL budget. */
-  uint64_t max_live_bytes_{0};
-  /** Whether a host thread polls completed asynchronous retirements. */
-  bool enable_maintenance_thread_{true};
-};
-
-/** @brief Configures the process-wide page-locked host-memory cache and admission budget. */
-struct PinnedMemoryOptions final {
-  size_t max_cached_bytes_{256U * 1024U * 1024U};
-  size_t max_live_bytes_{512U * 1024U * 1024U};
-};
 
 /** @brief Configures devices and process-local services owned by a `Runtime`. */
 struct RuntimeOptions final {
@@ -65,48 +49,6 @@ enum class RuntimeStatus : uint8_t {
   CLOSED,
 };
 
-/** @brief Snapshot of allocator, event, and cuBLAS resources for one registered device. */
-struct DeviceMemoryStatistics final {
-  Device device_;
-  uint64_t logical_live_bytes_;
-  uint64_t retiring_bytes_;
-  uint64_t peak_physical_in_use_bytes_;
-  uint64_t allocation_count_;
-  uint64_t retirement_count_;
-  uint64_t retry_count_;
-  uint64_t oom_count_;
-  uint64_t trim_count_;
-  uint64_t pending_retirement_count_;
-  /** Retirements whose native completion path failed and are awaiting explicit Shutdown drain. */
-  uint64_t quarantined_retirement_count_;
-  uint64_t quarantined_bytes_;
-  uint64_t pool_used_bytes_;
-  uint64_t pool_reserved_bytes_;
-  uint64_t outstanding_storage_count_;
-  size_t cached_event_count_;
-  size_t outstanding_event_count_;
-  size_t event_cache_capacity_;
-  size_t blas_workspace_bytes_;
-};
-
-/** @brief Snapshot of process-wide page-locked host-memory accounting. */
-struct PinnedMemoryStatistics final {
-  uint64_t live_bytes_;
-  uint64_t pending_bytes_;
-  uint64_t cached_bytes_;
-  uint64_t physical_bytes_;
-  uint64_t peak_physical_bytes_;
-  uint64_t host_allocation_count_;
-  uint64_t host_free_count_;
-  uint64_t cache_hit_count_;
-  uint64_t retirement_count_;
-  uint64_t pending_retirement_count_;
-  /** Retirements whose native completion path failed and are awaiting explicit Shutdown drain. */
-  uint64_t quarantined_retirement_count_;
-  uint64_t quarantined_bytes_;
-  uint64_t outstanding_buffer_count_;
-};
-
 /** Aggregate host-side snapshot for serving telemetry and memory admission control. */
 struct RuntimeStatistics final {
   RuntimeStatus status_;
@@ -115,18 +57,6 @@ struct RuntimeStatistics final {
   size_t active_capture_count_;
   std::vector<DeviceMemoryStatistics> devices_;
   PinnedMemoryStatistics pinned_memory_;
-};
-
-/**
- * @brief Description of an existing CUDA device allocation.
- *
- * A null owner means borrowed memory. A non-null owner is retained until all recorded stream usage has completed.
- */
-struct ExternalMemory final {
-  void *pointer_;
-  size_t capacity_bytes_;
-  Device device_;
-  std::shared_ptr<void> owner_;
 };
 
 /**

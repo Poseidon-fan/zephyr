@@ -10,7 +10,7 @@
 #include <vector>
 
 #include "ttl/common/device.hpp"
-#include "ttl/internal/runtime/memory/allocation.hpp"
+#include "ttl/internal/runtime/memory/device/allocation.hpp"
 #include "ttl/runtime/stream.hpp"
 #include "ttl/tensor/dtype.hpp"
 #include "ttl/tensor/shape.hpp"
@@ -27,6 +27,7 @@ class DeviceAllocatorImpl;
 class EventPool;
 class Storage;
 class StreamState;
+struct DeviceStreamUsageSnapshot;
 
 struct DeviceAllocatorOptions final {
   uint64_t release_threshold_bytes_{std::numeric_limits<uint64_t>::max()};
@@ -100,8 +101,7 @@ class DeviceAllocator final : public std::enable_shared_from_this<DeviceAllocato
 
   explicit DeviceAllocator(std::unique_ptr<DeviceAllocatorImpl> impl) noexcept;
 
-  void Retire(Allocation allocation, std::shared_ptr<StreamState> allocation_stream,
-              std::vector<std::shared_ptr<StreamState>> side_streams) noexcept;
+  void Retire(Allocation allocation, DeviceStreamUsageSnapshot usage) noexcept;
 
   std::unique_ptr<DeviceAllocatorImpl> impl_;
 };

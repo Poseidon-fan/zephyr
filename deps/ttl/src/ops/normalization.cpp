@@ -19,7 +19,7 @@
 #include "ttl/internal/ops/rowwise.hpp"
 #include "ttl/internal/runtime/execution/execution_context.hpp"
 #include "ttl/internal/runtime/execution/op_guard.hpp"
-#include "ttl/internal/runtime/memory/scratch_arena.hpp"
+#include "ttl/internal/runtime/memory/device/scratch_arena.hpp"
 #include "ttl/internal/tensor/tensor_impl.hpp"
 #include "ttl/runtime/execution_context.hpp"
 #include "ttl/tensor/dtype.hpp"

@@ -1,4 +1,4 @@
-#include "ttl/internal/runtime/memory/scratch_arena.hpp"
+#include "ttl/internal/runtime/memory/device/scratch_arena.hpp"
 
 #include <algorithm>
 #include <bit>
@@ -14,8 +14,8 @@
 
 #include "ttl/common/error.hpp"
 #include "ttl/internal/common/checked_math.hpp"
-#include "ttl/internal/runtime/memory/device_allocator.hpp"
-#include "ttl/internal/tensor/storage.hpp"
+#include "ttl/internal/runtime/memory/device/allocator.hpp"
+#include "ttl/internal/runtime/memory/device/storage.hpp"
 #include "ttl/runtime/stream.hpp"
 
 namespace ttl::internal {

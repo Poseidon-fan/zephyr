@@ -4,7 +4,9 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <source_location>
 #include <span>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -14,6 +16,8 @@
 #include "support/tensor_test_utils.hpp"
 #include "ttl/common/device.hpp"
 #include "ttl/common/error.hpp"
+#include "ttl/internal/runtime/cuda_api.hpp"
+#include "ttl/internal/runtime/memory/pinned/cache.hpp"
 #include "ttl/ops/copy.hpp"
 #include "ttl/ops/creation.hpp"
 #include "ttl/runtime/execution_context.hpp"
@@ -39,6 +43,23 @@ namespace {
   EXPECT_EQ(cudaDeviceCanAccessPeer(&first_to_second, first.GetOrdinal(), second.GetOrdinal()), cudaSuccess);
   EXPECT_EQ(cudaDeviceCanAccessPeer(&second_to_first, second.GetOrdinal(), first.GetOrdinal()), cudaSuccess);
   return first_to_second != 0 && second_to_first != 0;
+}
+
+auto ReportPinnedAllocationOom(void **pointer, size_t bytes, unsigned int flags) -> cudaError_t {
+  static_cast<void>(bytes);
+  static_cast<void>(flags);
+  *pointer = nullptr;
+  return cudaErrorMemoryAllocation;
+}
+
+auto FailPinnedFree(void *pointer) -> cudaError_t {
+  static_cast<void>(pointer);
+  return cudaErrorUnknown;
+}
+
+auto FailEventQuery(cudaEvent_t event) -> cudaError_t {
+  static_cast<void>(event);
+  return cudaErrorUnknown;
 }
 
 }  // namespace
@@ -72,6 +93,146 @@ TEST(RuntimeMemoryIntegrationTest, CopiesThroughPinnedMemoryAndTreatsMovedBuffer
   }
   runtime.Shutdown();
   EXPECT_TRUE(sink->GetRecords().empty());
+}
+
+TEST(RuntimeMemoryIntegrationTest, ReusesPinnedSizeClassesAndTracksContextMirror) {
+  auto sink = std::make_shared<test::RecordingErrorSink>();
+  Runtime runtime{test::MakeRuntimeOptions({Device{0}}, sink)};
+  {
+    auto context = runtime.CreateExecutionContext(Device{0});
+    const auto baseline = runtime.GetStatistics().pinned_memory_;
+    EXPECT_GE(baseline.outstanding_buffer_count_, 1);
+
+    {
+      auto buffer = runtime.AllocatePinned(4097);
+      const auto live = runtime.GetStatistics().pinned_memory_;
+      EXPECT_GE(live.logical_live_bytes_, baseline.logical_live_bytes_ + 4097);
+      EXPECT_GE(live.live_capacity_bytes_, baseline.live_capacity_bytes_ + 8192);
+      EXPECT_GE(live.budgeted_capacity_bytes_, baseline.budgeted_capacity_bytes_ + 8192);
+      EXPECT_EQ(buffer.GetSizeBytes(), 4097);
+    }
+    const auto cached = runtime.GetStatistics().pinned_memory_;
+    EXPECT_GE(cached.cached_capacity_bytes_, baseline.cached_capacity_bytes_ + 8192);
+
+    const auto hits_before = cached.cache_hit_count_;
+    {
+      auto buffer = runtime.AllocatePinned(5000);
+      EXPECT_EQ(buffer.GetSizeBytes(), 5000);
+      EXPECT_GE(runtime.GetStatistics().pinned_memory_.cache_hit_count_, hits_before + 1);
+    }
+
+    const auto before_usage = runtime.GetStatistics();
+    {
+      auto buffer = runtime.AllocatePinned(1);
+      buffer.RecordUsage(context.GetStream());
+      buffer.RecordUsage(context.GetStream());
+    }
+    const auto retiring = runtime.GetStatistics();
+    EXPECT_EQ(retiring.pinned_memory_.pending_retirement_count_,
+              before_usage.pinned_memory_.pending_retirement_count_ + 1);
+    EXPECT_EQ(retiring.devices_[0].outstanding_event_count_, before_usage.devices_[0].outstanding_event_count_ + 1);
+    context.Synchronize();
+    const auto completed = runtime.GetStatistics();
+    EXPECT_EQ(completed.pinned_memory_.pending_retirement_count_,
+              before_usage.pinned_memory_.pending_retirement_count_);
+    EXPECT_EQ(completed.devices_[0].outstanding_event_count_, before_usage.devices_[0].outstanding_event_count_);
+  }
+  runtime.Shutdown();
+  EXPECT_TRUE(sink->GetRecords().empty());
+}
+
+TEST(RuntimeMemoryIntegrationTest, TreatsZeroBytePinnedBufferAsOwnedEmptyStorage) {
+  auto sink = std::make_shared<test::RecordingErrorSink>();
+  Runtime runtime{test::MakeRuntimeOptions({Device{0}}, sink)};
+  {
+    auto buffer = runtime.AllocatePinned(0);
+    EXPECT_EQ(buffer.GetData(), nullptr);
+    EXPECT_EQ(buffer.GetSizeBytes(), 0);
+    EXPECT_EQ(runtime.GetStatistics().pinned_memory_.outstanding_buffer_count_, 1);
+    EXPECT_THROW(runtime.Shutdown(), InvalidArgumentError);
+  }
+  runtime.Shutdown();
+  EXPECT_TRUE(sink->GetRecords().empty());
+}
+
+TEST(RuntimeMemoryIntegrationTest, PreservesAllocationAndRecoveryFailuresWhenPinnedTrimFails) {
+  auto sink = std::make_shared<test::RecordingErrorSink>();
+  internal::PinnedMemoryCache cache{sink, 4096, std::source_location::current()};
+  const auto cached_capacity = internal::PinnedMemoryCache::GetSizeClass(1, std::source_location::current());
+  const auto cached_allocation = cache.Acquire(1, cached_capacity, std::source_location::current());
+  ASSERT_TRUE(cache.Release(cached_allocation, std::source_location::current()));
+
+  auto cuda_api = internal::GetCudaApi();
+  cuda_api.host_alloc_ = ReportPinnedAllocationOom;
+  cuda_api.free_host_ = FailPinnedFree;
+  {
+    const internal::ScopedCudaApiOverride override{cuda_api};
+    try {
+      const auto requested_capacity = internal::PinnedMemoryCache::GetSizeClass(4097, std::source_location::current());
+      static_cast<void>(cache.Acquire(4097, requested_capacity, std::source_location::current()));
+      FAIL() << "expected pinned allocation recovery to fail";
+    } catch (const CudaError &error) {
+      const auto message = error.GetMessage();
+      EXPECT_NE(message.find("cudaHostAlloc reported cudaErrorMemoryAllocation"), std::string_view::npos);
+      EXPECT_NE(message.find("cudaFreeHost failed"), std::string_view::npos);
+    }
+  }
+
+  const auto restored = cache.GetStats();
+  EXPECT_EQ(restored.cached_bytes_, cached_capacity);
+  EXPECT_EQ(restored.physical_bytes_, cached_capacity);
+  cache.Trim(std::source_location::current());
+  EXPECT_EQ(cache.GetStats().physical_bytes_, 0);
+  EXPECT_TRUE(sink->GetRecords().empty());
+}
+
+TEST(RuntimeMemoryIntegrationTest, QuarantinesPinnedRetirementWhenEventQueryFails) {
+  auto sink = std::make_shared<test::RecordingErrorSink>();
+  auto options = test::MakeRuntimeOptions({Device{0}}, sink);
+  options.device_memory_.enable_maintenance_thread_ = false;
+  Runtime runtime{options};
+  {
+    auto context = runtime.CreateExecutionContext(Device{0});
+    const auto baseline = runtime.GetStatistics().pinned_memory_;
+    {
+      auto buffer = runtime.AllocatePinned(1);
+      buffer.RecordUsage(context.GetStream());
+    }
+
+    auto cuda_api = internal::GetCudaApi();
+    cuda_api.query_event_ = FailEventQuery;
+    {
+      const internal::ScopedCudaApiOverride override{cuda_api};
+      runtime.Poll();
+    }
+    const auto failed = runtime.GetStatistics().pinned_memory_;
+    EXPECT_EQ(failed.quarantined_retirement_count_, baseline.quarantined_retirement_count_ + 1);
+    EXPECT_GE(failed.quarantined_bytes_, baseline.quarantined_bytes_ + 4096);
+  }
+  runtime.Shutdown();
+  EXPECT_FALSE(sink->GetRecords().empty());
+}
+
+TEST(RuntimeMemoryIntegrationTest, QuarantinesPinnedAllocationWhenNativeFreeFails) {
+  auto sink = std::make_shared<test::RecordingErrorSink>();
+  auto options = test::MakeRuntimeOptions({Device{0}}, sink);
+  options.pinned_memory_.max_cached_bytes_ = 0;
+  Runtime runtime{options};
+  const auto baseline = runtime.GetStatistics().pinned_memory_;
+
+  auto cuda_api = internal::GetCudaApi();
+  cuda_api.free_host_ = FailPinnedFree;
+  {
+    const internal::ScopedCudaApiOverride override{cuda_api};
+    auto buffer = runtime.AllocatePinned(1);
+  }
+
+  const auto failed = runtime.GetStatistics().pinned_memory_;
+  EXPECT_EQ(failed.pending_retirement_count_, baseline.pending_retirement_count_ + 1);
+  EXPECT_EQ(failed.quarantined_retirement_count_, baseline.quarantined_retirement_count_ + 1);
+  EXPECT_GE(failed.quarantined_bytes_, baseline.quarantined_bytes_ + 4096);
+  runtime.Shutdown();
+  EXPECT_FALSE(sink->GetRecords().empty());
 }
 
 TEST(RuntimeMemoryIntegrationTest, WrapsBorrowedDeviceMemoryAndExternalStream) {

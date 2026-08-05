@@ -5,7 +5,7 @@
 #include <span>
 #include <utility>
 
-#include "ttl/internal/runtime/memory/pinned_allocator.hpp"
+#include "ttl/internal/runtime/memory/pinned/block.hpp"
 
 namespace ttl {
 

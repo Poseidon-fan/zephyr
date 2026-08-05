@@ -6,6 +6,7 @@
 #include <source_location>
 
 #include "ttl/runtime/device_error.hpp"
+#include "ttl/runtime/pinned_buffer.hpp"
 #include "ttl/runtime/stream.hpp"
 
 namespace ttl {
@@ -17,7 +18,7 @@ class ErrorSink;
 namespace ttl::internal {
 
 class DeviceAllocator;
-class PinnedDeviceErrorRecord;
+class PinnedAllocator;
 class Storage;
 
 using DeviceErrorCode = CudaDeviceErrorCode;
@@ -33,6 +34,7 @@ using DeviceErrorLaunchContext = CudaDeviceErrorContext;
 class DeviceErrorState final {
  public:
   [[nodiscard]] static auto Create(const std::shared_ptr<DeviceAllocator> &allocator, const Stream &stream,
+                                   const std::shared_ptr<PinnedAllocator> &pinned_allocator,
                                    std::shared_ptr<ErrorSink> error_sink,
                                    std::source_location location = std::source_location::current())
       -> std::unique_ptr<DeviceErrorState>;
@@ -46,15 +48,15 @@ class DeviceErrorState final {
 
   [[nodiscard]] auto Register(const Stream &stream, DType source_dtype, DType target_dtype,
                               std::source_location location) -> DeviceErrorLaunchContext;
-  void EnqueueRead(cudaStream_t stream, std::source_location location);
+  void EnqueueRead(const Stream &stream, std::source_location location);
   void ConsumeAndReset(cudaStream_t stream, std::source_location location);
   [[nodiscard]] auto GetStorage() const noexcept -> const std::shared_ptr<Storage> &;
 
  private:
-  DeviceErrorState(std::shared_ptr<Storage> storage, std::unique_ptr<PinnedDeviceErrorRecord> host_record) noexcept;
+  DeviceErrorState(std::shared_ptr<Storage> storage, PinnedBuffer host_record) noexcept;
 
   std::shared_ptr<Storage> storage_;
-  std::unique_ptr<PinnedDeviceErrorRecord> host_record_;
+  PinnedBuffer host_record_;
   uint64_t next_operation_sequence_{1};
 };
 

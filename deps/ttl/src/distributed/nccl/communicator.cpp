@@ -28,9 +28,9 @@
 #include "ttl/internal/runtime/cuda_check.hpp"
 #include "ttl/internal/runtime/device_guard.hpp"
 #include "ttl/internal/runtime/execution/stream.hpp"
-#include "ttl/internal/runtime/memory/device_allocator.hpp"
+#include "ttl/internal/runtime/memory/device/allocator.hpp"
+#include "ttl/internal/runtime/memory/device/storage.hpp"
 #include "ttl/internal/runtime/runtime.hpp"
-#include "ttl/internal/tensor/storage.hpp"
 #include "ttl/runtime/runtime.hpp"
 #include "ttl/runtime/stream.hpp"
 

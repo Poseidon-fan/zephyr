@@ -8,7 +8,7 @@
 
 #include "ttl/common/device.hpp"
 #include "ttl/common/error.hpp"
-#include "ttl/internal/tensor/storage.hpp"
+#include "ttl/internal/runtime/memory/device/storage.hpp"
 #include "ttl/runtime/generator.hpp"
 
 namespace ttl::internal {

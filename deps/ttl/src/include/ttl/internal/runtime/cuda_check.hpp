@@ -1,7 +1,5 @@
 #pragma once
 
-#include <cstdint>
-#include <optional>
 #include <source_location>
 #include <string_view>
 
@@ -9,17 +7,10 @@
 #include <cuda_runtime_api.h>
 #include <nccl.h>
 
-#include "ttl/common/device.hpp"
 #include "ttl/common/error_sink.hpp"
+#include "ttl/internal/runtime/error_report.hpp"
 
 namespace ttl::internal {
-
-/** Context attached to an error reported through ErrorSink. */
-struct ErrorReportContext final {
-  std::source_location location_;
-  std::optional<Device> device_;
-  std::optional<uint64_t> stream_id_;
-};
 
 /** Throw CudaError unless status is cudaSuccess. */
 void CheckCuda(cudaError_t status, std::string_view operation,

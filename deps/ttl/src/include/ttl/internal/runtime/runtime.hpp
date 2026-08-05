@@ -14,8 +14,8 @@
 #include "ttl/internal/ops/matmul_plan.hpp"
 #include "ttl/internal/runtime/execution/event_pool.hpp"
 #include "ttl/internal/runtime/library/blas_handle_pool.hpp"
-#include "ttl/internal/runtime/memory/device_allocator.hpp"
-#include "ttl/internal/runtime/memory/pinned_allocator.hpp"
+#include "ttl/internal/runtime/memory/device/allocator.hpp"
+#include "ttl/internal/runtime/memory/pinned/allocator.hpp"
 #include "ttl/runtime/device_properties.hpp"
 #include "ttl/runtime/runtime.hpp"
 

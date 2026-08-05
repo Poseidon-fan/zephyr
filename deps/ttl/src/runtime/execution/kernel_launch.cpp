@@ -21,7 +21,7 @@
 #include "ttl/internal/runtime/execution/generator.hpp"
 #include "ttl/internal/runtime/execution/op_guard.hpp"
 #include "ttl/internal/runtime/execution/parallel_op_scope.hpp"
-#include "ttl/internal/runtime/memory/scratch_arena.hpp"
+#include "ttl/internal/runtime/memory/device/scratch_arena.hpp"
 #include "ttl/internal/tensor/tensor_impl.hpp"
 #include "ttl/runtime/execution_context.hpp"
 #include "ttl/runtime/generator.hpp"

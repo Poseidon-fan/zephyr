@@ -1,4 +1,4 @@
-#include "ttl/internal/runtime/memory/device_allocator.hpp"
+#include "ttl/internal/runtime/memory/device/allocator.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -30,10 +30,17 @@
 #include "ttl/internal/runtime/cuda_api.hpp"
 #include "ttl/internal/runtime/cuda_check.hpp"
 #include "ttl/internal/runtime/device_guard.hpp"
+#include "ttl/internal/runtime/error_report.hpp"
 #include "ttl/internal/runtime/execution/event_pool.hpp"
 #include "ttl/internal/runtime/execution/stream.hpp"
-#include "ttl/internal/runtime/memory/allocation.hpp"
-#include "ttl/internal/tensor/storage.hpp"
+#include "ttl/internal/runtime/memory/allocation_budget.hpp"
+#include "ttl/internal/runtime/memory/allocator_lifecycle.hpp"
+#include "ttl/internal/runtime/memory/device/allocation.hpp"
+#include "ttl/internal/runtime/memory/device/cuda_memory_pool.hpp"
+#include "ttl/internal/runtime/memory/device/retirement.hpp"
+#include "ttl/internal/runtime/memory/device/storage.hpp"
+#include "ttl/internal/runtime/memory/device/stream_usage.hpp"
+#include "ttl/internal/runtime/memory/retirement_queue.hpp"
 #include "ttl/runtime/stream.hpp"
 #include "ttl/tensor/dtype.hpp"
 #include "ttl/tensor/shape.hpp"
@@ -42,15 +49,7 @@ namespace ttl::internal {
 namespace {
 
 constexpr size_t MAXIMUM_DEVICE_ALIGNMENT = 256;
-constexpr size_t INITIAL_RETIREMENT_CAPACITY = 16;
 constexpr auto MAINTENANCE_INTERVAL = std::chrono::milliseconds{1};
-
-enum class AllocatorStatus : uint8_t {
-  RUNNING,
-  CLOSING,
-  CLOSED,
-  FAILED,
-};
 
 class OutstandingStorageGuard final {
  public:
@@ -114,21 +113,6 @@ void ValidateAlignment(size_t alignment, std::source_location location) {
   return message;
 }
 
-void ReportError(ErrorCode code, std::string_view message, ErrorSink &error_sink,
-                 const ErrorReportContext &context) noexcept {
-  try {
-    error_sink.Report(ErrorRecord{
-        .code_ = code,
-        .message_ = std::string{message},
-        .device_ = context.device_,
-        .stream_id_ = context.stream_id_,
-        .location_ = context.location_,
-    });
-  } catch (...) {
-    return;
-  }
-}
-
 [[nodiscard]] auto MakeContext(Device device, std::source_location location,
                                std::optional<uint64_t> stream_id = std::nullopt) noexcept -> ErrorReportContext {
   return ErrorReportContext{
@@ -140,52 +124,26 @@ void ReportError(ErrorCode code, std::string_view message, ErrorSink &error_sink
 
 }  // namespace
 
-struct RetirementRecord final {
-  RetirementRecord(Allocation allocation, std::shared_ptr<StreamState> allocation_stream,
-                   std::vector<std::shared_ptr<StreamState>> side_streams) noexcept
-      : allocation_(std::move(allocation)),
-        allocation_stream_(std::move(allocation_stream)),
-        side_streams_(std::move(side_streams)) {}
-
-  RetirementRecord(const RetirementRecord &) = delete;
-  auto operator=(const RetirementRecord &) -> RetirementRecord & = delete;
-  RetirementRecord(RetirementRecord &&) noexcept = default;
-  auto operator=(RetirementRecord &&) noexcept -> RetirementRecord & = default;
-
-  Allocation allocation_;
-  std::shared_ptr<StreamState> allocation_stream_;
-  std::vector<std::shared_ptr<StreamState>> side_streams_;
-  std::optional<PooledEvent> completion_event_;
-  bool free_attempted_{false};
-  bool free_submitted_{false};
-  bool uses_reclaim_stream_{false};
-  bool poisoned_{false};
-};
-
 class DeviceAllocatorImpl final {
  public:
   DeviceAllocatorImpl(Device device, std::shared_ptr<ErrorSink> error_sink, std::shared_ptr<EventPool> event_pool,
-                      DeviceAllocatorOptions options, cudaMemPool_t pool, std::shared_ptr<StreamState> reclaim_stream,
-                      std::source_location location) noexcept
+                      DeviceAllocatorOptions options, std::unique_ptr<CudaMemoryPool> pool,
+                      std::shared_ptr<StreamState> reclaim_stream, std::source_location location) noexcept
       : device_(device),
         error_sink_(std::move(error_sink)),
         event_pool_(std::move(event_pool)),
         options_(options),
-        pool_(pool),
+        pool_(std::move(pool)),
         reclaim_stream_(std::move(reclaim_stream)),
-        location_(location) {}
+        location_(location),
+        budget_(options.max_live_bytes_) {}
 
   DeviceAllocatorImpl(const DeviceAllocatorImpl &) = delete;
   auto operator=(const DeviceAllocatorImpl &) -> DeviceAllocatorImpl & = delete;
   DeviceAllocatorImpl(DeviceAllocatorImpl &&) = delete;
   auto operator=(DeviceAllocatorImpl &&) -> DeviceAllocatorImpl & = delete;
 
-  ~DeviceAllocatorImpl() noexcept {
-    StopWorkerNoexcept();
-    if (pool_ != nullptr) {
-      TryDestroyPool();
-    }
-  }
+  ~DeviceAllocatorImpl() noexcept { StopWorkerNoexcept(); }
 
   void StartWorker() {
     if (!options_.enable_maintenance_thread_) {
@@ -197,7 +155,7 @@ class DeviceAllocatorImpl final {
   [[nodiscard]] auto Allocate(const std::shared_ptr<DeviceAllocator> &allocator, const Stream &stream, size_t bytes,
                               size_t alignment, const AllocationContext &context) -> std::shared_ptr<Storage> {
     const std::shared_lock lifecycle_lock{lifecycle_latch_};
-    ValidateRunning(context.location_);
+    lifecycle_.RequireRunning("device allocator", context.location_);
     if (stream.GetDevice() != device_) {
       throw InvalidArgumentError(FormatWrongStreamDevice(device_, stream.GetDevice()), context.location_);
     }
@@ -205,51 +163,37 @@ class DeviceAllocatorImpl final {
 
     const auto allocation_stream = StreamAccess::GetState(stream);
     if (bytes == 0) {
-      auto storage = MakeUniqueStorage(Allocation{nullptr, 0, AllocationKind::DEVICE_POOL, nullptr, context.location_},
-                                       allocator, allocation_stream);
+      Allocation allocation{nullptr,          0, AllocationKind::DEVICE_POOL, nullptr, std::nullopt, RetirementTicket{},
+                            context.location_};
+      auto storage = MakeUniqueStorage(allocation, allocator, allocation_stream);
       outstanding_storage_count_.fetch_add(1, std::memory_order_relaxed);
       return std::shared_ptr<Storage>{std::move(storage)};
     }
 
     const auto requested_bytes = CheckedNarrow<uint64_t>(bytes, "device allocation byte count", context.location_);
-    ReserveRetirementSlot(context.location_);
-    try {
-      ReserveBudget(requested_bytes, context);
-    } catch (...) {
-      CancelRetirementSlot();
-      throw;
-    }
+    auto retirement_ticket = retirements_.Reserve(context.location_);
+    auto budget = ReserveBudget(requested_bytes, context);
 
     void *pointer = nullptr;
     cudaError_t status = cudaSuccess;
-    try {
-      DeviceGuard device_guard{device_, *error_sink_, context.location_};
-      status = GetCudaApi().malloc_from_pool_async_(&pointer, bytes, pool_, allocation_stream->GetNative());
-      if (status == cudaErrorMemoryAllocation) {
-        // CUDA may retain already-freed pages in the pool. Clear the expected sticky allocation error, reclaim
-        // completed retirements, trim to the pre-request physical budget, and make exactly one retry.
-        const auto last_error = GetCudaApi().get_last_error_();
-        if (last_error != cudaSuccess && last_error != cudaErrorMemoryAllocation) {
-          CheckCuda(last_error, "cudaGetLastError", context.location_);
-        }
-        retry_count_.fetch_add(1, std::memory_order_relaxed);
-        PollRetirements();
-        const auto target = GetOomTrimTarget(requested_bytes);
-        CheckCuda(
-            GetCudaApi().trim_memory_pool_(pool_, CheckedNarrow<size_t>(target, "OOM trim target", context.location_)),
-            "cudaMemPoolTrimTo", context.location_);
-        trim_count_.fetch_add(1, std::memory_order_relaxed);
-        status = GetCudaApi().malloc_from_pool_async_(&pointer, bytes, pool_, allocation_stream->GetNative());
+    DeviceGuard device_guard{device_, *error_sink_, context.location_};
+    status = pool_->AllocateAsync(&pointer, bytes, allocation_stream->GetNative());
+    if (status == cudaErrorMemoryAllocation) {
+      // CUDA may retain already-freed pages in the pool. Clear the expected sticky allocation error, reclaim
+      // completed retirements, trim to the pre-request physical budget, and make exactly one retry.
+      const auto last_error = GetCudaApi().get_last_error_();
+      if (last_error != cudaSuccess && last_error != cudaErrorMemoryAllocation) {
+        CheckCuda(last_error, "cudaGetLastError", context.location_);
       }
-    } catch (...) {
-      ReleaseBudget(requested_bytes);
-      CancelRetirementSlot();
-      throw;
+      retry_count_.fetch_add(1, std::memory_order_relaxed);
+      PollRetirements();
+      const auto target = GetOomTrimTarget(requested_bytes);
+      pool_->TrimTo(CheckedNarrow<size_t>(target, "OOM trim target", context.location_), context.location_);
+      trim_count_.fetch_add(1, std::memory_order_relaxed);
+      status = pool_->AllocateAsync(&pointer, bytes, allocation_stream->GetNative());
     }
 
     if (status != cudaSuccess) {
-      ReleaseBudget(requested_bytes);
-      CancelRetirementSlot();
       if (status == cudaErrorMemoryAllocation) {
         oom_count_.fetch_add(1, std::memory_order_relaxed);
         throw OutOfMemoryError(FormatOutOfMemory(bytes, alignment, context), context.location_);
@@ -257,19 +201,19 @@ class DeviceAllocatorImpl final {
       CheckCuda(status, "cudaMallocFromPoolAsync", context.location_);
     }
     if (pointer == nullptr) {
-      ReleaseBudget(requested_bytes);
-      CancelRetirementSlot();
       throw InternalError("cudaMallocFromPoolAsync returned a null pointer", context.location_);
     }
 
     allocation_count_.fetch_add(1, std::memory_order_relaxed);
+    Allocation allocation{
+        pointer,          bytes, AllocationKind::DEVICE_POOL, nullptr, std::move(budget), std::move(retirement_ticket),
+        context.location_};
     std::unique_ptr<Storage> storage;
     try {
-      storage = MakeUniqueStorage(Allocation{pointer, bytes, AllocationKind::DEVICE_POOL, nullptr, context.location_},
-                                  allocator, allocation_stream);
+      storage = MakeUniqueStorage(allocation, allocator, allocation_stream);
     } catch (...) {
-      Retire(Allocation{pointer, bytes, AllocationKind::DEVICE_POOL, nullptr, context.location_}, allocation_stream, {},
-             false);
+      Retire(std::move(allocation),
+             DeviceStreamUsageSnapshot{.allocation_stream_ = allocation_stream, .side_streams_ = {}}, false);
       throw;
     }
 
@@ -283,7 +227,7 @@ class DeviceAllocatorImpl final {
                                   std::shared_ptr<void> owner, std::source_location location)
       -> std::shared_ptr<Storage> {
     const std::shared_lock lifecycle_lock{lifecycle_latch_};
-    ValidateRunning(location);
+    lifecycle_.RequireRunning("device allocator", location);
     if (allocation_stream.GetDevice() != device_) {
       throw InvalidArgumentError(FormatWrongStreamDevice(device_, allocation_stream.GetDevice()), location);
     }
@@ -292,28 +236,19 @@ class DeviceAllocatorImpl final {
     const auto kind =
         ownership == ExternalOwnership::BORROWED ? AllocationKind::EXTERNAL_BORROWED : AllocationKind::EXTERNAL_OWNED;
     const auto needs_retirement = kind == AllocationKind::EXTERNAL_OWNED && capacity_bytes != 0;
-    if (needs_retirement) {
-      ReserveRetirementSlot(location);
-    }
+    auto retirement_ticket = needs_retirement ? retirements_.Reserve(location) : RetirementTicket{};
 
     auto stream_state = StreamAccess::GetState(allocation_stream);
     std::unique_ptr<Storage> storage;
-    try {
-      storage = MakeUniqueStorage(Allocation{pointer, capacity_bytes, kind, std::move(owner), location}, allocator,
-                                  stream_state);
-    } catch (...) {
-      if (needs_retirement) {
-        CancelRetirementSlot();
-      }
-      throw;
-    }
+    Allocation allocation{pointer, capacity_bytes, kind, std::move(owner), std::nullopt, std::move(retirement_ticket),
+                          location};
+    storage = MakeUniqueStorage(allocation, allocator, stream_state);
 
     outstanding_storage_count_.fetch_add(1, std::memory_order_relaxed);
     return std::shared_ptr<Storage>{std::move(storage)};
   }
 
-  void Retire(Allocation allocation, std::shared_ptr<StreamState> allocation_stream,
-              std::vector<std::shared_ptr<StreamState>> side_streams, bool counted_storage = true) noexcept {
+  void Retire(Allocation allocation, DeviceStreamUsageSnapshot usage, bool counted_storage = true) noexcept {
     const OutstandingStorageGuard outstanding_storage_guard{outstanding_storage_count_, counted_storage};
     const auto capacity_bytes = allocation.capacity_bytes_;
     const auto kind = allocation.kind_;
@@ -330,21 +265,21 @@ class DeviceAllocatorImpl final {
       retiring_bytes_.fetch_add(bytes, std::memory_order_relaxed);
     }
 
-    RetirementRecord record{std::move(allocation), std::move(allocation_stream), std::move(side_streams)};
+    DeviceRetirement record{std::move(allocation), std::move(usage)};
     const auto report_context = MakeContext(device_, record.allocation_.location_, record.allocation_stream_->GetId());
     try {
       record.completion_event_.emplace(event_pool_->Acquire(record.allocation_.location_));
     } catch (const Error &error) {
-      ReportError(error.GetCode(), error.GetMessage(), *error_sink_, report_context);
+      ReportErrorNoexcept(error.GetCode(), error.GetMessage(), *error_sink_, report_context);
       PoisonAndEnqueue(std::move(record));
       return;
     } catch (const std::exception &error) {
-      ReportError(ErrorCode::INTERNAL, error.what(), *error_sink_, report_context);
+      ReportErrorNoexcept(ErrorCode::INTERNAL, error.what(), *error_sink_, report_context);
       PoisonAndEnqueue(std::move(record));
       return;
     } catch (...) {
-      ReportError(ErrorCode::INTERNAL, "unknown failure while acquiring a retirement event", *error_sink_,
-                  report_context);
+      ReportErrorNoexcept(ErrorCode::INTERNAL, "unknown failure while acquiring a retirement event", *error_sink_,
+                          report_context);
       PoisonAndEnqueue(std::move(record));
       return;
     }
@@ -380,7 +315,7 @@ class DeviceAllocatorImpl final {
 
     if (kind == AllocationKind::DEVICE_POOL) {
       record.free_attempted_ = true;
-      const auto free_status = GetCudaApi().free_async_(record.allocation_.pointer_, target_stream->GetNative());
+      const auto free_status = pool_->FreeAsync(record.allocation_.pointer_, target_stream->GetNative());
       if (!TryCuda(free_status, "cudaFreeAsync", *error_sink_, target_context)) {
         record.completion_event_.reset();
         PoisonAndEnqueue(std::move(record));
@@ -407,7 +342,7 @@ class DeviceAllocatorImpl final {
 
   void SetPeerAccess(Device peer, bool enabled, std::source_location location) {
     const std::shared_lock lifecycle_lock{lifecycle_latch_};
-    ValidateRunning(location);
+    lifecycle_.RequireRunning("device allocator", location);
     if (peer == device_) {
       throw InvalidArgumentError("peer memory-pool access requires two distinct devices", location);
     }
@@ -427,64 +362,44 @@ class DeviceAllocatorImpl final {
       }
     }
 
-    const cudaMemAccessDesc descriptor{
-        .location =
-            {
-                .type = cudaMemLocationTypeDevice,
-                .id = peer.GetOrdinal(),
-            },
-        .flags = enabled ? cudaMemAccessFlagsProtReadWrite : cudaMemAccessFlagsProtNone,
-    };
-    DeviceGuard device_guard{device_, *error_sink_, location};
-    CheckCuda(GetCudaApi().set_memory_pool_access_(pool_, &descriptor, 1), "cudaMemPoolSetAccess", location);
+    pool_->SetPeerAccess(peer, enabled, location);
   }
 
   void TrimTo(size_t target_reserved_bytes, std::source_location location) {
     const std::shared_lock lifecycle_lock{lifecycle_latch_};
     ValidateUsable(location);
     PollRetirements();
-    DeviceGuard device_guard{device_, *error_sink_, location};
-    CheckCuda(GetCudaApi().trim_memory_pool_(pool_, target_reserved_bytes), "cudaMemPoolTrimTo", location);
+    pool_->TrimTo(target_reserved_bytes, location);
     trim_count_.fetch_add(1, std::memory_order_relaxed);
   }
 
   [[nodiscard]] auto GetStats(std::source_location location) const -> DeviceAllocatorStats {
     const std::shared_lock lifecycle_lock{lifecycle_latch_};
-    uint64_t used_bytes = 0;
-    uint64_t reserved_bytes = 0;
-    if (pool_ != nullptr) {
-      DeviceGuard device_guard{device_, *error_sink_, location};
-      CheckCuda(GetCudaApi().get_memory_pool_attribute_(pool_, cudaMemPoolAttrUsedMemCurrent, &used_bytes),
-                "cudaMemPoolGetAttribute (used current)", location);
-      CheckCuda(GetCudaApi().get_memory_pool_attribute_(pool_, cudaMemPoolAttrReservedMemCurrent, &reserved_bytes),
-                "cudaMemPoolGetAttribute (reserved current)", location);
-    }
+    const auto pool_stats = pool_ == nullptr ? CudaMemoryPoolStats{} : pool_->GetStats(location);
 
     return DeviceAllocatorStats{
         .logical_live_bytes_ = logical_live_bytes_.load(std::memory_order_relaxed),
         .retiring_bytes_ = retiring_bytes_.load(std::memory_order_relaxed),
-        .peak_physical_in_use_bytes_ = peak_physical_in_use_bytes_.load(std::memory_order_relaxed),
+        .peak_physical_in_use_bytes_ = budget_.GetPeakBytes(),
         .allocation_count_ = allocation_count_.load(std::memory_order_relaxed),
-        .retirement_count_ = retirement_count_.load(std::memory_order_relaxed),
+        .retirement_count_ = retirements_.GetTotalCount(),
         .retry_count_ = retry_count_.load(std::memory_order_relaxed),
         .oom_count_ = oom_count_.load(std::memory_order_relaxed),
         .trim_count_ = trim_count_.load(std::memory_order_relaxed),
-        .pending_retirement_count_ = pending_retirement_count_.load(std::memory_order_relaxed),
+        .pending_retirement_count_ = retirements_.GetPendingCount(),
         .quarantined_retirement_count_ = quarantined_retirement_count_.load(std::memory_order_relaxed),
         .quarantined_bytes_ = quarantined_bytes_.load(std::memory_order_relaxed),
-        .pool_used_bytes_ = used_bytes,
-        .pool_reserved_bytes_ = reserved_bytes,
+        .pool_used_bytes_ = pool_stats.used_bytes_,
+        .pool_reserved_bytes_ = pool_stats.reserved_bytes_,
         .outstanding_storage_count_ = outstanding_storage_count_.load(std::memory_order_relaxed),
     };
   }
 
   void Shutdown(std::source_location location) {
     const std::scoped_lock shutdown_lock{shutdown_latch_};
-    const auto current_status = status_.load(std::memory_order_acquire);
-    if (current_status == AllocatorStatus::CLOSED) {
+    if (!lifecycle_.BeginClosing()) {
       return;
     }
-    status_.store(AllocatorStatus::CLOSING, std::memory_order_release);
 
     {
       const std::unique_lock lifecycle_lock{lifecycle_latch_};
@@ -501,26 +416,28 @@ class DeviceAllocatorImpl final {
     DeviceGuard device_guard{device_, *error_sink_, location};
     CheckCuda(GetCudaApi().synchronize_stream_(reclaim_stream_->GetNative()), "cudaStreamSynchronize (reclaim)",
               location);
-    CheckCuda(GetCudaApi().trim_memory_pool_(pool_, 0), "cudaMemPoolTrimTo", location);
-    CheckCuda(GetCudaApi().destroy_memory_pool_(pool_), "cudaMemPoolDestroy", location);
-    pool_ = nullptr;
+    pool_->TrimTo(0, location);
+    pool_->Close(location);
+    pool_.reset();
     reclaim_stream_.reset();
-    status_.store(AllocatorStatus::CLOSED, std::memory_order_release);
+    lifecycle_.MarkClosed();
   }
 
   [[nodiscard]] auto TryCloseWithoutSynchronization() noexcept -> bool {
     StopWorkerNoexcept();
-    if (outstanding_storage_count_.load(std::memory_order_acquire) != 0 ||
-        pending_retirement_count_.load(std::memory_order_acquire) != 0) {
-      ReportError(ErrorCode::INTERNAL,
-                  "device allocator was destroyed without Shutdown while Storage or retirement records remain",
-                  *error_sink_, MakeContext(device_, location_));
+    if (outstanding_storage_count_.load(std::memory_order_acquire) != 0 || retirements_.GetPendingCount() != 0) {
+      ReportErrorNoexcept(ErrorCode::INTERNAL,
+                          "device allocator was destroyed without Shutdown while Storage or retirement records remain",
+                          *error_sink_, MakeContext(device_, location_));
       return false;
     }
-    if (pool_ != nullptr && !TryDestroyPool()) {
-      return false;
+    if (pool_ != nullptr) {
+      if (!pool_->TryCloseNoexcept()) {
+        return false;
+      }
+      pool_.reset();
     }
-    status_.store(AllocatorStatus::CLOSED, std::memory_order_release);
+    lifecycle_.MarkClosed();
     return true;
   }
 
@@ -535,59 +452,41 @@ class DeviceAllocatorImpl final {
       return;
     }
 
-    while (true) {
-      std::optional<RetirementRecord> completed;
-      {
-        std::scoped_lock lock{retirement_latch_};
-        for (auto iterator = retirements_.begin(); iterator != retirements_.end(); ++iterator) {
-          if (iterator->poisoned_ || !iterator->completion_event_.has_value()) {
-            continue;
-          }
-
-          const auto status = GetCudaApi().query_event_(iterator->completion_event_->GetNative());
-          if (status == cudaErrorNotReady) {
-            continue;
-          }
-          if (status != cudaSuccess) {
-            const auto context =
-                MakeContext(device_, iterator->allocation_.location_, iterator->allocation_stream_->GetId());
-            TryCuda(status, "cudaEventQuery", "allocation retirement completion", *error_sink_, context);
-            iterator->completion_event_->Discard();
-            iterator->completion_event_.reset();
-            Quarantine(*iterator);
-            continue;
-          }
-
-          completed.emplace(std::move(*iterator));
-          if (iterator != retirements_.end() - 1) {
-            *iterator = std::move(retirements_.back());
-          }
-          retirements_.pop_back();
-          pending_retirement_count_.fetch_sub(1, std::memory_order_relaxed);
-          break;
-        }
-      }
-
-      if (!completed.has_value()) {
+    auto remaining = retirements_.GetAvailableCount();
+    while (remaining > 0) {
+      remaining--;
+      auto checkout = retirements_.CheckoutFront();
+      if (!checkout.has_value()) {
         return;
       }
-      Finalize(std::move(*completed));
+      auto &record = checkout->Get();
+      if (record.poisoned_ || !record.completion_event_.has_value()) {
+        continue;
+      }
+      const auto status = GetCudaApi().query_event_(record.completion_event_->GetNative());
+      if (status == cudaErrorNotReady) {
+        continue;
+      }
+      if (status != cudaSuccess) {
+        const auto context = MakeContext(device_, record.allocation_.location_, record.allocation_stream_->GetId());
+        TryCuda(status, "cudaEventQuery", "allocation retirement completion", *error_sink_, context);
+        record.completion_event_->Discard();
+        record.completion_event_.reset();
+        Quarantine(record);
+        continue;
+      }
+      Finalize(record);
+      checkout->Complete();
     }
   }
-  [[nodiscard]] auto MakeUniqueStorage(Allocation allocation, const std::shared_ptr<DeviceAllocator> &allocator,
+  [[nodiscard]] auto MakeUniqueStorage(Allocation &allocation, const std::shared_ptr<DeviceAllocator> &allocator,
                                        const std::shared_ptr<StreamState> &allocation_stream)
       -> std::unique_ptr<Storage> {
     return std::unique_ptr<Storage>{new Storage(std::move(allocation), device_, allocator, allocation_stream)};
   }
 
-  void ValidateRunning(std::source_location location) const {
-    if (status_.load(std::memory_order_acquire) != AllocatorStatus::RUNNING) {
-      throw InvalidArgumentError("device allocator is not accepting new allocations", location);
-    }
-  }
-
   void ValidateUsable(std::source_location location) const {
-    if (status_.load(std::memory_order_acquire) == AllocatorStatus::CLOSED || pool_ == nullptr) {
+    if (lifecycle_.GetStatus() == AllocatorStatus::CLOSED || pool_ == nullptr) {
       throw InvalidArgumentError("device allocator is closed", location);
     }
   }
@@ -623,48 +522,13 @@ class DeviceAllocatorImpl final {
     }
   }
 
-  void ReserveRetirementSlot(std::source_location location) {
-    // Storage destruction is noexcept. Reserve queue capacity before exposing a Storage so its eventual retirement
-    // can enqueue without allocating or throwing.
-    std::scoped_lock lock{retirement_latch_};
-    const auto required =
-        CheckedAdd(retirements_.size(),
-                   CheckedAdd(reserved_retirement_slots_, size_t{1}, "retirement reservation count", location),
-                   "retirement queue capacity", location);
-    if (retirements_.capacity() < required) {
-      auto new_capacity = std::max(required, INITIAL_RETIREMENT_CAPACITY);
-      if (retirements_.capacity() != 0) {
-        const auto doubled = CheckedMultiply(retirements_.capacity(), size_t{2}, "retirement queue growth", location);
-        new_capacity = std::max(new_capacity, doubled);
-      }
-      retirements_.reserve(new_capacity);
-    }
-    reserved_retirement_slots_++;
-  }
-
-  void CancelRetirementSlot() noexcept {
-    std::scoped_lock lock{retirement_latch_};
-    if (reserved_retirement_slots_ == 0) {
-      std::terminate();
-    }
-    reserved_retirement_slots_--;
-  }
-
-  void Enqueue(RetirementRecord record) noexcept {
-    {
-      std::scoped_lock lock{retirement_latch_};
-      if (reserved_retirement_slots_ == 0 || retirements_.size() == retirements_.capacity()) {
-        std::terminate();
-      }
-      reserved_retirement_slots_--;
-      retirements_.push_back(std::move(record));
-      pending_retirement_count_.fetch_add(1, std::memory_order_relaxed);
-      retirement_count_.fetch_add(1, std::memory_order_relaxed);
-    }
+  void Enqueue(DeviceRetirement record) noexcept {
+    auto ticket = std::move(record.retirement_ticket_);
+    retirements_.Enqueue(std::move(ticket), std::move(record));
     maintenance_condition_.notify_one();
   }
 
-  void Quarantine(RetirementRecord &record) noexcept {
+  void Quarantine(DeviceRetirement &record) noexcept {
     // An ambiguous native submission cannot be retried safely. Keep the allocation and its stream owners reachable;
     // explicit Shutdown later synchronizes the usage streams and completes the retirement conservatively.
     if (!record.poisoned_) {
@@ -672,51 +536,35 @@ class DeviceAllocatorImpl final {
       quarantined_retirement_count_.fetch_add(1, std::memory_order_relaxed);
       quarantined_bytes_.fetch_add(record.allocation_.capacity_bytes_, std::memory_order_relaxed);
     }
-    status_.store(AllocatorStatus::FAILED, std::memory_order_release);
+    lifecycle_.MarkFailed();
   }
 
-  void PoisonAndEnqueue(RetirementRecord record) noexcept {
+  void PoisonAndEnqueue(DeviceRetirement record) noexcept {
     Quarantine(record);
     Enqueue(std::move(record));
   }
 
-  void ReserveBudget(uint64_t bytes, const AllocationContext &context) {
-    auto current = physical_in_use_bytes_.load(std::memory_order_relaxed);
-    while (true) {
-      const auto maximum = options_.max_live_bytes_;
-      if (bytes > std::numeric_limits<uint64_t>::max() - current) {
-        throw OverflowError("device allocator physical byte count overflow", context.location_);
-      }
-      if (maximum != 0 && (current > maximum || bytes > maximum - current)) {
-        oom_count_.fetch_add(1, std::memory_order_relaxed);
-        std::string message{"device allocation of "};
-        message.append(std::to_string(bytes));
-        message.append(" bytes for ");
-        message.append(context.operation_);
-        message.append(" exceeds the configured ");
-        message.append(std::to_string(maximum));
-        message.append("-byte live-memory budget");
-        throw OutOfMemoryError(std::move(message), context.location_);
-      }
-      if (physical_in_use_bytes_.compare_exchange_weak(current, current + bytes, std::memory_order_acq_rel,
-                                                       std::memory_order_relaxed)) {
-        UpdatePeak(current + bytes);
-        return;
-      }
+  [[nodiscard]] auto ReserveBudget(uint64_t bytes, const AllocationContext &context) -> AllocationBudget::Reservation {
+    auto result = budget_.Reserve(bytes);
+    if (result.failure_ == BudgetFailure::OVERFLOW) {
+      throw OverflowError("device allocator physical byte count overflow", context.location_);
     }
-  }
-
-  void ReleaseBudget(uint64_t bytes) noexcept { physical_in_use_bytes_.fetch_sub(bytes, std::memory_order_relaxed); }
-
-  void UpdatePeak(uint64_t value) noexcept {
-    auto peak = peak_physical_in_use_bytes_.load(std::memory_order_relaxed);
-    while (value > peak && !peak_physical_in_use_bytes_.compare_exchange_weak(peak, value, std::memory_order_relaxed,
-                                                                              std::memory_order_relaxed)) {
+    if (result.failure_ == BudgetFailure::LIMIT) {
+      oom_count_.fetch_add(1, std::memory_order_relaxed);
+      std::string message{"device allocation of "};
+      message.append(std::to_string(bytes));
+      message.append(" bytes for ");
+      message.append(context.operation_);
+      message.append(" exceeds the configured ");
+      message.append(std::to_string(budget_.GetMaximumBytes()));
+      message.append("-byte live-memory budget");
+      throw OutOfMemoryError(std::move(message), context.location_);
     }
+    return std::move(*result.reservation_);
   }
 
   [[nodiscard]] auto GetOomTrimTarget(uint64_t requested_bytes) const noexcept -> uint64_t {
-    const auto physical = physical_in_use_bytes_.load(std::memory_order_relaxed);
+    const auto physical = budget_.GetCurrentBytes();
     return physical >= requested_bytes ? physical - requested_bytes : 0;
   }
 
@@ -724,14 +572,9 @@ class DeviceAllocatorImpl final {
       -> std::string {
     size_t free_bytes = 0;
     size_t total_bytes = 0;
-    uint64_t used_bytes = 0;
-    uint64_t reserved_bytes = 0;
     const auto report_context = MakeContext(device_, context.location_);
     TryCuda(GetCudaApi().get_memory_info_(&free_bytes, &total_bytes), "cudaMemGetInfo", *error_sink_, report_context);
-    TryCuda(GetCudaApi().get_memory_pool_attribute_(pool_, cudaMemPoolAttrUsedMemCurrent, &used_bytes),
-            "cudaMemPoolGetAttribute", "used current", *error_sink_, report_context);
-    TryCuda(GetCudaApi().get_memory_pool_attribute_(pool_, cudaMemPoolAttrReservedMemCurrent, &reserved_bytes),
-            "cudaMemPoolGetAttribute", "reserved current", *error_sink_, report_context);
+    const auto pool_stats = pool_->TryGetStats(report_context);
 
     std::string message{"CUDA device allocation failed after one retry: requested="};
     message.append(std::to_string(bytes));
@@ -754,13 +597,13 @@ class DeviceAllocatorImpl final {
     message.append(", retiring=");
     message.append(std::to_string(retiring_bytes_.load(std::memory_order_relaxed)));
     message.append(", physical_in_use=");
-    message.append(std::to_string(physical_in_use_bytes_.load(std::memory_order_relaxed)));
+    message.append(std::to_string(budget_.GetCurrentBytes()));
     message.append(", peak_physical_in_use=");
-    message.append(std::to_string(peak_physical_in_use_bytes_.load(std::memory_order_relaxed)));
+    message.append(std::to_string(budget_.GetPeakBytes()));
     message.append(", allocations=");
     message.append(std::to_string(allocation_count_.load(std::memory_order_relaxed)));
     message.append(", retirements=");
-    message.append(std::to_string(retirement_count_.load(std::memory_order_relaxed)));
+    message.append(std::to_string(retirements_.GetTotalCount()));
     message.append(", retries=");
     message.append(std::to_string(retry_count_.load(std::memory_order_relaxed)));
     message.append(", ooms=");
@@ -768,11 +611,11 @@ class DeviceAllocatorImpl final {
     message.append(", trims=");
     message.append(std::to_string(trim_count_.load(std::memory_order_relaxed)));
     message.append(", pending_retirements=");
-    message.append(std::to_string(pending_retirement_count_.load(std::memory_order_relaxed)));
+    message.append(std::to_string(retirements_.GetPendingCount()));
     message.append(", pool_used=");
-    message.append(std::to_string(used_bytes));
+    message.append(std::to_string(pool_stats.used_bytes_));
     message.append(", pool_reserved=");
-    message.append(std::to_string(reserved_bytes));
+    message.append(std::to_string(pool_stats.reserved_bytes_));
     message.append(", release_threshold=");
     message.append(std::to_string(options_.release_threshold_bytes_));
     message.append(", max_live=");
@@ -798,8 +641,8 @@ class DeviceAllocatorImpl final {
         return false;
       }
       if (event == nullptr) {
-        ReportError(ErrorCode::INTERNAL, "cudaEventCreateWithFlags returned a null dependency event", *error_sink_,
-                    source_context);
+        ReportErrorNoexcept(ErrorCode::INTERNAL, "cudaEventCreateWithFlags returned a null dependency event",
+                            *error_sink_, source_context);
         return false;
       }
       if (!TryCuda(GetCudaApi().record_event_(event, stream->GetNative()), "cudaEventRecord",
@@ -833,37 +676,31 @@ class DeviceAllocatorImpl final {
     return waited;
   }
 
-  void Finalize(RetirementRecord record) noexcept {
+  void Finalize(const DeviceRetirement &record) noexcept {
     if (record.allocation_.kind_ == AllocationKind::DEVICE_POOL) {
       const auto bytes = static_cast<uint64_t>(record.allocation_.capacity_bytes_);
       retiring_bytes_.fetch_sub(bytes, std::memory_order_relaxed);
-      ReleaseBudget(bytes);
     }
   }
 
   void DrainRetirements(std::source_location location) {
     while (true) {
-      std::optional<RetirementRecord> record;
-      {
-        std::unique_lock lock{retirement_latch_};
-        if (retirements_.empty()) {
-          return;
-        }
-        SynchronizeRetirement(retirements_.back(), location);
-        record.emplace(std::move(retirements_.back()));
-        retirements_.pop_back();
-        pending_retirement_count_.fetch_sub(1, std::memory_order_relaxed);
-        if (record->poisoned_) {
-          quarantined_retirement_count_.fetch_sub(1, std::memory_order_relaxed);
-          quarantined_bytes_.fetch_sub(record->allocation_.capacity_bytes_, std::memory_order_relaxed);
-        }
+      auto checkout = retirements_.CheckoutFront();
+      if (!checkout.has_value()) {
+        return;
       }
-
-      Finalize(std::move(*record));
+      auto &record = checkout->Get();
+      SynchronizeRetirement(record, location);
+      if (record.poisoned_) {
+        quarantined_retirement_count_.fetch_sub(1, std::memory_order_relaxed);
+        quarantined_bytes_.fetch_sub(record.allocation_.capacity_bytes_, std::memory_order_relaxed);
+      }
+      Finalize(record);
+      checkout->Complete();
     }
   }
 
-  void SynchronizeRetirement(RetirementRecord &record, std::source_location location) {
+  void SynchronizeRetirement(DeviceRetirement &record, std::source_location location) {
     if (!record.poisoned_ && record.completion_event_.has_value()) {
       DeviceGuard device_guard{device_, *error_sink_, location};
       CheckCuda(GetCudaApi().synchronize_event_(record.completion_event_->GetNative()), "cudaEventSynchronize",
@@ -907,16 +744,15 @@ class DeviceAllocatorImpl final {
   void MaintenanceLoop(const std::stop_token &stop_token) noexcept {
     std::unique_lock lock{maintenance_latch_};
     while (!stop_token.stop_requested()) {
-      if (pending_retirement_count_.load(std::memory_order_relaxed) == 0) {
-        maintenance_condition_.wait(lock, stop_token,
-                                    [this] { return pending_retirement_count_.load(std::memory_order_relaxed) != 0; });
+      if (retirements_.GetPendingCount() == 0) {
+        maintenance_condition_.wait(lock, stop_token, [this] { return retirements_.GetPendingCount() != 0; });
       } else {
         maintenance_condition_.wait_for(lock, stop_token, MAINTENANCE_INTERVAL, [] { return false; });
       }
       if (stop_token.stop_requested()) {
         return;
       }
-      if (status_.load(std::memory_order_acquire) == AllocatorStatus::FAILED) {
+      if (lifecycle_.GetStatus() == AllocatorStatus::FAILED) {
         return;
       }
       lock.unlock();
@@ -938,55 +774,36 @@ class DeviceAllocatorImpl final {
     try {
       StopWorker();
     } catch (const std::exception &error) {
-      ReportError(ErrorCode::INTERNAL, error.what(), *error_sink_, MakeContext(device_, location_));
+      ReportErrorNoexcept(ErrorCode::INTERNAL, error.what(), *error_sink_, MakeContext(device_, location_));
     } catch (...) {
-      ReportError(ErrorCode::INTERNAL, "unknown failure while stopping allocator maintenance worker", *error_sink_,
-                  MakeContext(device_, location_));
+      ReportErrorNoexcept(ErrorCode::INTERNAL, "unknown failure while stopping allocator maintenance worker",
+                          *error_sink_, MakeContext(device_, location_));
     }
-  }
-
-  auto TryDestroyPool() noexcept -> bool {
-    const auto context = MakeContext(device_, location_);
-    CleanupDeviceGuard device_guard{device_, *error_sink_, context, "destroy device memory pool",
-                                    "restore after device memory pool destruction"};
-    if (!device_guard) {
-      return false;
-    }
-    if (!TryCuda(GetCudaApi().destroy_memory_pool_(pool_), "cudaMemPoolDestroy", *error_sink_, context)) {
-      return false;
-    }
-    pool_ = nullptr;
-    return true;
   }
 
   Device device_;
   std::shared_ptr<ErrorSink> error_sink_;
   std::shared_ptr<EventPool> event_pool_;
   DeviceAllocatorOptions options_;
-  cudaMemPool_t pool_;
+  std::unique_ptr<CudaMemoryPool> pool_;
   std::shared_ptr<StreamState> reclaim_stream_;
   std::source_location location_;
+  AllocationBudget budget_;
 
   mutable std::shared_mutex lifecycle_latch_;
   std::mutex shutdown_latch_;
-  std::atomic<AllocatorStatus> status_{AllocatorStatus::RUNNING};
+  AllocatorLifecycle lifecycle_;
   std::atomic<uint64_t> logical_live_bytes_{0};
   std::atomic<uint64_t> retiring_bytes_{0};
-  std::atomic<uint64_t> physical_in_use_bytes_{0};
-  std::atomic<uint64_t> peak_physical_in_use_bytes_{0};
   std::atomic<uint64_t> allocation_count_{0};
-  std::atomic<uint64_t> retirement_count_{0};
   std::atomic<uint64_t> retry_count_{0};
   std::atomic<uint64_t> oom_count_{0};
   std::atomic<uint64_t> trim_count_{0};
-  std::atomic<uint64_t> pending_retirement_count_{0};
   std::atomic<uint64_t> quarantined_retirement_count_{0};
   std::atomic<uint64_t> quarantined_bytes_{0};
   std::atomic<uint64_t> outstanding_storage_count_{0};
 
-  mutable std::mutex retirement_latch_;
-  std::vector<RetirementRecord> retirements_;
-  size_t reserved_retirement_slots_{0};
+  RetirementQueue<DeviceRetirement> retirements_;
 
   std::mutex maintenance_latch_;
   std::condition_variable_any maintenance_condition_;
@@ -1002,44 +819,12 @@ auto DeviceAllocator::Create(Device device, const std::shared_ptr<ErrorSink> &er
   const auto reclaim_stream = StreamAccess::CreateOwned(device, 0, error_sink, location);
   const auto reclaim_state = StreamAccess::GetState(reclaim_stream);
 
-  cudaMemPool_t pool = nullptr;
-  DeviceGuard device_guard{device, *error_sink, location};
-  cudaMemPoolProps properties{};
-  properties.allocType = cudaMemAllocationTypePinned;
-  properties.handleTypes = cudaMemHandleTypeNone;
-  properties.location.type = cudaMemLocationTypeDevice;
-  properties.location.id = device.GetOrdinal();
-  CheckCuda(GetCudaApi().create_memory_pool_(&pool, &properties), "cudaMemPoolCreate", location);
-  if (pool == nullptr) {
-    throw InternalError("cudaMemPoolCreate returned a null pool", location);
-  }
-
-  try {
-    auto threshold = options.release_threshold_bytes_;
-    int enabled = 1;
-    CheckCuda(GetCudaApi().set_memory_pool_attribute_(pool, cudaMemPoolAttrReleaseThreshold, &threshold),
-              "cudaMemPoolSetAttribute (release threshold)", location);
-    CheckCuda(GetCudaApi().set_memory_pool_attribute_(pool, cudaMemPoolReuseFollowEventDependencies, &enabled),
-              "cudaMemPoolSetAttribute (follow event dependencies)", location);
-    CheckCuda(GetCudaApi().set_memory_pool_attribute_(pool, cudaMemPoolReuseAllowOpportunistic, &enabled),
-              "cudaMemPoolSetAttribute (allow opportunistic reuse)", location);
-    CheckCuda(GetCudaApi().set_memory_pool_attribute_(pool, cudaMemPoolReuseAllowInternalDependencies, &enabled),
-              "cudaMemPoolSetAttribute (allow internal dependencies)", location);
-
-    auto impl =
-        std::make_unique<DeviceAllocatorImpl>(device, error_sink, event_pool, options, pool, reclaim_state, location);
-    pool = nullptr;
-    auto allocator = std::shared_ptr<DeviceAllocator>{new DeviceAllocator(std::move(impl))};
-    allocator->impl_->StartWorker();
-    return allocator;
-  } catch (...) {
-    const auto context = MakeContext(device, location);
-    if (pool != nullptr) {
-      TryCuda(GetCudaApi().destroy_memory_pool_(pool), "cudaMemPoolDestroy", "allocator construction rollback",
-              *error_sink, context);
-    }
-    throw;
-  }
+  auto pool = CudaMemoryPool::Create(device, error_sink, options.release_threshold_bytes_, location);
+  auto impl = std::make_unique<DeviceAllocatorImpl>(device, error_sink, event_pool, options, std::move(pool),
+                                                    reclaim_state, location);
+  auto allocator = std::shared_ptr<DeviceAllocator>{new DeviceAllocator(std::move(impl))};
+  allocator->impl_->StartWorker();
+  return allocator;
 }
 
 DeviceAllocator::DeviceAllocator(std::unique_ptr<DeviceAllocatorImpl> impl) noexcept : impl_(std::move(impl)) {}
@@ -1092,9 +877,8 @@ void DeviceAllocator::Shutdown(std::source_location location) { impl_->Shutdown(
 
 auto DeviceAllocator::GetDevice() const noexcept -> Device { return impl_->GetDevice(); }
 
-void DeviceAllocator::Retire(Allocation allocation, std::shared_ptr<StreamState> allocation_stream,
-                             std::vector<std::shared_ptr<StreamState>> side_streams) noexcept {
-  impl_->Retire(std::move(allocation), std::move(allocation_stream), std::move(side_streams));
+void DeviceAllocator::Retire(Allocation allocation, DeviceStreamUsageSnapshot usage) noexcept {
+  impl_->Retire(std::move(allocation), std::move(usage));
 }
 
 }  // namespace ttl::internal

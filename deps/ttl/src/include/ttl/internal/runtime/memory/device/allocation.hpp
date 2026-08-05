@@ -3,8 +3,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <source_location>
 #include <utility>
+
+#include "ttl/internal/runtime/memory/allocation_budget.hpp"
+#include "ttl/internal/runtime/memory/retirement_ticket.hpp"
 
 namespace ttl::internal {
 
@@ -28,11 +32,14 @@ enum class ExternalOwnership : uint8_t {
 class Allocation final {
  public:
   Allocation(void *pointer, size_t capacity_bytes, AllocationKind kind, std::shared_ptr<void> external_owner,
+             std::optional<AllocationBudget::Reservation> budget, RetirementTicket retirement_ticket,
              std::source_location location) noexcept
       : pointer_(pointer),
         capacity_bytes_(capacity_bytes),
         kind_(kind),
         external_owner_(std::move(external_owner)),
+        budget_(std::move(budget)),
+        retirement_ticket_(std::move(retirement_ticket)),
         location_(location) {}
 
   Allocation(const Allocation &) = delete;
@@ -44,6 +51,8 @@ class Allocation final {
   size_t capacity_bytes_;
   AllocationKind kind_;
   std::shared_ptr<void> external_owner_;
+  std::optional<AllocationBudget::Reservation> budget_;
+  RetirementTicket retirement_ticket_;
   std::source_location location_;
 };
 

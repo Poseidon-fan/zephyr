@@ -10,7 +10,7 @@
 #include <nccl.h>
 
 #include "ttl/common/device.hpp"
-#include "ttl/internal/runtime/memory/scratch_arena.hpp"
+#include "ttl/internal/runtime/memory/device/scratch_arena.hpp"
 #include "ttl/tensor/dtype.hpp"
 #include "ttl/tensor/tensor.hpp"
 

@@ -4,8 +4,8 @@
 #include <memory>
 
 #include "ttl/common/device.hpp"
-#include "ttl/internal/runtime/memory/allocation.hpp"
-#include "ttl/internal/runtime/memory/stream_usage.hpp"
+#include "ttl/internal/runtime/memory/device/allocation.hpp"
+#include "ttl/internal/runtime/memory/device/stream_usage.hpp"
 #include "ttl/runtime/stream.hpp"
 
 namespace ttl::internal {
@@ -39,12 +39,12 @@ class Storage final {
   friend class TensorFactory;
 
   Storage(Allocation allocation, Device device, std::shared_ptr<DeviceAllocator> allocator,
-          std::shared_ptr<StreamState> allocation_stream);
+          std::shared_ptr<StreamState> allocation_stream) noexcept;
 
   Allocation allocation_;
   Device device_;
   std::shared_ptr<DeviceAllocator> allocator_;
-  StreamUsage usage_;
+  DeviceStreamUsage usage_;
 };
 
 }  // namespace ttl::internal
