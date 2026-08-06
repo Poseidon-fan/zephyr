@@ -9,8 +9,6 @@
 #include <type_traits>
 #include <vector>
 
-#include "ttl/internal/runtime/memory/device/retirement.hpp"
-#include "ttl/internal/runtime/memory/pinned/retirement.hpp"
 #include "ttl/internal/runtime/memory/retirement_ticket.hpp"
 
 namespace ttl::internal {
@@ -75,8 +73,5 @@ class RetirementQueue final {
   std::atomic<uint64_t> pending_count_{0};
   std::atomic<uint64_t> total_count_{0};
 };
-
-extern template class RetirementQueue<DeviceRetirement>;
-extern template class RetirementQueue<PinnedRetirement>;
 
 }  // namespace ttl::internal

@@ -8,6 +8,8 @@
 #include <utility>
 
 #include "ttl/internal/common/checked_math.hpp"
+#include "ttl/internal/runtime/memory/device/retirement.hpp"
+#include "ttl/internal/runtime/memory/pinned/retirement.hpp"
 #include "ttl/internal/runtime/memory/retirement_ticket.hpp"
 
 namespace ttl::internal {
