@@ -99,7 +99,7 @@ void SubmissionScope::RetainCommunicator(const std::shared_ptr<CommunicatorGroup
 void SubmissionScope::CheckLaunch() const {
   const auto status = GetCudaApi().get_last_error_();
   if (status != cudaSuccess) {
-    ContextAccess::GetImpl(context_, location_)
+    ContextAccess::GetState(context_, location_)
         .status_.store(ExecutionContextStatus::FAILED, std::memory_order_release);
     if (capture_state_ != nullptr) {
       capture_state_->Invalidate();
@@ -113,8 +113,8 @@ void SubmissionScope::FailAfterPartialSubmissionNoexcept() noexcept {
     capture_state_->Invalidate();
   }
   try {
-    auto &impl = ContextAccess::GetImpl(context_, location_);
-    impl.status_.store(ExecutionContextStatus::FAILED, std::memory_order_release);
+    auto &state = ContextAccess::GetState(context_, location_);
+    state.status_.store(ExecutionContextStatus::FAILED, std::memory_order_release);
     const auto status = GetCudaApi().get_last_error_();
     if (status == cudaSuccess) {
       return;

@@ -16,7 +16,7 @@
 
 namespace ttl::internal {
 
-class ExecutionContextImpl;
+class ExecutionContextState;
 class ExecutionLane;
 
 /**
@@ -76,7 +76,7 @@ class ParallelOpScope final {
   [[nodiscard]] auto GetAuxiliaryLane(size_t index) const -> ExecutionLane &;
 
   OpGuard &guard_;
-  ExecutionContextImpl &impl_;
+  ExecutionContextState &state_;
   size_t auxiliary_stream_count_;
   std::source_location location_;
   Status status_{Status::ACTIVE};

@@ -65,20 +65,21 @@ class ExecutionContextRegistration final {
   std::shared_ptr<RuntimeState> runtime_state_;
 };
 
-class ExecutionContextImpl final {
+/** Shared lifetime state retained by execution contexts and active CUDA graph captures. */
+class ExecutionContextState final {
  public:
-  ExecutionContextImpl(std::shared_ptr<RuntimeState> runtime_state, ExecutionContextRegistration registration,
-                       std::shared_ptr<DeviceContext> device_context, ExecutionLane primary_lane,
-                       std::vector<ExecutionLane> auxiliary_lanes, std::optional<PooledEvent> fork_event,
-                       std::vector<PooledEvent> join_events,
-                       std::unique_ptr<DeviceErrorState> device_error_state) noexcept;
+  ExecutionContextState(std::shared_ptr<RuntimeState> runtime_state, ExecutionContextRegistration registration,
+                        std::shared_ptr<DeviceContext> device_context, ExecutionLane primary_lane,
+                        std::vector<ExecutionLane> auxiliary_lanes, std::optional<PooledEvent> fork_event,
+                        std::vector<PooledEvent> join_events,
+                        std::unique_ptr<DeviceErrorState> device_error_state) noexcept;
 
-  ExecutionContextImpl(const ExecutionContextImpl &) = delete;
-  auto operator=(const ExecutionContextImpl &) -> ExecutionContextImpl & = delete;
-  ExecutionContextImpl(ExecutionContextImpl &&) = delete;
-  auto operator=(ExecutionContextImpl &&) -> ExecutionContextImpl & = delete;
+  ExecutionContextState(const ExecutionContextState &) = delete;
+  auto operator=(const ExecutionContextState &) -> ExecutionContextState & = delete;
+  ExecutionContextState(ExecutionContextState &&) = delete;
+  auto operator=(ExecutionContextState &&) -> ExecutionContextState & = delete;
 
-  ~ExecutionContextImpl() noexcept;
+  ~ExecutionContextState() noexcept;
 
   std::shared_ptr<RuntimeState> runtime_state_;
   ExecutionContextRegistration registration_;
@@ -106,7 +107,7 @@ class ContextUseGuard final {
   ~ContextUseGuard() noexcept;
 
  private:
-  ExecutionContextImpl &ctx_impl_;
+  ExecutionContextState &ctx_state_;
 };
 
 /** Private construction and resource gateway for Runtime and operator implementations. */
@@ -117,9 +118,10 @@ class ContextAccess final {
                                    std::shared_ptr<DeviceContext> device_context, Stream stream,
                                    const ExecutionContextOptions &options, std::source_location location)
       -> ExecutionContext;
-  [[nodiscard]] static auto GetImpl(ExecutionContext &context, std::source_location location) -> ExecutionContextImpl &;
-  [[nodiscard]] static auto GetImplState(ExecutionContext &context, std::source_location location)
-      -> const std::shared_ptr<ExecutionContextImpl> &;
+  [[nodiscard]] static auto GetState(ExecutionContext &context, std::source_location location)
+      -> ExecutionContextState &;
+  [[nodiscard]] static auto GetStateOwner(ExecutionContext &context, std::source_location location)
+      -> const std::shared_ptr<ExecutionContextState> &;
   [[nodiscard]] static auto GetRuntimeState(ExecutionContext &context, std::source_location location)
       -> const std::shared_ptr<RuntimeState> &;
   [[nodiscard]] static auto GetDeviceContext(ExecutionContext &context, std::source_location location)

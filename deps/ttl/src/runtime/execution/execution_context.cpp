@@ -54,12 +54,13 @@ void ExecutionContextRegistration::Commit(std::source_location location) {
   runtime_state_->CommitExecutionContextCreation(location);
 }
 
-ExecutionContextImpl::ExecutionContextImpl(std::shared_ptr<RuntimeState> runtime_state,
-                                           ExecutionContextRegistration registration,
-                                           std::shared_ptr<DeviceContext> device_context, ExecutionLane primary_lane,
-                                           std::vector<ExecutionLane> auxiliary_lanes,
-                                           std::optional<PooledEvent> fork_event, std::vector<PooledEvent> join_events,
-                                           std::unique_ptr<DeviceErrorState> device_error_state) noexcept
+ExecutionContextState::ExecutionContextState(std::shared_ptr<RuntimeState> runtime_state,
+                                             ExecutionContextRegistration registration,
+                                             std::shared_ptr<DeviceContext> device_context, ExecutionLane primary_lane,
+                                             std::vector<ExecutionLane> auxiliary_lanes,
+                                             std::optional<PooledEvent> fork_event,
+                                             std::vector<PooledEvent> join_events,
+                                             std::unique_ptr<DeviceErrorState> device_error_state) noexcept
     : runtime_state_(std::move(runtime_state)),
       registration_(std::move(registration)),
       device_context_(std::move(device_context)),
@@ -69,7 +70,7 @@ ExecutionContextImpl::ExecutionContextImpl(std::shared_ptr<RuntimeState> runtime
       join_events_(std::move(join_events)),
       device_error_state_(std::move(device_error_state)) {}
 
-ExecutionContextImpl::~ExecutionContextImpl() noexcept {
+ExecutionContextState::~ExecutionContextState() noexcept {
   // Context-owned dependency events may still be referenced by an asynchronous stream operation. Do not return
   // these handles to the shared cache during teardown; Discard destroys the handle without making it available for
   // another recording sequence.
@@ -82,27 +83,27 @@ ExecutionContextImpl::~ExecutionContextImpl() noexcept {
 }
 
 ContextUseGuard::ContextUseGuard(ExecutionContext &context, ContextUseMode mode, std::source_location location)
-    : ctx_impl_(ContextAccess::GetImpl(context, location)) {
-  const auto status = ctx_impl_.runtime_state_->GetStatus();
+    : ctx_state_(ContextAccess::GetState(context, location)) {
+  const auto status = ctx_state_.runtime_state_->GetStatus();
   const auto is_cleanup = mode == ContextUseMode::CLEANUP;
   const auto is_available = status == RuntimeStatus::RUNNING || (is_cleanup && status == RuntimeStatus::CLOSING);
   if (!is_available) {
     throw InvalidArgumentError("execution context runtime is not available", location);
   }
-  if (ctx_impl_.in_use_.test_and_set(std::memory_order_acquire)) {
+  if (ctx_state_.in_use_.test_and_set(std::memory_order_acquire)) {
     throw InvalidArgumentError("execution context is already in use by another host thread", location);
   }
-  if (ctx_impl_.status_.load(std::memory_order_acquire) == ExecutionContextStatus::FAILED && !is_cleanup) {
-    ctx_impl_.in_use_.clear(std::memory_order_release);
+  if (ctx_state_.status_.load(std::memory_order_acquire) == ExecutionContextStatus::FAILED && !is_cleanup) {
+    ctx_state_.in_use_.clear(std::memory_order_release);
     throw InvalidArgumentError("execution context is in a failed state", location);
   }
-  if (!ctx_impl_.capture_state_.expired() && is_cleanup) {
-    ctx_impl_.in_use_.clear(std::memory_order_release);
+  if (!ctx_state_.capture_state_.expired() && is_cleanup) {
+    ctx_state_.in_use_.clear(std::memory_order_release);
     throw CaptureError("synchronization and polling are forbidden during CUDA graph capture", location);
   }
 }
 
-ContextUseGuard::~ContextUseGuard() noexcept { ctx_impl_.in_use_.clear(std::memory_order_release); }
+ContextUseGuard::~ContextUseGuard() noexcept { ctx_state_.in_use_.clear(std::memory_order_release); }
 
 auto ContextAccess::Create(const std::shared_ptr<RuntimeState> &runtime_state,
                            ExecutionContextRegistration registration, std::shared_ptr<DeviceContext> device_context,
@@ -140,32 +141,32 @@ auto ContextAccess::Create(const std::shared_ptr<RuntimeState> &runtime_state,
       DeviceErrorState::Create(device_context->GetAllocator(), primary_lane.GetStream(),
                                runtime_state->GetPinnedAllocator(), runtime_state->GetErrorSink(), location);
   registration.Commit(location);
-  return ExecutionContext{std::make_shared<ExecutionContextImpl>(
+  return ExecutionContext{std::make_shared<ExecutionContextState>(
       runtime_state, std::move(registration), std::move(device_context), std::move(primary_lane),
       std::move(auxiliary_lanes), std::move(fork_event), std::move(join_events), std::move(device_error_state))};
 }
 
-auto ContextAccess::GetImpl(ExecutionContext &context, std::source_location location) -> ExecutionContextImpl & {
-  if (context.impl_ == nullptr) {
+auto ContextAccess::GetState(ExecutionContext &context, std::source_location location) -> ExecutionContextState & {
+  if (context.state_ == nullptr) {
     throw InvalidArgumentError("execution context is in a moved-from state", location);
   }
-  return *context.impl_;
+  return *context.state_;
 }
 
-auto ContextAccess::GetImplState(ExecutionContext &context, std::source_location location)
-    -> const std::shared_ptr<ExecutionContextImpl> & {
-  static_cast<void>(GetImpl(context, location));
-  return context.impl_;
+auto ContextAccess::GetStateOwner(ExecutionContext &context, std::source_location location)
+    -> const std::shared_ptr<ExecutionContextState> & {
+  static_cast<void>(GetState(context, location));
+  return context.state_;
 }
 
 auto ContextAccess::GetRuntimeState(ExecutionContext &context, std::source_location location)
     -> const std::shared_ptr<RuntimeState> & {
-  return GetImpl(context, location).runtime_state_;
+  return GetState(context, location).runtime_state_;
 }
 
 auto ContextAccess::GetDeviceContext(ExecutionContext &context, std::source_location location)
     -> const std::shared_ptr<DeviceContext> & {
-  return GetImpl(context, location).device_context_;
+  return GetState(context, location).device_context_;
 }
 
 auto ContextAccess::GetAllocator(ExecutionContext &context, std::source_location location)
@@ -199,7 +200,7 @@ auto ContextAccess::AllocatePinned(ExecutionContext &context, size_t bytes, std:
 }
 
 auto ContextAccess::GetStream(ExecutionContext &context, std::source_location location) -> const Stream & {
-  return GetImpl(context, location).primary_lane_.GetStream();
+  return GetState(context, location).primary_lane_.GetStream();
 }
 
 auto ContextAccess::GetNativeStream(ExecutionContext &context, std::source_location location) -> cudaStream_t {
@@ -207,7 +208,7 @@ auto ContextAccess::GetNativeStream(ExecutionContext &context, std::source_locat
 }
 
 auto ContextAccess::GetPrimaryLane(ExecutionContext &context, std::source_location location) -> ExecutionLane & {
-  return GetImpl(context, location).primary_lane_;
+  return GetState(context, location).primary_lane_;
 }
 
 auto ContextAccess::GetMatmulAlgorithmCache(ExecutionContext &context, std::source_location location)
@@ -217,7 +218,7 @@ auto ContextAccess::GetMatmulAlgorithmCache(ExecutionContext &context, std::sour
 
 auto ContextAccess::GetDeviceErrorState(ExecutionContext &context, std::source_location location)
     -> DeviceErrorState & {
-  return *GetImpl(context, location).device_error_state_;
+  return *GetState(context, location).device_error_state_;
 }
 
 }  // namespace ttl::internal
@@ -225,17 +226,17 @@ auto ContextAccess::GetDeviceErrorState(ExecutionContext &context, std::source_l
 namespace ttl {
 namespace {
 
-void SynchronizeAndCheckDeviceErrors(internal::ExecutionContextImpl &impl, std::source_location location) {
+void SynchronizeAndCheckDeviceErrors(internal::ExecutionContextState &state, std::source_location location) {
   const auto &cuda_api = internal::GetCudaApi();
-  const auto primary_stream = internal::StreamAccess::GetNative(impl.primary_lane_.GetStream());
-  const auto failed = impl.status_.load(std::memory_order_acquire) == internal::ExecutionContextStatus::FAILED;
+  const auto primary_stream = internal::StreamAccess::GetNative(state.primary_lane_.GetStream());
+  const auto failed = state.status_.load(std::memory_order_acquire) == internal::ExecutionContextStatus::FAILED;
 
   auto first_status = cudaSuccess;
   if (failed) {
     // A failed structured multi-stream submission may have bypassed its normal join. Drain every lane before reading
     // or resetting context-owned error state so no auxiliary kernel can still write it.
     first_status = cuda_api.synchronize_stream_(primary_stream);
-    for (const auto &lane : impl.auxiliary_lanes_) {
+    for (const auto &lane : state.auxiliary_lanes_) {
       const auto status = cuda_api.synchronize_stream_(internal::StreamAccess::GetNative(lane.GetStream()));
       if (first_status == cudaSuccess && status != cudaSuccess) {
         first_status = status;
@@ -244,44 +245,44 @@ void SynchronizeAndCheckDeviceErrors(internal::ExecutionContextImpl &impl, std::
     internal::CheckCuda(first_status, "cudaStreamSynchronize", location);
   }
 
-  impl.device_error_state_->EnqueueRead(impl.primary_lane_.GetStream(), location);
+  state.device_error_state_->EnqueueRead(state.primary_lane_.GetStream(), location);
   // The device-to-host copy is ordered after all successful submissions on the primary stream. Synchronizing once
   // therefore observes both native launch failures and the sticky semantic error record.
   first_status = cuda_api.synchronize_stream_(primary_stream);
   if (first_status != cudaSuccess) {
-    impl.status_.store(internal::ExecutionContextStatus::FAILED, std::memory_order_release);
-    for (const auto &lane : impl.auxiliary_lanes_) {
+    state.status_.store(internal::ExecutionContextStatus::FAILED, std::memory_order_release);
+    for (const auto &lane : state.auxiliary_lanes_) {
       static_cast<void>(cuda_api.synchronize_stream_(internal::StreamAccess::GetNative(lane.GetStream())));
     }
   }
   internal::CheckCuda(first_status, "cudaStreamSynchronize", location);
-  impl.device_error_state_->ConsumeAndReset(primary_stream, location);
+  state.device_error_state_->ConsumeAndReset(primary_stream, location);
 }
 
 }  // namespace
 
-ExecutionContext::ExecutionContext(std::shared_ptr<internal::ExecutionContextImpl> impl) noexcept
-    : impl_(std::move(impl)) {}
+ExecutionContext::ExecutionContext(std::shared_ptr<internal::ExecutionContextState> state) noexcept
+    : state_(std::move(state)) {}
 
 auto ExecutionContext::GetDevice(std::source_location location) const -> Device {
-  if (impl_ == nullptr) {
+  if (state_ == nullptr) {
     throw InvalidArgumentError("execution context is in a moved-from state", location);
   }
-  return impl_->primary_lane_.GetStream().GetDevice(location);
+  return state_->primary_lane_.GetStream().GetDevice(location);
 }
 
 auto ExecutionContext::GetStream(std::source_location location) const -> const Stream & {
-  if (impl_ == nullptr) {
+  if (state_ == nullptr) {
     throw InvalidArgumentError("execution context is in a moved-from state", location);
   }
-  return impl_->primary_lane_.GetStream();
+  return state_->primary_lane_.GetStream();
 }
 
 auto ExecutionContext::GetAuxiliaryStreamCount(std::source_location location) const -> size_t {
-  if (impl_ == nullptr) {
+  if (state_ == nullptr) {
     throw InvalidArgumentError("execution context is in a moved-from state", location);
   }
-  return impl_->auxiliary_lanes_.size();
+  return state_->auxiliary_lanes_.size();
 }
 
 auto ExecutionContext::IsExternalStream(std::source_location location) const -> bool {
@@ -290,18 +291,18 @@ auto ExecutionContext::IsExternalStream(std::source_location location) const -> 
 
 auto ExecutionContext::RecordEvent(std::source_location location) -> Event {
   internal::ContextUseGuard use_guard{*this, internal::ContextUseMode::SUBMIT, location};
-  if (!impl_->capture_state_.expired()) {
+  if (!state_->capture_state_.expired()) {
     throw CaptureError("public event recording is forbidden during CUDA graph capture", location);
   }
-  return internal::EventAccess::Record(impl_->primary_lane_.GetStream(), location);
+  return internal::EventAccess::Record(state_->primary_lane_.GetStream(), location);
 }
 
 void ExecutionContext::Wait(const Event &event, std::source_location location) {
   internal::ContextUseGuard use_guard{*this, internal::ContextUseMode::SUBMIT, location};
-  if (!impl_->capture_state_.expired()) {
+  if (!state_->capture_state_.expired()) {
     throw CaptureError("public event waits are forbidden during CUDA graph capture", location);
   }
-  internal::EventAccess::Wait(impl_->primary_lane_.GetStream(), event, location);
+  internal::EventAccess::Wait(state_->primary_lane_.GetStream(), event, location);
 }
 
 auto ExecutionContext::BeginCapture(std::source_location location) -> CaptureSession {
@@ -315,24 +316,24 @@ auto ExecutionContext::BeginCapture(const GraphCaptureOptions &options, std::sou
 
 void ExecutionContext::CheckAsyncErrors(std::source_location location) {
   internal::ContextUseGuard use_guard{*this, internal::ContextUseMode::CLEANUP, location};
-  internal::DeviceGuard device_guard{GetDevice(), *impl_->runtime_state_->GetErrorSink(), location};
-  SynchronizeAndCheckDeviceErrors(*impl_, location);
+  internal::DeviceGuard device_guard{GetDevice(), *state_->runtime_state_->GetErrorSink(), location};
+  SynchronizeAndCheckDeviceErrors(*state_, location);
 }
 
 void ExecutionContext::Synchronize(std::source_location location) {
   internal::ContextUseGuard use_guard{*this, internal::ContextUseMode::CLEANUP, location};
-  internal::DeviceGuard device_guard{GetDevice(), *impl_->runtime_state_->GetErrorSink(), location};
-  SynchronizeAndCheckDeviceErrors(*impl_, location);
-  impl_->device_context_->GetBlasHandlePool()->Poll();
-  impl_->device_context_->GetAllocator()->Poll();
-  impl_->runtime_state_->GetPinnedAllocator()->Poll();
+  internal::DeviceGuard device_guard{GetDevice(), *state_->runtime_state_->GetErrorSink(), location};
+  SynchronizeAndCheckDeviceErrors(*state_, location);
+  state_->device_context_->GetBlasHandlePool()->Poll();
+  state_->device_context_->GetAllocator()->Poll();
+  state_->runtime_state_->GetPinnedAllocator()->Poll();
 }
 
 void ExecutionContext::Poll(std::source_location location) {
   internal::ContextUseGuard use_guard{*this, internal::ContextUseMode::CLEANUP, location};
-  impl_->device_context_->GetBlasHandlePool()->Poll();
-  impl_->device_context_->GetAllocator()->Poll();
-  impl_->runtime_state_->GetPinnedAllocator()->Poll();
+  state_->device_context_->GetBlasHandlePool()->Poll();
+  state_->device_context_->GetAllocator()->Poll();
+  state_->runtime_state_->GetPinnedAllocator()->Poll();
 }
 
 }  // namespace ttl

@@ -28,7 +28,7 @@ struct GraphCaptureOptions;
 namespace ttl::internal {
 
 class CommunicatorGroupState;
-class ExecutionContextImpl;
+class ExecutionContextState;
 class RuntimeState;
 class Storage;
 class StreamState;
@@ -102,7 +102,7 @@ class CaptureSessionState final : public std::enable_shared_from_this<CaptureSes
   [[nodiscard]] auto GetJoinEvent(size_t index) noexcept -> PooledEvent &;
 
  private:
-  CaptureSessionState(std::shared_ptr<ExecutionContextImpl> context, std::shared_ptr<RuntimeState> runtime_state,
+  CaptureSessionState(std::shared_ptr<ExecutionContextState> context, std::shared_ptr<RuntimeState> runtime_state,
                       std::shared_ptr<StreamState> primary_stream, std::vector<PooledEvent> dependency_events,
                       std::string name, std::source_location location) noexcept;
 
@@ -110,7 +110,7 @@ class CaptureSessionState final : public std::enable_shared_from_this<CaptureSes
   void CancelBeforeNativeCapture() noexcept;
   void ReportCleanupFailure(std::string_view message) noexcept;
 
-  std::shared_ptr<ExecutionContextImpl> context_;
+  std::shared_ptr<ExecutionContextState> context_;
   std::shared_ptr<RuntimeState> runtime_state_;
   std::shared_ptr<StreamState> primary_stream_;
   std::vector<std::shared_ptr<StreamState>> auxiliary_streams_;
@@ -191,7 +191,7 @@ class CapturedGraphState final {
   [[nodiscard]] auto GetName() const noexcept -> std::string_view;
 
  private:
-  void FailLaunchNoexcept(ExecutionContextImpl &context) noexcept;
+  void FailLaunchNoexcept(ExecutionContextState &context) noexcept;
 
   Device device_;
   uint64_t stream_id_;
