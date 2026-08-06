@@ -25,6 +25,7 @@ namespace ttl::internal {
 
 class DeviceAllocatorImpl;
 class EventPool;
+class RetirementTicket;
 class Storage;
 class StreamState;
 struct DeviceStreamUsageSnapshot;
@@ -101,7 +102,7 @@ class DeviceAllocator final : public std::enable_shared_from_this<DeviceAllocato
 
   explicit DeviceAllocator(std::unique_ptr<DeviceAllocatorImpl> impl) noexcept;
 
-  void Retire(Allocation allocation, DeviceStreamUsageSnapshot usage) noexcept;
+  void Retire(Allocation allocation, RetirementTicket retirement_ticket, DeviceStreamUsageSnapshot usage) noexcept;
 
   std::unique_ptr<DeviceAllocatorImpl> impl_;
 };

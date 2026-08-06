@@ -249,7 +249,7 @@ TEST(RuntimeMemoryIntegrationTest, WrapsBorrowedDeviceMemoryAndExternalStream) {
     EXPECT_TRUE(context.IsExternalStream());
     {
       auto tensor = runtime.FromBlob(context,
-                                     ExternalMemory{
+                                     ExternalDeviceMemory{
                                          .pointer_ = device_pointer,
                                          .capacity_bytes_ = 4 * sizeof(float),
                                          .device_ = Device{0},

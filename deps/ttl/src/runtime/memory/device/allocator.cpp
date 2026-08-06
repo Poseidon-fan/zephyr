@@ -41,6 +41,7 @@
 #include "ttl/internal/runtime/memory/device/storage.hpp"
 #include "ttl/internal/runtime/memory/device/stream_usage.hpp"
 #include "ttl/internal/runtime/memory/retirement_queue.hpp"
+#include "ttl/internal/runtime/memory/retirement_ticket.hpp"
 #include "ttl/runtime/stream.hpp"
 #include "ttl/tensor/dtype.hpp"
 #include "ttl/tensor/shape.hpp"
@@ -163,9 +164,9 @@ class DeviceAllocatorImpl final {
 
     const auto allocation_stream = StreamAccess::GetState(stream);
     if (bytes == 0) {
-      Allocation allocation{nullptr,          0, AllocationKind::DEVICE_POOL, nullptr, std::nullopt, RetirementTicket{},
-                            context.location_};
-      auto storage = MakeUniqueStorage(allocation, allocator, allocation_stream);
+      Allocation allocation{nullptr, 0, AllocationKind::DEVICE_POOL, nullptr, std::nullopt, context.location_};
+      RetirementTicket retirement_ticket;
+      auto storage = MakeUniqueStorage(allocation, retirement_ticket, allocator, allocation_stream);
       outstanding_storage_count_.fetch_add(1, std::memory_order_relaxed);
       return std::shared_ptr<Storage>{std::move(storage)};
     }
@@ -205,14 +206,12 @@ class DeviceAllocatorImpl final {
     }
 
     allocation_count_.fetch_add(1, std::memory_order_relaxed);
-    Allocation allocation{
-        pointer,          bytes, AllocationKind::DEVICE_POOL, nullptr, std::move(budget), std::move(retirement_ticket),
-        context.location_};
+    Allocation allocation{pointer, bytes, AllocationKind::DEVICE_POOL, nullptr, std::move(budget), context.location_};
     std::unique_ptr<Storage> storage;
     try {
-      storage = MakeUniqueStorage(allocation, allocator, allocation_stream);
+      storage = MakeUniqueStorage(allocation, retirement_ticket, allocator, allocation_stream);
     } catch (...) {
-      Retire(std::move(allocation),
+      Retire(std::move(allocation), std::move(retirement_ticket),
              DeviceStreamUsageSnapshot{.allocation_stream_ = allocation_stream, .side_streams_ = {}}, false);
       throw;
     }
@@ -240,15 +239,15 @@ class DeviceAllocatorImpl final {
 
     auto stream_state = StreamAccess::GetState(allocation_stream);
     std::unique_ptr<Storage> storage;
-    Allocation allocation{pointer, capacity_bytes, kind, std::move(owner), std::nullopt, std::move(retirement_ticket),
-                          location};
-    storage = MakeUniqueStorage(allocation, allocator, stream_state);
+    Allocation allocation{pointer, capacity_bytes, kind, std::move(owner), std::nullopt, location};
+    storage = MakeUniqueStorage(allocation, retirement_ticket, allocator, stream_state);
 
     outstanding_storage_count_.fetch_add(1, std::memory_order_relaxed);
     return std::shared_ptr<Storage>{std::move(storage)};
   }
 
-  void Retire(Allocation allocation, DeviceStreamUsageSnapshot usage, bool counted_storage = true) noexcept {
+  void Retire(Allocation allocation, RetirementTicket retirement_ticket, DeviceStreamUsageSnapshot usage,
+              bool counted_storage = true) noexcept {
     const OutstandingStorageGuard outstanding_storage_guard{outstanding_storage_count_, counted_storage};
     const auto capacity_bytes = allocation.capacity_bytes_;
     const auto kind = allocation.kind_;
@@ -271,16 +270,16 @@ class DeviceAllocatorImpl final {
       record.completion_event_.emplace(event_pool_->Acquire(record.allocation_.location_));
     } catch (const Error &error) {
       ReportErrorNoexcept(error.GetCode(), error.GetMessage(), *error_sink_, report_context);
-      PoisonAndEnqueue(std::move(record));
+      PoisonAndEnqueue(std::move(retirement_ticket), std::move(record));
       return;
     } catch (const std::exception &error) {
       ReportErrorNoexcept(ErrorCode::INTERNAL, error.what(), *error_sink_, report_context);
-      PoisonAndEnqueue(std::move(record));
+      PoisonAndEnqueue(std::move(retirement_ticket), std::move(record));
       return;
     } catch (...) {
       ReportErrorNoexcept(ErrorCode::INTERNAL, "unknown failure while acquiring a retirement event", *error_sink_,
                           report_context);
-      PoisonAndEnqueue(std::move(record));
+      PoisonAndEnqueue(std::move(retirement_ticket), std::move(record));
       return;
     }
 
@@ -294,7 +293,7 @@ class DeviceAllocatorImpl final {
             return SubmitDependency(stream, record.allocation_.location_);
           })) {
         record.completion_event_.reset();
-        PoisonAndEnqueue(std::move(record));
+        PoisonAndEnqueue(std::move(retirement_ticket), std::move(record));
         return;
       }
       target_stream = reclaim_stream_;
@@ -309,7 +308,7 @@ class DeviceAllocatorImpl final {
                                     "submit allocation retirement", "restore after allocation retirement"};
     if (!device_guard) {
       record.completion_event_.reset();
-      PoisonAndEnqueue(std::move(record));
+      PoisonAndEnqueue(std::move(retirement_ticket), std::move(record));
       return;
     }
 
@@ -318,7 +317,7 @@ class DeviceAllocatorImpl final {
       const auto free_status = pool_->FreeAsync(record.allocation_.pointer_, target_stream->GetNative());
       if (!TryCuda(free_status, "cudaFreeAsync", *error_sink_, target_context)) {
         record.completion_event_.reset();
-        PoisonAndEnqueue(std::move(record));
+        PoisonAndEnqueue(std::move(retirement_ticket), std::move(record));
         return;
       }
       record.free_submitted_ = true;
@@ -328,11 +327,11 @@ class DeviceAllocatorImpl final {
                  "cudaEventRecord", "allocation retirement completion", *error_sink_, target_context)) {
       record.completion_event_->Discard();
       record.completion_event_.reset();
-      PoisonAndEnqueue(std::move(record));
+      PoisonAndEnqueue(std::move(retirement_ticket), std::move(record));
       return;
     }
 
-    Enqueue(std::move(record));
+    Enqueue(std::move(retirement_ticket), std::move(record));
   }
 
   void Poll() noexcept {
@@ -479,10 +478,12 @@ class DeviceAllocatorImpl final {
       checkout->Complete();
     }
   }
-  [[nodiscard]] auto MakeUniqueStorage(Allocation &allocation, const std::shared_ptr<DeviceAllocator> &allocator,
+  [[nodiscard]] auto MakeUniqueStorage(Allocation &allocation, RetirementTicket &retirement_ticket,
+                                       const std::shared_ptr<DeviceAllocator> &allocator,
                                        const std::shared_ptr<StreamState> &allocation_stream)
       -> std::unique_ptr<Storage> {
-    return std::unique_ptr<Storage>{new Storage(std::move(allocation), device_, allocator, allocation_stream)};
+    return std::unique_ptr<Storage>{
+        new Storage(std::move(allocation), std::move(retirement_ticket), device_, allocator, allocation_stream)};
   }
 
   void ValidateUsable(std::source_location location) const {
@@ -522,9 +523,8 @@ class DeviceAllocatorImpl final {
     }
   }
 
-  void Enqueue(DeviceRetirement record) noexcept {
-    auto ticket = std::move(record.retirement_ticket_);
-    retirements_.Enqueue(std::move(ticket), std::move(record));
+  void Enqueue(RetirementTicket retirement_ticket, DeviceRetirement record) noexcept {
+    retirements_.Enqueue(std::move(retirement_ticket), std::move(record));
     maintenance_condition_.notify_one();
   }
 
@@ -539,9 +539,9 @@ class DeviceAllocatorImpl final {
     lifecycle_.MarkFailed();
   }
 
-  void PoisonAndEnqueue(DeviceRetirement record) noexcept {
+  void PoisonAndEnqueue(RetirementTicket retirement_ticket, DeviceRetirement record) noexcept {
     Quarantine(record);
-    Enqueue(std::move(record));
+    Enqueue(std::move(retirement_ticket), std::move(record));
   }
 
   [[nodiscard]] auto ReserveBudget(uint64_t bytes, const AllocationContext &context) -> AllocationBudget::Reservation {
@@ -877,8 +877,9 @@ void DeviceAllocator::Shutdown(std::source_location location) { impl_->Shutdown(
 
 auto DeviceAllocator::GetDevice() const noexcept -> Device { return impl_->GetDevice(); }
 
-void DeviceAllocator::Retire(Allocation allocation, DeviceStreamUsageSnapshot usage) noexcept {
-  impl_->Retire(std::move(allocation), std::move(usage));
+void DeviceAllocator::Retire(Allocation allocation, RetirementTicket retirement_ticket,
+                             DeviceStreamUsageSnapshot usage) noexcept {
+  impl_->Retire(std::move(allocation), std::move(retirement_ticket), std::move(usage));
 }
 
 }  // namespace ttl::internal

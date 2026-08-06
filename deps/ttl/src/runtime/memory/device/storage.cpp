@@ -11,14 +11,17 @@
 
 namespace ttl::internal {
 
-Storage::Storage(Allocation allocation, Device device, std::shared_ptr<DeviceAllocator> allocator,
-                 std::shared_ptr<StreamState> allocation_stream) noexcept
+Storage::Storage(Allocation allocation, RetirementTicket retirement_ticket, Device device,
+                 std::shared_ptr<DeviceAllocator> allocator, std::shared_ptr<StreamState> allocation_stream) noexcept
     : allocation_(std::move(allocation)),
+      retirement_ticket_(std::move(retirement_ticket)),
       device_(device),
       allocator_(std::move(allocator)),
       usage_(std::move(allocation_stream)) {}
 
-Storage::~Storage() noexcept { allocator_->Retire(std::move(allocation_), std::move(usage_).TakeSnapshot()); }
+Storage::~Storage() noexcept {
+  allocator_->Retire(std::move(allocation_), std::move(retirement_ticket_), std::move(usage_).TakeSnapshot());
+}
 
 auto Storage::GetBasePointer() const noexcept -> void * { return allocation_.pointer_; }
 

@@ -1,4 +1,5 @@
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <source_location>
 #include <utility>
@@ -139,6 +140,37 @@ TEST(RetirementQueueTest, EnqueueDoesNotDisplaceSnapshotRecords) {
     checkout->Complete();
   }
   EXPECT_EQ(remaining, (std::vector<size_t>{1, 3}));
+  EXPECT_TRUE(queue.Empty());
+  EXPECT_EQ(budget.GetCurrentBytes(), 0);
+}
+
+TEST(RetirementQueueTest, RejectsAccessThroughMovedFromCheckout) {
+  RetirementQueue<PinnedRetirement> queue{1};
+  AllocationBudget budget{1};
+  EnqueuePinnedRetirement(queue, budget, 1);
+
+  {
+    auto checkout = queue.CheckoutFront();
+    ASSERT_TRUE(checkout.has_value());
+    auto active_checkout = std::move(*checkout);
+    const auto &moved_from_checkout = *checkout;
+    EXPECT_DEATH(static_cast<void>(moved_from_checkout.Get()), "");
+    active_checkout.Complete();
+  }
+  EXPECT_TRUE(queue.Empty());
+  EXPECT_EQ(budget.GetCurrentBytes(), 0);
+}
+
+TEST(RetirementQueueTest, RejectsAccessThroughCompletedCheckout) {
+  RetirementQueue<PinnedRetirement> queue{1};
+  AllocationBudget budget{1};
+  EnqueuePinnedRetirement(queue, budget, 1);
+
+  auto checkout = queue.CheckoutFront();
+  ASSERT_TRUE(checkout.has_value());
+  checkout->Complete();
+  EXPECT_DEATH(static_cast<void>(checkout->Get()), "");
+  checkout.reset();
   EXPECT_TRUE(queue.Empty());
   EXPECT_EQ(budget.GetCurrentBytes(), 0);
 }

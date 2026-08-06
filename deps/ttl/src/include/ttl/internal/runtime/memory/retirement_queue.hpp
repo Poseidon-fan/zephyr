@@ -37,7 +37,7 @@ class RetirementQueue final {
     Checkout(RetirementQueue *queue, Record record) noexcept;
 
     RetirementQueue *queue_;
-    std::optional<Record> record_;
+    Record record_;
   };
 
   explicit RetirementQueue(size_t initial_capacity = 16);

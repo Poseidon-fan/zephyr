@@ -60,18 +60,24 @@ RetirementQueue<Record>::Checkout::Checkout(Checkout &&other) noexcept
 template <typename Record>
 RetirementQueue<Record>::Checkout::~Checkout() noexcept {
   if (queue_ != nullptr) {
-    queue_->Return(std::move(*record_));
+    queue_->Return(std::move(record_));
   }
 }
 
 template <typename Record>
 auto RetirementQueue<Record>::Checkout::Get() noexcept -> Record & {
-  return *record_;
+  if (queue_ == nullptr) {
+    std::terminate();
+  }
+  return record_;
 }
 
 template <typename Record>
 auto RetirementQueue<Record>::Checkout::Get() const noexcept -> const Record & {
-  return *record_;
+  if (queue_ == nullptr) {
+    std::terminate();
+  }
+  return record_;
 }
 
 template <typename Record>

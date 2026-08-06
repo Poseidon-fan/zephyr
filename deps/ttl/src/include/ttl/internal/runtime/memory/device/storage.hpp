@@ -6,6 +6,7 @@
 #include "ttl/common/device.hpp"
 #include "ttl/internal/runtime/memory/device/allocation.hpp"
 #include "ttl/internal/runtime/memory/device/stream_usage.hpp"
+#include "ttl/internal/runtime/memory/retirement_ticket.hpp"
 #include "ttl/runtime/stream.hpp"
 
 namespace ttl::internal {
@@ -38,10 +39,11 @@ class Storage final {
   friend class DeviceAllocatorImpl;
   friend class TensorFactory;
 
-  Storage(Allocation allocation, Device device, std::shared_ptr<DeviceAllocator> allocator,
-          std::shared_ptr<StreamState> allocation_stream) noexcept;
+  Storage(Allocation allocation, RetirementTicket retirement_ticket, Device device,
+          std::shared_ptr<DeviceAllocator> allocator, std::shared_ptr<StreamState> allocation_stream) noexcept;
 
   Allocation allocation_;
+  RetirementTicket retirement_ticket_;
   Device device_;
   std::shared_ptr<DeviceAllocator> allocator_;
   DeviceStreamUsage usage_;

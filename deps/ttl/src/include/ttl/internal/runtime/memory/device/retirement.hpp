@@ -8,7 +8,6 @@
 #include "ttl/internal/runtime/execution/event_pool.hpp"
 #include "ttl/internal/runtime/memory/device/allocation.hpp"
 #include "ttl/internal/runtime/memory/device/stream_usage.hpp"
-#include "ttl/internal/runtime/memory/retirement_ticket.hpp"
 
 namespace ttl::internal {
 
@@ -17,8 +16,7 @@ class StreamState;
 /** Device allocation and completion state retained until asynchronous retirement finishes. */
 struct DeviceRetirement final {
   DeviceRetirement(Allocation allocation, DeviceStreamUsageSnapshot usage) noexcept
-      : retirement_ticket_(std::move(allocation.retirement_ticket_)),
-        allocation_(std::move(allocation)),
+      : allocation_(std::move(allocation)),
         allocation_stream_(std::move(usage.allocation_stream_)),
         side_streams_(std::move(usage.side_streams_)) {}
 
@@ -27,7 +25,6 @@ struct DeviceRetirement final {
   DeviceRetirement(DeviceRetirement &&) noexcept = default;
   auto operator=(DeviceRetirement &&) noexcept -> DeviceRetirement & = default;
 
-  RetirementTicket retirement_ticket_;
   Allocation allocation_;
   std::shared_ptr<StreamState> allocation_stream_;
   std::vector<std::shared_ptr<StreamState>> side_streams_;
