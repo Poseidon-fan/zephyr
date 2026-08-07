@@ -191,12 +191,13 @@ auto GraphCleanupState::RetryNoexcept(RuntimeState &runtime_state) noexcept -> b
     if (!completion_event_.has_value()) {
       std::terminate();
     }
-    const auto status = GetCudaApi().query_event_(completion_event_->GetNative());
-    if (status == cudaErrorNotReady) {
+    const auto readiness =
+        TryQueryCudaEvent(completion_event_->GetNative(), "cudaEventQuery (CUDA graph replay completion)",
+                          *runtime_state.GetErrorSink(), error_context);
+    if (readiness == CudaReadiness::NOT_READY) {
       return false;
     }
-    if (status != cudaSuccess) {
-      TryCuda(status, "cudaEventQuery", "CUDA graph replay completion", *runtime_state.GetErrorSink(), error_context);
+    if (readiness == CudaReadiness::ERROR) {
       completion_event_->Discard();
       completion_event_.reset();
       completion_state_ = GraphCompletionState::STREAM;
@@ -205,12 +206,13 @@ auto GraphCleanupState::RetryNoexcept(RuntimeState &runtime_state) noexcept -> b
     completion_event_.reset();
     completion_state_ = GraphCompletionState::COMPLETE;
   } else if (completion_state_ == GraphCompletionState::STREAM) {
-    const auto status = GetCudaApi().query_stream_(primary_stream_->GetNative());
-    if (status == cudaErrorNotReady) {
+    const auto readiness =
+        TryQueryCudaStream(primary_stream_->GetNative(), "cudaStreamQuery (CUDA graph replay completion)",
+                           *runtime_state.GetErrorSink(), error_context);
+    if (readiness == CudaReadiness::NOT_READY) {
       return false;
     }
-    if (!TryCuda(status, "cudaStreamQuery", "CUDA graph replay completion", *runtime_state.GetErrorSink(),
-                 error_context)) {
+    if (readiness == CudaReadiness::ERROR) {
       return false;
     }
     completion_state_ = GraphCompletionState::COMPLETE;

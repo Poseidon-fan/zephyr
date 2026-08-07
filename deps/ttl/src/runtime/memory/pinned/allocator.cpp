@@ -337,12 +337,12 @@ class PinnedAllocatorImpl final {
         Quarantine(retirement);
         return false;
       }
-      const auto status = GetCudaApi().query_event_(entry.completion_event_->GetNative());
-      if (status == cudaErrorNotReady) {
+      const auto readiness = TryQueryCudaEvent(entry.completion_event_->GetNative(),
+                                               "cudaEventQuery (pinned-buffer retirement)", *error_sink_, context);
+      if (readiness == CudaReadiness::NOT_READY) {
         return false;
       }
-      if (status != cudaSuccess) {
-        TryCuda(status, "cudaEventQuery", "pinned-buffer retirement", *error_sink_, context);
+      if (readiness == CudaReadiness::ERROR) {
         entry.completion_event_->Discard();
         Quarantine(retirement);
         return false;

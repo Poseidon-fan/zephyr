@@ -457,13 +457,14 @@ class DeviceAllocatorImpl final {
       if (record.poisoned_ || !record.completion_event_.has_value()) {
         continue;
       }
-      const auto status = GetCudaApi().query_event_(record.completion_event_->GetNative());
-      if (status == cudaErrorNotReady) {
+      const auto context = MakeContext(device_, record.allocation_.location_, record.allocation_stream_->GetId());
+      const auto readiness =
+          TryQueryCudaEvent(record.completion_event_->GetNative(), "cudaEventQuery (allocation retirement completion)",
+                            *error_sink_, context);
+      if (readiness == CudaReadiness::NOT_READY) {
         continue;
       }
-      if (status != cudaSuccess) {
-        const auto context = MakeContext(device_, record.allocation_.location_, record.allocation_stream_->GetId());
-        TryCuda(status, "cudaEventQuery", "allocation retirement completion", *error_sink_, context);
+      if (readiness == CudaReadiness::ERROR) {
         record.completion_event_->Discard();
         record.completion_event_.reset();
         Quarantine(record);

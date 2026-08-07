@@ -11,6 +11,7 @@
 
 #include "ttl/common/error.hpp"
 #include "ttl/common/error_sink.hpp"
+#include "ttl/internal/runtime/cuda_api.hpp"
 
 namespace ttl::internal {
 namespace {
@@ -61,6 +62,12 @@ template <typename Status>
 [[nodiscard]] auto FormatCudaError(cudaError_t status, std::string_view operation) -> std::string {
   return FormatNativeError(operation, NullSafeString(cudaGetErrorName(status), "unknown CUDA status"), status,
                            NullSafeString(cudaGetErrorString(status), "no CUDA error description"));
+}
+
+[[nodiscard]] auto FormatLastErrorOperation(std::string_view query_operation) -> std::string {
+  std::string operation{"cudaGetLastError after "};
+  operation.append(query_operation);
+  return operation;
 }
 
 [[nodiscard]] auto FormatCublasError(cublasStatus_t status, std::string_view operation) -> std::string {
@@ -133,6 +140,56 @@ auto TryCuda(cudaError_t status, std::string_view operation, std::string_view de
     return FormatCudaError(status, qualified_operation);
   });
   return false;
+}
+
+auto QueryCudaEvent(cudaEvent_t event, std::string_view operation, std::source_location location) -> bool {
+  const auto &cuda_api = GetCudaApi();
+  const auto status = cuda_api.query_event_(event);
+  if (status == cudaSuccess) {
+    return true;
+  }
+  if (status == cudaErrorNotReady) {
+    const auto last_error = cuda_api.get_last_error_();
+    if (last_error != cudaSuccess && last_error != cudaErrorNotReady) {
+      CheckCuda(last_error, FormatLastErrorOperation(operation), location);
+    }
+    return false;
+  }
+  CheckCuda(status, operation, location);
+  return false;
+}
+
+namespace {
+
+template <typename Query>
+[[nodiscard]] auto TryQueryCudaReadiness(Query &&query, std::string_view operation, ErrorSink &error_sink,
+                                         const ErrorReportContext &context) noexcept -> CudaReadiness {
+  const auto status = std::forward<Query>(query)();
+  if (status == cudaSuccess) {
+    return CudaReadiness::READY;
+  }
+  if (status == cudaErrorNotReady) {
+    const auto last_error = GetCudaApi().get_last_error_();
+    if (last_error == cudaSuccess || last_error == cudaErrorNotReady) {
+      return CudaReadiness::NOT_READY;
+    }
+    static_cast<void>(TryCuda(last_error, "cudaGetLastError", operation, error_sink, context));
+    return CudaReadiness::ERROR;
+  }
+  static_cast<void>(TryCuda(status, operation, error_sink, context));
+  return CudaReadiness::ERROR;
+}
+
+}  // namespace
+
+auto TryQueryCudaEvent(cudaEvent_t event, std::string_view operation, ErrorSink &error_sink,
+                       const ErrorReportContext &context) noexcept -> CudaReadiness {
+  return TryQueryCudaReadiness([event] { return GetCudaApi().query_event_(event); }, operation, error_sink, context);
+}
+
+auto TryQueryCudaStream(cudaStream_t stream, std::string_view operation, ErrorSink &error_sink,
+                        const ErrorReportContext &context) noexcept -> CudaReadiness {
+  return TryQueryCudaReadiness([stream] { return GetCudaApi().query_stream_(stream); }, operation, error_sink, context);
 }
 
 auto TryCublas(cublasStatus_t status, std::string_view operation, ErrorSink &error_sink,

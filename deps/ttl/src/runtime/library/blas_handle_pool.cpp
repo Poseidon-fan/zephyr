@@ -346,16 +346,19 @@ class BlasHandlePoolState final : public std::enable_shared_from_this<BlasHandle
         continue;
       }
 
-      const auto status = GetCudaApi().query_event_(pending.completion_event_->GetNative());
-      if (status == cudaErrorNotReady) {
-        index++;
-        continue;
-      }
-      if (status != cudaSuccess) {
+      bool ready = false;
+      try {
+        ready = QueryCudaEvent(pending.completion_event_->GetNative(), "cudaEventQuery (cuBLAS handle retirement)",
+                               location);
+      } catch (...) {
         pending.completion_event_->Discard();
         pending.completion_event_.reset();
         pending.poisoned_ = true;
-        CheckCuda(status, "cudaEventQuery (cuBLAS handle retirement)", location);
+        throw;
+      }
+      if (!ready) {
+        index++;
+        continue;
       }
 
       cached_resources_.push_back(std::move(pending.resource_));
@@ -371,14 +374,15 @@ class BlasHandlePoolState final : public std::enable_shared_from_this<BlasHandle
         continue;
       }
 
-      const auto status = GetCudaApi().query_event_(pending.completion_event_->GetNative());
-      if (status == cudaErrorNotReady) {
+      const auto error_context = MakeErrorContext(device_, *pending.stream_, location_);
+      const auto readiness =
+          TryQueryCudaEvent(pending.completion_event_->GetNative(), "cudaEventQuery (cuBLAS handle retirement)",
+                            *error_sink_, error_context);
+      if (readiness == CudaReadiness::NOT_READY) {
         index++;
         continue;
       }
-      if (status != cudaSuccess) {
-        const auto error_context = MakeErrorContext(device_, *pending.stream_, location_);
-        TryCuda(status, "cudaEventQuery", "cuBLAS handle retirement", *error_sink_, error_context);
+      if (readiness == CudaReadiness::ERROR) {
         pending.completion_event_->Discard();
         pending.completion_event_.reset();
         pending.poisoned_ = true;

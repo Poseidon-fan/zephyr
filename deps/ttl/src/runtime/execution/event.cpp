@@ -77,20 +77,7 @@ auto EventState::GetRecordingStreamId() const noexcept -> uint64_t { return reco
 auto EventState::GetNative() const noexcept -> cudaEvent_t { return event_; }
 
 auto EventState::Query(std::source_location location) const -> bool {
-  const auto &cuda_api = GetCudaApi();
-  const auto status = cuda_api.query_event_(event_);
-  if (status == cudaSuccess) {
-    return true;
-  }
-  if (status == cudaErrorNotReady) {
-    const auto last_error = cuda_api.get_last_error_();
-    if (last_error != cudaSuccess && last_error != cudaErrorNotReady) {
-      CheckCuda(last_error, "cudaGetLastError after cudaEventQuery", location);
-    }
-    return false;
-  }
-  CheckCuda(status, "cudaEventQuery", location);
-  return false;
+  return QueryCudaEvent(event_, "cudaEventQuery", location);
 }
 
 void EventState::Synchronize(std::source_location location) const {

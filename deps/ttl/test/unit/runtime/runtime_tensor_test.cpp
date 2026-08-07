@@ -1,3 +1,4 @@
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
@@ -13,6 +14,7 @@
 #include "support/tensor_test_utils.hpp"
 #include "ttl/common/device.hpp"
 #include "ttl/common/error.hpp"
+#include "ttl/internal/runtime/cuda_api.hpp"
 #include "ttl/ops/creation.hpp"
 #include "ttl/runtime/event.hpp"
 #include "ttl/runtime/generator.hpp"
@@ -23,6 +25,21 @@
 #include "ttl/tensor/tensor.hpp"
 
 namespace ttl {
+namespace {
+
+std::atomic<uint64_t> retirement_not_ready_clear_count{0};
+
+auto ReportRetirementNotReady(cudaEvent_t event) -> cudaError_t {
+  static_cast<void>(event);
+  return cudaErrorNotReady;
+}
+
+auto ClearRetirementNotReady() -> cudaError_t {
+  retirement_not_ready_clear_count.fetch_add(1, std::memory_order_relaxed);
+  return cudaErrorNotReady;
+}
+
+}  // namespace
 
 TEST(RuntimeTest, ValidatesOptionsBeforeCreatingNativeResources) {
   EXPECT_THROW(static_cast<void>(Runtime(RuntimeOptions{})), InvalidArgumentError);
@@ -81,6 +98,32 @@ TEST(RuntimeTest, ReclaimsCompletedDeviceRetirementOnDemand) {
     auto replacement = Empty(context, Shape{2048}, DType::FLOAT32);
     EXPECT_EQ(runtime.GetStatistics().devices_[0].logical_live_bytes_, baseline + 8192);
     static_cast<void>(replacement);
+  }
+  runtime.Shutdown();
+  EXPECT_TRUE(sink->GetRecords().empty());
+}
+
+TEST(RuntimeTest, ClearsIncompleteDeviceRetirementBeforeCallerThreadAllocation) {
+  auto sink = std::make_shared<test::RecordingErrorSink>();
+  Runtime runtime{test::MakeRuntimeOptions({Device{0}}, sink)};
+  {
+    auto context = runtime.CreateExecutionContext(Device{0});
+    {
+      auto tensor = Empty(context, Shape{1024}, DType::FLOAT32);
+      static_cast<void>(tensor);
+    }
+    ASSERT_EQ(runtime.GetStatistics().devices_[0].pending_retirement_count_, 1);
+
+    auto cuda_api = internal::GetCudaApi();
+    cuda_api.query_event_ = ReportRetirementNotReady;
+    cuda_api.get_last_error_ = ClearRetirementNotReady;
+    retirement_not_ready_clear_count.store(0, std::memory_order_relaxed);
+    {
+      const internal::ScopedCudaApiOverride override{cuda_api};
+      auto replacement = Empty(context, Shape{1024}, DType::FLOAT32);
+      static_cast<void>(replacement);
+    }
+    EXPECT_EQ(retirement_not_ready_clear_count.load(std::memory_order_relaxed), 1);
   }
   runtime.Shutdown();
   EXPECT_TRUE(sink->GetRecords().empty());
