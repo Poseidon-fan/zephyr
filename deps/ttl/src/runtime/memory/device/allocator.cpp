@@ -3,8 +3,6 @@
 #include <algorithm>
 #include <atomic>
 #include <bit>
-#include <chrono>
-#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
@@ -14,10 +12,8 @@
 #include <optional>
 #include <shared_mutex>
 #include <source_location>
-#include <stop_token>
 #include <string>
 #include <string_view>
-#include <thread>
 #include <utility>
 #include <vector>
 
@@ -50,8 +46,6 @@ namespace ttl::internal {
 namespace {
 
 constexpr size_t MAXIMUM_DEVICE_ALIGNMENT = 256;
-constexpr auto MAINTENANCE_INTERVAL = std::chrono::milliseconds{1};
-
 class OutstandingStorageGuard final {
  public:
   OutstandingStorageGuard(std::atomic<uint64_t> &count, bool active) noexcept : count_(count), active_(active) {}
@@ -144,14 +138,7 @@ class DeviceAllocatorImpl final {
   DeviceAllocatorImpl(DeviceAllocatorImpl &&) = delete;
   auto operator=(DeviceAllocatorImpl &&) -> DeviceAllocatorImpl & = delete;
 
-  ~DeviceAllocatorImpl() noexcept { StopWorkerNoexcept(); }
-
-  void StartWorker() {
-    if (!options_.enable_maintenance_thread_) {
-      return;
-    }
-    maintenance_worker_ = std::jthread{[this](const std::stop_token &stop_token) { MaintenanceLoop(stop_token); }};
-  }
+  ~DeviceAllocatorImpl() noexcept = default;
 
   [[nodiscard]] auto Allocate(const std::shared_ptr<DeviceAllocator> &allocator, const Stream &stream, size_t bytes,
                               size_t alignment, const AllocationContext &context) -> std::shared_ptr<Storage> {
@@ -171,6 +158,8 @@ class DeviceAllocatorImpl final {
       return std::shared_ptr<Storage>{std::move(storage)};
     }
 
+    PollPendingRetirements();
+    lifecycle_.RequireRunning("device allocator", context.location_);
     const auto requested_bytes = CheckedNarrow<uint64_t>(bytes, "device allocation byte count", context.location_);
     auto retirement_ticket = retirements_.Reserve(context.location_);
     auto budget = ReserveBudget(requested_bytes, context);
@@ -231,6 +220,8 @@ class DeviceAllocatorImpl final {
       throw InvalidArgumentError(FormatWrongStreamDevice(device_, allocation_stream.GetDevice()), location);
     }
     ValidateExternal(pointer, capacity_bytes, ownership, owner, location);
+    PollPendingRetirements();
+    lifecycle_.RequireRunning("device allocator", location);
 
     const auto kind =
         ownership == ExternalOwnership::BORROWED ? AllocationKind::EXTERNAL_BORROWED : AllocationKind::EXTERNAL_OWNED;
@@ -408,7 +399,6 @@ class DeviceAllocatorImpl final {
       }
     }
 
-    StopWorker();
     const std::unique_lock lifecycle_lock{lifecycle_latch_};
     DrainRetirements(location);
 
@@ -423,7 +413,6 @@ class DeviceAllocatorImpl final {
   }
 
   [[nodiscard]] auto TryCloseWithoutSynchronization() noexcept -> bool {
-    StopWorkerNoexcept();
     if (outstanding_storage_count_.load(std::memory_order_acquire) != 0 || retirements_.GetPendingCount() != 0) {
       ReportErrorNoexcept(ErrorCode::INTERNAL,
                           "device allocator was destroyed without Shutdown while Storage or retirement records remain",
@@ -443,6 +432,12 @@ class DeviceAllocatorImpl final {
   [[nodiscard]] auto GetDevice() const noexcept -> Device { return device_; }
 
  private:
+  void PollPendingRetirements() noexcept {
+    if (retirements_.GetPendingCount() != 0) {
+      PollRetirements();
+    }
+  }
+
   void PollRetirements() noexcept {
     const auto poll_context = MakeContext(device_, location_);
     CleanupDeviceGuard device_guard{device_, *error_sink_, poll_context, "poll allocation retirements",
@@ -525,7 +520,6 @@ class DeviceAllocatorImpl final {
 
   void Enqueue(RetirementTicket retirement_ticket, DeviceRetirement record) noexcept {
     retirements_.Enqueue(std::move(retirement_ticket), std::move(record));
-    maintenance_condition_.notify_one();
   }
 
   void Quarantine(DeviceRetirement &record) noexcept {
@@ -546,6 +540,11 @@ class DeviceAllocatorImpl final {
 
   [[nodiscard]] auto ReserveBudget(uint64_t bytes, const AllocationContext &context) -> AllocationBudget::Reservation {
     auto result = budget_.Reserve(bytes);
+    if (result.failure_ == BudgetFailure::LIMIT && retirements_.GetPendingCount() != 0) {
+      PollRetirements();
+      lifecycle_.RequireRunning("device allocator", context.location_);
+      result = budget_.Reserve(bytes);
+    }
     if (result.failure_ == BudgetFailure::OVERFLOW) {
       throw OverflowError("device allocator physical byte count overflow", context.location_);
     }
@@ -741,46 +740,6 @@ class DeviceAllocatorImpl final {
               location);
   }
 
-  void MaintenanceLoop(const std::stop_token &stop_token) noexcept {
-    std::unique_lock lock{maintenance_latch_};
-    while (!stop_token.stop_requested()) {
-      if (retirements_.GetPendingCount() == 0) {
-        maintenance_condition_.wait(lock, stop_token, [this] { return retirements_.GetPendingCount() != 0; });
-      } else {
-        maintenance_condition_.wait_for(lock, stop_token, MAINTENANCE_INTERVAL, [] { return false; });
-      }
-      if (stop_token.stop_requested()) {
-        return;
-      }
-      if (lifecycle_.GetStatus() == AllocatorStatus::FAILED) {
-        return;
-      }
-      lock.unlock();
-      Poll();
-      lock.lock();
-    }
-  }
-
-  void StopWorker() {
-    if (!maintenance_worker_.joinable()) {
-      return;
-    }
-    maintenance_worker_.request_stop();
-    maintenance_condition_.notify_all();
-    maintenance_worker_.join();
-  }
-
-  void StopWorkerNoexcept() noexcept {
-    try {
-      StopWorker();
-    } catch (const std::exception &error) {
-      ReportErrorNoexcept(ErrorCode::INTERNAL, error.what(), *error_sink_, MakeContext(device_, location_));
-    } catch (...) {
-      ReportErrorNoexcept(ErrorCode::INTERNAL, "unknown failure while stopping allocator maintenance worker",
-                          *error_sink_, MakeContext(device_, location_));
-    }
-  }
-
   Device device_;
   std::shared_ptr<ErrorSink> error_sink_;
   std::shared_ptr<EventPool> event_pool_;
@@ -804,10 +763,6 @@ class DeviceAllocatorImpl final {
   std::atomic<uint64_t> outstanding_storage_count_{0};
 
   RetirementQueue<DeviceRetirement> retirements_;
-
-  std::mutex maintenance_latch_;
-  std::condition_variable_any maintenance_condition_;
-  std::jthread maintenance_worker_;
 };
 
 auto DeviceAllocator::Create(Device device, const std::shared_ptr<ErrorSink> &error_sink,
@@ -822,9 +777,7 @@ auto DeviceAllocator::Create(Device device, const std::shared_ptr<ErrorSink> &er
   auto pool = CudaMemoryPool::Create(device, error_sink, options.release_threshold_bytes_, location);
   auto impl = std::make_unique<DeviceAllocatorImpl>(device, error_sink, event_pool, options, std::move(pool),
                                                     reclaim_state, location);
-  auto allocator = std::shared_ptr<DeviceAllocator>{new DeviceAllocator(std::move(impl))};
-  allocator->impl_->StartWorker();
-  return allocator;
+  return std::shared_ptr<DeviceAllocator>{new DeviceAllocator(std::move(impl))};
 }
 
 DeviceAllocator::DeviceAllocator(std::unique_ptr<DeviceAllocatorImpl> impl) noexcept : impl_(std::move(impl)) {}

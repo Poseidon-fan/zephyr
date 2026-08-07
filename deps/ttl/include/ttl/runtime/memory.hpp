@@ -15,8 +15,6 @@ struct DeviceMemoryOptions final {
   uint64_t release_threshold_bytes_{std::numeric_limits<uint64_t>::max()};
   /** Maximum bytes allocated or asynchronously retiring; zero disables the TTL budget. */
   uint64_t max_live_bytes_{0};
-  /** Whether a host thread polls completed asynchronous retirements. */
-  bool enable_maintenance_thread_{true};
 };
 
 /** Configures the process-wide page-locked host-memory cache and admission budget. */

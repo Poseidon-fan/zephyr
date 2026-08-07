@@ -85,7 +85,6 @@ void ValidateRuntimeOptions(const RuntimeOptions &options, std::source_location 
   return DeviceAllocatorOptions{
       .release_threshold_bytes_ = options.release_threshold_bytes_,
       .max_live_bytes_ = options.max_live_bytes_,
-      .enable_maintenance_thread_ = options.enable_maintenance_thread_,
   };
 }
 
@@ -458,7 +457,7 @@ void RuntimeState::TrimPinnedMemory(std::source_location location) {
 void RuntimeState::Poll() noexcept {
   const std::scoped_lock lock{lifecycle_latch_};
   // Capture cleanup must progress before ordinary allocators: graph-owned resources can retain streams, events, and
-  // allocations. Allocator maintenance is skipped during active capture to avoid capture-unsafe CUDA calls.
+  // allocations. Allocator polling is skipped during active capture to avoid capture-unsafe CUDA calls.
   std::erase_if(capture_sessions_, [](const auto &weak_session) {
     const auto session = weak_session.lock();
     if (session == nullptr) {

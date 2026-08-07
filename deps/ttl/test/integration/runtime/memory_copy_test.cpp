@@ -189,7 +189,6 @@ TEST(RuntimeMemoryIntegrationTest, PreservesAllocationAndRecoveryFailuresWhenPin
 TEST(RuntimeMemoryIntegrationTest, QuarantinesPinnedRetirementWhenEventQueryFails) {
   auto sink = std::make_shared<test::RecordingErrorSink>();
   auto options = test::MakeRuntimeOptions({Device{0}}, sink);
-  options.device_memory_.enable_maintenance_thread_ = false;
   Runtime runtime{options};
   {
     auto context = runtime.CreateExecutionContext(Device{0});

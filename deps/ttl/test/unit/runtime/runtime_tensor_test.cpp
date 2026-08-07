@@ -7,6 +7,7 @@
 #include <utility>
 #include <vector>
 
+#include <cuda_runtime_api.h>
 #include <gtest/gtest.h>
 
 #include "support/tensor_test_utils.hpp"
@@ -57,6 +58,32 @@ TEST(RuntimeTest, ExposesAllocatorAndLifecycleStatistics) {
   EXPECT_GE(during.devices_[0].allocation_count_, before.devices_[0].allocation_count_ + 1);
   EXPECT_GT(during.devices_[0].blas_workspace_bytes_, 0);
   static_cast<void>(tensor);
+}
+
+TEST(RuntimeTest, ReclaimsCompletedDeviceRetirementOnDemand) {
+  auto sink = std::make_shared<test::RecordingErrorSink>();
+  auto options = test::MakeRuntimeOptions({Device{0}}, sink);
+  options.device_memory_.max_live_bytes_ = 16384;
+  Runtime runtime{options};
+  {
+    auto context = runtime.CreateExecutionContext(Device{0});
+    const auto baseline = runtime.GetStatistics().devices_[0].logical_live_bytes_;
+    {
+      auto tensor = Empty(context, Shape{2048}, DType::FLOAT32);
+      EXPECT_EQ(runtime.GetStatistics().devices_[0].logical_live_bytes_, baseline + 8192);
+    }
+
+    const auto retiring = runtime.GetStatistics();
+    EXPECT_EQ(retiring.devices_[0].logical_live_bytes_, baseline);
+    EXPECT_EQ(retiring.devices_[0].pending_retirement_count_, 1);
+    ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+
+    auto replacement = Empty(context, Shape{2048}, DType::FLOAT32);
+    EXPECT_EQ(runtime.GetStatistics().devices_[0].logical_live_bytes_, baseline + 8192);
+    static_cast<void>(replacement);
+  }
+  runtime.Shutdown();
+  EXPECT_TRUE(sink->GetRecords().empty());
 }
 
 TEST(RuntimeTest, SerializesConcurrentContextCreationAndShutdown) {

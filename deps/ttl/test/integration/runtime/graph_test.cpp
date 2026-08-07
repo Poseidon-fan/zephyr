@@ -68,7 +68,6 @@ auto FailGetDevice(int *device) -> cudaError_t {
 
 [[nodiscard]] auto MakeGraphRuntimeOptions(const std::shared_ptr<ErrorSink> &error_sink) -> RuntimeOptions {
   auto options = test::MakeRuntimeOptions({Device{0}}, error_sink);
-  options.device_memory_.enable_maintenance_thread_ = false;
   return options;
 }
 
