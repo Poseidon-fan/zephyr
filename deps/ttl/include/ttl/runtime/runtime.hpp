@@ -26,6 +26,7 @@ class Tensor;
 namespace internal {
 
 class RuntimeAccess;
+class RuntimeState;
 
 }  // namespace internal
 
@@ -132,9 +133,7 @@ class Runtime final {
  private:
   friend class internal::RuntimeAccess;
 
-  class Impl;
-
-  std::unique_ptr<Impl> impl_;
+  std::shared_ptr<internal::RuntimeState> state_;
 };
 
 static_assert(!std::copy_constructible<Runtime>);

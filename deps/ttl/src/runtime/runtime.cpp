@@ -568,68 +568,59 @@ void RuntimeState::Abandon() noexcept {
 
 namespace ttl {
 
-class Runtime::Impl final {
- public:
-  Impl(RuntimeOptions options, std::source_location location)
-      : state_(std::make_shared<internal::RuntimeState>(std::move(options), location)) {}
-
-  std::shared_ptr<internal::RuntimeState> state_;
-};
-
 Runtime::Runtime(RuntimeOptions options, std::source_location location)
-    : impl_(std::make_unique<Impl>(std::move(options), location)) {}
+    : state_(std::make_shared<internal::RuntimeState>(std::move(options), location)) {}
 
 Runtime::~Runtime() noexcept {
-  if (impl_ != nullptr) {
-    impl_->state_->Abandon();
+  if (state_ != nullptr) {
+    state_->Abandon();
   }
 }
 
-auto Runtime::GetDevices() const noexcept -> std::span<const Device> { return impl_->state_->GetDevices(); }
+auto Runtime::GetDevices() const noexcept -> std::span<const Device> { return state_->GetDevices(); }
 
 auto Runtime::GetDeviceProperties(Device device, std::source_location location) const -> const DeviceProperties & {
-  return impl_->state_->GetDeviceContext(device, location)->GetProperties();
+  return state_->GetDeviceContext(device, location)->GetProperties();
 }
 
 auto Runtime::CanAccessPeer(Device device, Device peer_device, std::source_location location) const -> bool {
-  return impl_->state_->CanAccessPeer(device, peer_device, location);
+  return state_->CanAccessPeer(device, peer_device, location);
 }
 
-auto Runtime::GetStatus() const noexcept -> RuntimeStatus { return impl_->state_->GetStatus(); }
+auto Runtime::GetStatus() const noexcept -> RuntimeStatus { return state_->GetStatus(); }
 
 auto Runtime::GetStatistics(std::source_location location) const -> RuntimeStatistics {
-  return impl_->state_->GetStatistics(location);
+  return state_->GetStatistics(location);
 }
 
 auto Runtime::CreateExecutionContext(Device device, const ExecutionContextOptions &options,
                                      std::source_location location) -> ExecutionContext {
-  auto registration = impl_->state_->BeginExecutionContextCreation(location);
-  const auto device_context = impl_->state_->GetDeviceContext(device, location);
-  auto stream =
-      internal::StreamAccess::CreateOwned(device, options.stream_priority_, impl_->state_->GetErrorSink(), location);
-  return internal::ContextAccess::Create(impl_->state_, std::move(registration), device_context, std::move(stream),
-                                         options, location);
+  auto registration = state_->BeginExecutionContextCreation(location);
+  const auto device_context = state_->GetDeviceContext(device, location);
+  auto stream = internal::StreamAccess::CreateOwned(device, options.stream_priority_, state_->GetErrorSink(), location);
+  return internal::ContextAccess::Create(state_, std::move(registration), device_context, std::move(stream), options,
+                                         location);
 }
 
 auto Runtime::WrapExternalStream(Device device, cudaStream_t stream, std::shared_ptr<void> owner,
                                  const ExecutionContextOptions &options, std::source_location location)
     -> ExecutionContext {
-  auto registration = impl_->state_->BeginExecutionContextCreation(location);
-  const auto device_context = impl_->state_->GetDeviceContext(device, location);
+  auto registration = state_->BeginExecutionContextCreation(location);
+  const auto device_context = state_->GetDeviceContext(device, location);
   auto wrapped_stream =
-      internal::StreamAccess::WrapExternal(device, stream, std::move(owner), impl_->state_->GetErrorSink(), location);
-  return internal::ContextAccess::Create(impl_->state_, std::move(registration), device_context,
-                                         std::move(wrapped_stream), options, location);
+      internal::StreamAccess::WrapExternal(device, stream, std::move(owner), state_->GetErrorSink(), location);
+  return internal::ContextAccess::Create(state_, std::move(registration), device_context, std::move(wrapped_stream),
+                                         options, location);
 }
 
 auto Runtime::FromBlob(ExecutionContext &context, ExternalDeviceMemory memory, const Shape &shape,
                        const Strides &strides, DType dtype, int64_t storage_offset, std::source_location location)
     -> Tensor {
   internal::ContextUseGuard use_guard{context, internal::ContextUseMode::SUBMIT, location};
-  if (impl_->state_->HasActiveCapture()) {
+  if (state_->HasActiveCapture()) {
     throw CaptureError("cannot wrap external memory during CUDA graph capture", location);
   }
-  if (internal::ContextAccess::GetRuntimeState(context, location).get() != impl_->state_.get()) {
+  if (internal::ContextAccess::GetRuntimeState(context, location).get() != state_.get()) {
     throw InvalidArgumentError("execution context belongs to a different runtime", location);
   }
   if (memory.device_ != context.GetDevice()) {
@@ -645,28 +636,28 @@ auto Runtime::FromBlob(ExecutionContext &context, ExternalDeviceMemory memory, c
 }
 
 auto Runtime::AllocatePinned(size_t bytes, std::source_location location) -> PinnedBuffer {
-  return impl_->state_->AllocatePinned(bytes, location);
+  return state_->AllocatePinned(bytes, location);
 }
 
 void Runtime::TrimMemory(Device device, size_t target_reserved_bytes, std::source_location location) {
-  impl_->state_->TrimMemory(device, target_reserved_bytes, location);
+  state_->TrimMemory(device, target_reserved_bytes, location);
 }
 
-void Runtime::TrimPinnedMemory(std::source_location location) { impl_->state_->TrimPinnedMemory(location); }
+void Runtime::TrimPinnedMemory(std::source_location location) { state_->TrimPinnedMemory(location); }
 
-void Runtime::Poll() noexcept { impl_->state_->Poll(); }
+void Runtime::Poll() noexcept { state_->Poll(); }
 
-void Runtime::Shutdown(std::source_location location) { impl_->state_->Shutdown(location); }
+void Runtime::Shutdown(std::source_location location) { state_->Shutdown(location); }
 
 }  // namespace ttl
 
 namespace ttl::internal {
 
 auto RuntimeAccess::GetState(Runtime &runtime, std::source_location location) -> const std::shared_ptr<RuntimeState> & {
-  if (runtime.impl_ == nullptr || runtime.impl_->state_ == nullptr) {
+  if (runtime.state_ == nullptr) {
     throw InvalidArgumentError("runtime has no state", location);
   }
-  return runtime.impl_->state_;
+  return runtime.state_;
 }
 
 }  // namespace ttl::internal

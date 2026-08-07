@@ -474,6 +474,7 @@ class DeviceAllocatorImpl final {
       checkout->Complete();
     }
   }
+
   [[nodiscard]] auto MakeUniqueStorage(Allocation &allocation, RetirementTicket &retirement_ticket,
                                        const std::shared_ptr<DeviceAllocator> &allocator,
                                        const std::shared_ptr<StreamState> &allocation_stream)
