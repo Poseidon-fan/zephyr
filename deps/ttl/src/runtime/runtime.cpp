@@ -323,11 +323,6 @@ auto RuntimeState::BeginExecutionContextCreation(std::source_location location) 
   return ExecutionContextRegistration{shared_from_this()};
 }
 
-void RuntimeState::CommitExecutionContextCreation(std::source_location location) {
-  const std::scoped_lock lock{lifecycle_latch_};
-  EnsureRunning(location);
-}
-
 void RuntimeState::UnregisterExecutionContext() noexcept {
   if (execution_context_count_.fetch_sub(1, std::memory_order_release) == 0) {
     std::terminate();

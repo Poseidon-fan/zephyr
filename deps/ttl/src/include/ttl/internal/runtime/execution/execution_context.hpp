@@ -46,7 +46,12 @@ enum class ContextUseMode : uint8_t {
   CLEANUP,
 };
 
-/** Move-only reservation that prevents Runtime shutdown while an ExecutionContext is being constructed or alive. */
+/**
+ * @brief Move-only reservation that prevents Runtime shutdown while an ExecutionContext is being constructed or alive.
+ *
+ * Creation acquires the reservation before constructing native resources. Any construction failure releases it via
+ * RAII; a successful construction moves it into ExecutionContextState for the complete context lifetime.
+ */
 class ExecutionContextRegistration final {
  public:
   ExecutionContextRegistration(const ExecutionContextRegistration &) = delete;
@@ -54,8 +59,6 @@ class ExecutionContextRegistration final {
   ExecutionContextRegistration(ExecutionContextRegistration &&other) noexcept;
   auto operator=(ExecutionContextRegistration &&) -> ExecutionContextRegistration & = delete;
   ~ExecutionContextRegistration() noexcept;
-
-  void Commit(std::source_location location);
 
  private:
   friend class RuntimeState;

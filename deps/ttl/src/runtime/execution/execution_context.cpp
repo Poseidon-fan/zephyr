@@ -47,13 +47,6 @@ ExecutionContextRegistration::~ExecutionContextRegistration() noexcept {
   }
 }
 
-void ExecutionContextRegistration::Commit(std::source_location location) {
-  if (runtime_state_ == nullptr) {
-    throw InternalError("cannot commit an empty execution context registration", location);
-  }
-  runtime_state_->CommitExecutionContextCreation(location);
-}
-
 ExecutionContextState::ExecutionContextState(std::shared_ptr<RuntimeState> runtime_state,
                                              ExecutionContextRegistration registration,
                                              std::shared_ptr<DeviceContext> device_context, ExecutionLane primary_lane,
@@ -140,7 +133,6 @@ auto ContextAccess::Create(const std::shared_ptr<RuntimeState> &runtime_state,
   auto device_error_state =
       DeviceErrorState::Create(device_context->GetAllocator(), primary_lane.GetStream(),
                                runtime_state->GetPinnedAllocator(), runtime_state->GetErrorSink(), location);
-  registration.Commit(location);
   return ExecutionContext{std::make_shared<ExecutionContextState>(
       runtime_state, std::move(registration), std::move(device_context), std::move(primary_lane),
       std::move(auxiliary_lanes), std::move(fork_event), std::move(join_events), std::move(device_error_state))};

@@ -92,7 +92,6 @@ class RuntimeState final : public std::enable_shared_from_this<RuntimeState> {
 
   void EnsureRunning(std::source_location location) const;
   [[nodiscard]] auto BeginExecutionContextCreation(std::source_location location) -> ExecutionContextRegistration;
-  void CommitExecutionContextCreation(std::source_location location);
   void UnregisterExecutionContext() noexcept;
   void RegisterGraph(std::source_location location);
   void UnregisterGraph() noexcept;
