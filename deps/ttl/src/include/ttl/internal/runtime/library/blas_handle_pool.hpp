@@ -74,7 +74,7 @@ class BlasHandlePool final {
   BlasHandlePool(BlasHandlePool &&) = delete;
   auto operator=(BlasHandlePool &&) -> BlasHandlePool & = delete;
 
-  ~BlasHandlePool() noexcept;
+  ~BlasHandlePool() noexcept = default;
 
   [[nodiscard]] auto Acquire(const Stream &stream, std::source_location location = std::source_location::current())
       -> BlasHandleLease;

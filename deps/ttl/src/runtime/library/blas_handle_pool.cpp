@@ -581,8 +581,6 @@ BlasHandlePool::BlasHandlePool(Device device, size_t workspace_bytes, std::share
     : state_(std::make_shared<BlasHandlePoolState>(device, workspace_bytes, std::move(error_sink),
                                                    std::move(event_pool), std::move(allocator), location)) {}
 
-BlasHandlePool::~BlasHandlePool() noexcept = default;
-
 auto BlasHandlePool::Acquire(const Stream &stream, std::source_location location) -> BlasHandleLease {
   return state_->Acquire(stream, location);
 }

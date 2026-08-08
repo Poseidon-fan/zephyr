@@ -44,7 +44,7 @@ class DeviceErrorState final {
   DeviceErrorState(DeviceErrorState &&) = delete;
   auto operator=(DeviceErrorState &&) -> DeviceErrorState & = delete;
 
-  ~DeviceErrorState() noexcept;
+  ~DeviceErrorState() noexcept = default;
 
   [[nodiscard]] auto Register(const Stream &stream, DType source_dtype, DType target_dtype,
                               std::source_location location) -> DeviceErrorLaunchContext;

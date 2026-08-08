@@ -137,8 +137,6 @@ auto DeviceErrorState::Create(const std::shared_ptr<DeviceAllocator> &allocator,
 DeviceErrorState::DeviceErrorState(std::shared_ptr<Storage> storage, PinnedBuffer host_record) noexcept
     : storage_(std::move(storage)), host_record_(std::move(host_record)) {}
 
-DeviceErrorState::~DeviceErrorState() noexcept = default;
-
 auto DeviceErrorState::Register(const Stream &stream, DType source_dtype, DType target_dtype,
                                 std::source_location location) -> DeviceErrorLaunchContext {
   if (stream.GetDevice() != storage_->GetDevice()) {

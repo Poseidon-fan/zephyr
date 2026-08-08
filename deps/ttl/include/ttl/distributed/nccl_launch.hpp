@@ -39,7 +39,7 @@ class NcclKernelLaunch final {
   auto operator=(const NcclKernelLaunch &) -> NcclKernelLaunch & = delete;
   NcclKernelLaunch(NcclKernelLaunch &&) = delete;
   auto operator=(NcclKernelLaunch &&) -> NcclKernelLaunch & = delete;
-  ~NcclKernelLaunch() noexcept;
+  ~NcclKernelLaunch() noexcept = default;
 
   [[nodiscard]] auto GetCudaLaunch() noexcept -> CudaKernelLaunch &;
   [[nodiscard]] auto GetCommunicator() const noexcept -> ncclComm_t;

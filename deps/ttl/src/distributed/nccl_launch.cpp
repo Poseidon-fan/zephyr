@@ -53,8 +53,6 @@ NcclKernelLaunch::NcclKernelLaunch(ExecutionContext &context, std::string_view o
   cuda_launch_.RetainCommunicator(state_);
 }
 
-NcclKernelLaunch::~NcclKernelLaunch() noexcept = default;
-
 auto NcclKernelLaunch::GetCudaLaunch() noexcept -> CudaKernelLaunch & { return cuda_launch_; }
 
 auto NcclKernelLaunch::GetCommunicator() const noexcept -> ncclComm_t { return communicator_; }
