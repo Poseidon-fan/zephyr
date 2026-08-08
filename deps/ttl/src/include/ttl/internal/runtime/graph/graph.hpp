@@ -47,6 +47,30 @@ enum class GraphCompletionState : uint8_t {
   STREAM,
 };
 
+/**
+ * @brief Move-only owners that keep CUDA graph-captured addresses and dependency resources alive.
+ *
+ * A capture session collects these owners, a live graph retains them through replay, and deferred cleanup keeps them
+ * alive until native graph destruction succeeds. This bundle intentionally excludes native graph handles, replay
+ * completion tracking, and lifecycle registrations because those have different semantics in each phase.
+ */
+struct CapturedGraphResources final {
+  CapturedGraphResources(std::shared_ptr<StreamState> primary_stream, std::vector<PooledEvent> dependency_events)
+      : primary_stream_(std::move(primary_stream)), dependency_events_(std::move(dependency_events)) {}
+
+  CapturedGraphResources(const CapturedGraphResources &) = delete;
+  auto operator=(const CapturedGraphResources &) -> CapturedGraphResources & = delete;
+  CapturedGraphResources(CapturedGraphResources &&) noexcept = default;
+  auto operator=(CapturedGraphResources &&) noexcept -> CapturedGraphResources & = default;
+  ~CapturedGraphResources() noexcept = default;
+
+  std::shared_ptr<StreamState> primary_stream_;
+  std::vector<std::shared_ptr<StreamState>> auxiliary_streams_;
+  std::vector<PooledEvent> dependency_events_;
+  std::map<const Storage *, std::shared_ptr<Storage>> storage_;
+  std::map<const CommunicatorGroupState *, std::shared_ptr<CommunicatorGroupState>> communicators_;
+};
+
 /** Move-only token that releases one RuntimeState capture count exactly once. */
 class CaptureRegistration final {
  public:
@@ -103,8 +127,7 @@ class CaptureSessionState final : public std::enable_shared_from_this<CaptureSes
 
  private:
   CaptureSessionState(std::shared_ptr<ExecutionContextState> context, std::shared_ptr<RuntimeState> runtime_state,
-                      std::shared_ptr<StreamState> primary_stream, std::vector<PooledEvent> dependency_events,
-                      std::string name, std::source_location location) noexcept;
+                      CapturedGraphResources resources, std::string name, std::source_location location) noexcept;
 
   void CompleteCapture(CaptureStatus final_status) noexcept;
   void CancelBeforeNativeCapture() noexcept;
@@ -112,11 +135,7 @@ class CaptureSessionState final : public std::enable_shared_from_this<CaptureSes
 
   std::shared_ptr<ExecutionContextState> context_;
   std::shared_ptr<RuntimeState> runtime_state_;
-  std::shared_ptr<StreamState> primary_stream_;
-  std::vector<std::shared_ptr<StreamState>> auxiliary_streams_;
-  std::vector<PooledEvent> dependency_events_;
-  std::map<const Storage *, std::shared_ptr<Storage>> retained_storage_;
-  std::map<const CommunicatorGroupState *, std::shared_ptr<CommunicatorGroupState>> retained_communicators_;
+  CapturedGraphResources resources_;
   std::string name_;
   std::source_location location_;
   CaptureRegistration registration_;
@@ -129,11 +148,7 @@ class CaptureSessionState final : public std::enable_shared_from_this<CaptureSes
 /** Complete native graph bundle retained after a no-throw destruction failure. */
 class GraphCleanupState final {
  public:
-  GraphCleanupState(cudaGraph_t graph, cudaGraphExec_t executable, std::shared_ptr<StreamState> primary_stream,
-                    std::vector<std::shared_ptr<StreamState>> auxiliary_streams,
-                    std::vector<PooledEvent> dependency_events,
-                    std::map<const Storage *, std::shared_ptr<Storage>> storage,
-                    std::map<const CommunicatorGroupState *, std::shared_ptr<CommunicatorGroupState>> communicators,
+  GraphCleanupState(cudaGraph_t graph, cudaGraphExec_t executable, CapturedGraphResources resources,
                     std::optional<PooledEvent> completion_event, GraphCompletionState completion_state,
                     std::source_location location, bool registrations_active) noexcept;
 
@@ -151,11 +166,7 @@ class GraphCleanupState final {
 
   cudaGraph_t graph_;
   cudaGraphExec_t executable_;
-  std::shared_ptr<StreamState> primary_stream_;
-  std::vector<std::shared_ptr<StreamState>> auxiliary_streams_;
-  std::vector<PooledEvent> dependency_events_;
-  std::map<const Storage *, std::shared_ptr<Storage>> storage_;
-  std::map<const CommunicatorGroupState *, std::shared_ptr<CommunicatorGroupState>> communicators_;
+  CapturedGraphResources resources_;
   std::optional<PooledEvent> completion_event_;
   GraphCompletionState completion_state_;
   std::source_location location_;
@@ -167,13 +178,9 @@ class GraphCleanupState final {
 class CapturedGraphState final {
  public:
   CapturedGraphState(Device device, uint64_t stream_id, cudaGraph_t graph, cudaGraphExec_t executable,
-                     std::shared_ptr<StreamState> primary_stream,
-                     std::vector<std::shared_ptr<StreamState>> auxiliary_streams,
-                     std::vector<PooledEvent> dependency_events,
-                     std::map<const Storage *, std::shared_ptr<Storage>> storage,
-                     std::map<const CommunicatorGroupState *, std::shared_ptr<CommunicatorGroupState>> communicators,
-                     PooledEvent completion_event, std::shared_ptr<RuntimeState> runtime_state, std::string name,
-                     size_t node_count, std::source_location location) noexcept;
+                     CapturedGraphResources resources, PooledEvent completion_event,
+                     std::shared_ptr<RuntimeState> runtime_state, std::string name, size_t node_count,
+                     std::source_location location) noexcept;
 
   CapturedGraphState(const CapturedGraphState &) = delete;
   auto operator=(const CapturedGraphState &) -> CapturedGraphState & = delete;
@@ -197,11 +204,7 @@ class CapturedGraphState final {
   uint64_t stream_id_;
   cudaGraph_t graph_;
   cudaGraphExec_t executable_;
-  std::shared_ptr<StreamState> primary_stream_;
-  std::vector<std::shared_ptr<StreamState>> auxiliary_streams_;
-  std::vector<PooledEvent> dependency_events_;
-  std::map<const Storage *, std::shared_ptr<Storage>> storage_;
-  std::map<const CommunicatorGroupState *, std::shared_ptr<CommunicatorGroupState>> communicators_;
+  CapturedGraphResources resources_;
   std::optional<PooledEvent> completion_event_;
   GraphCompletionState completion_state_{GraphCompletionState::COMPLETE};
   std::shared_ptr<RuntimeState> runtime_state_;
