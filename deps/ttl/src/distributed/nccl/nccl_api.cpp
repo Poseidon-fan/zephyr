@@ -9,7 +9,6 @@ namespace ttl::internal {
 namespace {
 
 constinit const NcclApi NCCL_API{
-    .get_version_ = ncclGetVersion,
     .get_unique_id_ = ncclGetUniqueId,
     .comm_init_rank_config_ = ncclCommInitRankConfig,
     .comm_get_async_error_ = ncclCommGetAsyncError,

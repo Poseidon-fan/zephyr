@@ -6,7 +6,6 @@ namespace ttl::internal {
 
 /** Injectable NCCL entry points used by communicator lifecycle and collective submission. */
 struct NcclApi final {
-  decltype(&ncclGetVersion) get_version_;
   decltype(&ncclGetUniqueId) get_unique_id_;
   decltype(&ncclCommInitRankConfig) comm_init_rank_config_;
   decltype(&ncclCommGetAsyncError) comm_get_async_error_;

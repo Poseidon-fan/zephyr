@@ -37,7 +37,6 @@
 namespace ttl::internal {
 namespace {
 
-constexpr int32_t MINIMUM_NCCL_VERSION = 21'403;
 constexpr auto POLL_INTERVAL = std::chrono::milliseconds{1};
 
 [[nodiscard]] auto FormatRankOutOfRange(size_t rank, size_t world_size) -> std::string {
@@ -53,12 +52,6 @@ constexpr auto POLL_INTERVAL = std::chrono::milliseconds{1};
   std::string message{"communicator rank "};
   message.append(std::to_string(rank));
   message.append(" is already in use by another host submission");
-  return message;
-}
-
-[[nodiscard]] auto FormatNcclVersion(int32_t version) -> std::string {
-  std::string message{"TTL requires NCCL 2.14.3 or newer, but found version "};
-  message.append(std::to_string(version));
   return message;
 }
 
@@ -144,12 +137,6 @@ auto CommunicatorGroupState::Create(const std::shared_ptr<RuntimeState> &runtime
         rank_order.end()) {
       throw InvalidArgumentError("communicator rank order must contain unique CUDA devices", location);
     }
-  }
-
-  int version = 0;
-  CheckNccl(GetNcclApi().get_version_(&version), "ncclGetVersion", location);
-  if (version < MINIMUM_NCCL_VERSION) {
-    throw NotSupportedError(FormatNcclVersion(version), location);
   }
 
   auto state = std::shared_ptr<CommunicatorGroupState>{
