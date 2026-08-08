@@ -13,6 +13,12 @@
 
 namespace ttl {
 
+namespace internal {
+
+class CommunicatorGroupState;
+
+}  // namespace internal
+
 class ExecutionContext;
 class NcclCommunicator;
 class Tensor;
@@ -49,12 +55,17 @@ class NcclKernelLaunch final {
                                      const std::function<ncclResult_t(size_t, NcclKernelLaunch &)> &function,
                                      std::source_location location);
 
-  class Impl;
-  explicit NcclKernelLaunch(std::unique_ptr<Impl> impl) noexcept;
+  NcclKernelLaunch(ExecutionContext &context, std::string_view operation, std::span<const Tensor> inputs,
+                   std::span<Tensor *const> outputs, const CudaKernelLaunchOptions &options,
+                   std::shared_ptr<internal::CommunicatorGroupState> state, size_t rank, ncclComm_t communicator,
+                   std::source_location location);
   void Finish();
   void FailAfterCallbackException() noexcept;
 
-  std::unique_ptr<Impl> impl_;
+  std::shared_ptr<internal::CommunicatorGroupState> state_;
+  size_t rank_;
+  ncclComm_t communicator_;
+  CudaKernelLaunch cuda_launch_;
 };
 
 using NcclKernelFunction = std::function<ncclResult_t(NcclKernelLaunch &)>;
