@@ -1,11 +1,15 @@
 include_guard(GLOBAL)
 
 function(zephyr_require_googletest)
-    if(TARGET GTest::gtest OR TARGET GTest::gmock_main)
-        if(TARGET GTest::gtest AND TARGET GTest::gmock_main)
+    if(TARGET GTest::gtest OR TARGET GTest::gtest_main OR TARGET GTest::gmock OR TARGET GTest::gmock_main)
+        if(TARGET GTest::gtest AND TARGET GTest::gtest_main AND TARGET GTest::gmock AND TARGET GTest::gmock_main)
             return()
         endif()
-        message(FATAL_ERROR "GoogleTest was only partially provided; expected GTest::gtest and GTest::gmock_main")
+        message(
+            FATAL_ERROR
+            "GoogleTest was only partially provided; expected GTest::gtest, GTest::gtest_main, "
+            "GTest::gmock, and GTest::gmock_main"
+        )
     endif()
 
     include(FetchContent)
@@ -22,7 +26,12 @@ function(zephyr_require_googletest)
     )
     FetchContent_MakeAvailable(googletest)
 
-    if(NOT TARGET GTest::gtest OR NOT TARGET GTest::gmock_main)
+    if(
+        NOT TARGET GTest::gtest
+        OR NOT TARGET GTest::gtest_main
+        OR NOT TARGET GTest::gmock
+        OR NOT TARGET GTest::gmock_main
+    )
         message(FATAL_ERROR "The configured GoogleTest source did not provide the required imported targets")
     endif()
 endfunction()
