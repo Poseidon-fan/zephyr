@@ -103,6 +103,7 @@ function(ttl_add_test target_name)
 
     gtest_discover_tests(
         ${target_name}
+        EXTRA_ARGS --gtest_catch_exceptions=0
         DISCOVERY_MODE PRE_TEST
         DISCOVERY_TIMEOUT 30
         PROPERTIES ${ttl_test_properties}
@@ -119,56 +120,98 @@ ttl_add_test(
 ttl_add_test(
     ttl_host_tests
     SOURCES
-        host/common_test.cpp
-        host/tensor_value_test.cpp
-    LABELS unit
+        unit/common/common_test.cpp
+        unit/common/error_test.cpp
+        unit/tensor/dtype_test.cpp
+        unit/tensor/shape_scalar_test.cpp
+        unit/tensor/value_test.cpp
+        unit/runtime/cuda_check_test.cpp
+        unit/runtime/memory_primitives_test.cpp
+        unit/runtime/runtime_boundary_test.cpp
+    LABELS unit host
 )
 
 ttl_add_test(
-    ttl_runtime_tests
-    CUDA
+    ttl_distributed_unit_tests
     SOURCES
-        runtime/runtime_test.cpp
-        runtime/kernel_launch_test.cu
-    LABELS runtime integration
+        unit/distributed/collective_common_test.cpp
+    LABELS unit distributed
 )
 
 ttl_add_test(
     ttl_tensor_tests
     CUDA
     SOURCES
-        tensor/tensor_layout_test.cpp
-    LABELS tensor unit
+        unit/tensor/layout_test.cpp
+        unit/tensor/tensor_layout_test.cpp
+    LABELS unit tensor
 )
 
 ttl_add_test(
     ttl_ops_tests
     CUDA
     SOURCES
-        ops/creation_elementwise_test.cpp
-        ops/reduction_indexing_test.cpp
-        ops/linalg_normalization_test.cpp
-        ops/random_selection_test.cpp
-    LABELS ops unit
+        unit/ops/creation_elementwise_test.cpp
+        unit/ops/elementwise_creation_test.cpp
+        unit/ops/linalg_normalization_test.cpp
+        unit/ops/matmul_attention_random_test.cpp
+        unit/ops/random_selection_test.cpp
+        unit/ops/reduction_indexing_contract_test.cpp
+        unit/ops/reduction_indexing_internal_test.cpp
+        unit/ops/output_contract_test.cpp
+    LABELS unit ops
     TIMEOUT 120
 )
 
 ttl_add_test(
-    ttl_integration_tests
+    ttl_runtime_tests
     CUDA
     SOURCES
-        integration/async_graph_test.cpp
-    LABELS integration
+        unit/runtime/kernel_launch_test.cu
+        unit/runtime/public_kernel_launch_test.cu
+    LABELS unit runtime
+)
+
+ttl_add_test(
+    ttl_runtime_integration_tests
+    CUDA
+    SOURCES
+        integration/runtime/runtime_api_test.cpp
+        integration/runtime/runtime_tensor_test.cpp
+        integration/runtime/graph_test.cpp
+        integration/runtime/memory_copy_test.cpp
+    LABELS integration runtime
     TIMEOUT 120
 )
 
 ttl_add_test(
-    ttl_distributed_tests
+    ttl_runtime_system_tests
+    CUDA
+    SOURCES
+        system/runtime/async_graph_test.cpp
+    LABELS system runtime
+    TIMEOUT 120
+)
+
+ttl_add_test(
+    ttl_distributed_integration_tests
     CUDA
     MULTI_GPU
     SOURCES
-        distributed/distributed_test.cpp
-    LABELS distributed integration
+        integration/distributed/collective_test.cpp
+        integration/distributed/nccl_rank_local_test.cpp
+    LABELS integration distributed
+    TIMEOUT 180
+)
+
+ttl_add_test(
+    ttl_distributed_system_tests
+    CUDA
+    MULTI_GPU
+    SOURCES
+        system/distributed/distributed_workflow_test.cpp
+    LABELS system distributed
+    TIMEOUT 180
 )
 
 add_custom_target(
