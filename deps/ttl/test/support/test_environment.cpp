@@ -1,13 +1,31 @@
 #include "support/test_environment.hpp"
 
 #include <algorithm>
+#include <cstdlib>
 #include <exception>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 
 #include <cuda_runtime_api.h>
 
 namespace ttl::test {
+
+namespace {
+
+auto RequireCudaInThisJob() -> bool {
+  const char *value = std::getenv("TTL_TEST_REQUIRE_CUDA");
+  return value != nullptr && std::string_view{value} == "1";
+}
+
+void SkipOrFailForMissingCuda(std::string_view message) {
+  if (RequireCudaInThisJob()) {
+    FAIL() << message;
+  }
+  GTEST_SKIP() << message;
+}
+
+}  // namespace
 
 auto GetCudaDeviceCount() -> size_t {
   int count = 0;
@@ -24,13 +42,30 @@ auto GetCudaDeviceCount() -> size_t {
 
 auto GetTestDevices(size_t count) -> std::vector<Device> {
   const size_t available = GetCudaDeviceCount();
-  const size_t selected = std::min(count, available);
   std::vector<Device> devices;
-  devices.reserve(selected);
-  for (size_t index = 0; index < selected; ++index) {
+  devices.reserve(std::min(count, available));
+  for (size_t index = 0; index < available && devices.size() < count; ++index) {
+    cudaDeviceProp properties{};
+    const cudaError_t status = cudaGetDeviceProperties(&properties, static_cast<int>(index));
+    if (status != cudaSuccess) {
+      static_cast<void>(cudaGetLastError());
+      continue;
+    }
+    const int compute_capability = (properties.major * 10) + properties.minor;
+    if (compute_capability < 80) {
+      continue;
+    }
     devices.emplace_back(static_cast<int32_t>(index));
   }
   return devices;
+}
+
+auto GetTestDevice(size_t index) -> Device {
+  const auto devices = GetTestDevices(index + 1);
+  if (devices.size() <= index) {
+    throw std::runtime_error("requested CUDA test device is unavailable");
+  }
+  return devices[index];
 }
 
 void RecordingErrorSink::Report(ErrorRecord error) noexcept {
@@ -48,10 +83,18 @@ auto RecordingErrorSink::GetRecords() const -> std::vector<ErrorRecord> {
   return records_;
 }
 
+void CudaDeviceTest::SetUp() {
+  const auto devices = GetTestDevices(1);
+  if (devices.empty()) {
+    SkipOrFailForMissingCuda("TTL CUDA tests require one SM80+ NVIDIA GPU");
+  }
+  device_ = devices.front();
+}
+
 void SingleDeviceTest::SetUp() {
   auto devices = GetTestDevices(1);
   if (devices.empty()) {
-    GTEST_SKIP() << "TTL CUDA tests require one SM80+ NVIDIA GPU";
+    SkipOrFailForMissingCuda("TTL CUDA tests require one SM80+ NVIDIA GPU");
   }
 
   device_ = devices.front();
@@ -73,19 +116,28 @@ void SingleDeviceTest::TearDown() {
     context_.reset();
   }
   if (runtime_ != nullptr) {
-    try {
-      runtime_->Shutdown();
-    } catch (const std::exception &error) {
-      ADD_FAILURE() << "runtime shutdown failed during teardown: " << error.what();
+    if (runtime_->GetStatus() != RuntimeStatus::CLOSED) {
+      try {
+        runtime_->Shutdown();
+      } catch (const std::exception &error) {
+        ADD_FAILURE() << "runtime shutdown failed during teardown: " << error.what();
+      }
     }
     runtime_.reset();
+  }
+}
+
+void SingleDeviceTest::ShutdownRuntime() {
+  context_.reset();
+  if (runtime_ != nullptr && runtime_->GetStatus() != RuntimeStatus::CLOSED) {
+    runtime_->Shutdown();
   }
 }
 
 void MultiDeviceTest::SetUp() {
   devices_ = GetTestDevices(2);
   if (devices_.size() < 2) {
-    GTEST_SKIP() << "TTL multi-GPU tests require at least two SM80+ NVIDIA GPUs";
+    SkipOrFailForMissingCuda("TTL multi-GPU tests require at least two SM80+ NVIDIA GPUs");
   }
 
   error_sink_ = std::make_shared<RecordingErrorSink>();
@@ -109,12 +161,21 @@ void MultiDeviceTest::TearDown() {
   }
   contexts_.clear();
   if (runtime_ != nullptr) {
-    try {
-      runtime_->Shutdown();
-    } catch (const std::exception &error) {
-      ADD_FAILURE() << "runtime shutdown failed during teardown: " << error.what();
+    if (runtime_->GetStatus() != RuntimeStatus::CLOSED) {
+      try {
+        runtime_->Shutdown();
+      } catch (const std::exception &error) {
+        ADD_FAILURE() << "runtime shutdown failed during teardown: " << error.what();
+      }
     }
     runtime_.reset();
+  }
+}
+
+void MultiDeviceTest::ShutdownRuntime() {
+  contexts_.clear();
+  if (runtime_ != nullptr && runtime_->GetStatus() != RuntimeStatus::CLOSED) {
+    runtime_->Shutdown();
   }
 }
 

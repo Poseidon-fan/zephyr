@@ -4,7 +4,8 @@
 
 #include <gtest/gtest.h>
 
-#include "support/tensor_test_utils.hpp"
+#include "support/test_environment.hpp"
+#include "support/test_tensor.hpp"
 #include "ttl/common/error.hpp"
 #include "ttl/ops/copy.hpp"
 #include "ttl/tensor/layout.hpp"
@@ -13,9 +14,10 @@
 
 namespace ttl {
 
-TEST(LayoutTest, CreatesViewsAndMaterializesOnlyWhenRequired) {
-  test::RuntimeSession session;
-  auto &context = session.GetContext();
+class TensorViewTest : public test::SingleDeviceTest {};
+
+TEST_F(TensorViewTest, CreatesViewsAndMaterializesOnlyWhenRequired) {
+  auto &context = GetContext();
   auto input = test::Upload(context, Shape{2, 3}, std::vector<int32_t>{0, 1, 2, 3, 4, 5});
 
   auto viewed = View(input, Shape{3, 2});
@@ -41,9 +43,8 @@ TEST(LayoutTest, CreatesViewsAndMaterializesOnlyWhenRequired) {
   EXPECT_TRUE(test::Download<int32_t>(context, Contiguous(context, empty_slice)).empty());
 }
 
-TEST(LayoutTest, CoversSqueezeExpandSplitChunkAndInferenceErrors) {
-  test::RuntimeSession session;
-  auto &context = session.GetContext();
+TEST_F(TensorViewTest, CoversSqueezeExpandSplitChunkAndInferenceErrors) {
+  auto &context = GetContext();
   auto input = test::Upload(context, Shape{1, 4, 1}, std::vector<int64_t>{1, 2, 3, 4});
 
   auto squeezed = Squeeze(input);

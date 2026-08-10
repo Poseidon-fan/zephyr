@@ -6,7 +6,6 @@
 #include <thread>
 #include <vector>
 
-#include <cuda_runtime_api.h>
 #include <gtest/gtest.h>
 #include <nccl.h>
 
@@ -18,13 +17,6 @@
 
 namespace ttl {
 namespace {
-
-[[nodiscard]] auto HasTwoDevices() -> bool {
-  int count = 0;
-  const auto status = cudaGetDeviceCount(&count);
-  EXPECT_EQ(status, cudaSuccess);
-  return status == cudaSuccess && count >= 2;
-}
 
 template <typename Function>
 void RunRanks(std::array<ExecutionContext, 2> &contexts, std::array<NcclCommunicator *, 2> communicators,
@@ -57,15 +49,16 @@ void Synchronize(std::array<ExecutionContext, 2> &contexts) {
 }
 
 TEST(NcclRankLocalCollectiveTest, ExercisesEveryPublicRankLocalCollective) {
-  if (!HasTwoDevices()) {
+  const auto devices = test::GetTestDevices(2);
+  if (devices.size() < 2) {
     GTEST_SKIP() << "requires at least two CUDA devices";
   }
 
   auto sink = std::make_shared<test::RecordingErrorSink>();
-  Runtime runtime{test::MakeRuntimeOptions({Device{0}, Device{1}}, sink)};
+  Runtime runtime{test::MakeRuntimeOptions({devices[0], devices[1]}, sink)};
   {
-    std::array contexts{runtime.CreateExecutionContext(Device{0}), runtime.CreateExecutionContext(Device{1})};
-    auto group = LocalCommunicatorGroup::Create(runtime, std::array{Device{0}, Device{1}});
+    std::array contexts{runtime.CreateExecutionContext(devices[0]), runtime.CreateExecutionContext(devices[1])};
+    auto group = LocalCommunicatorGroup::Create(runtime, std::array{devices[0], devices[1]});
     std::array communicators{&group.GetCommunicator(0), &group.GetCommunicator(1)};
 
     std::array inputs{test::Upload(contexts[0], Shape{2}, std::vector<float>{1, 2}),

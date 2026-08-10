@@ -57,6 +57,17 @@ function(ttl_add_test target_name)
         message(FATAL_ERROR "ttl_add_test(${target_name}) requires SOURCES")
     endif()
 
+    set(ttl_layer_labels contract unit integration system)
+    set(ttl_layer_count 0)
+    foreach(ttl_layer IN LISTS ttl_layer_labels)
+        if(ttl_layer IN_LIST TTL_TEST_LABELS)
+            math(EXPR ttl_layer_count "${ttl_layer_count} + 1")
+        endif()
+    endforeach()
+    if(NOT ttl_layer_count EQUAL 1)
+        message(FATAL_ERROR "${target_name} must specify exactly one layer label: contract, unit, integration, or system")
+    endif()
+
     add_executable(${target_name} EXCLUDE_FROM_ALL ${TTL_TEST_SOURCES})
     add_dependencies(ttl_build_tests ${target_name})
     target_compile_features(${target_name} PRIVATE cxx_std_20 cuda_std_20)
@@ -97,6 +108,11 @@ function(ttl_add_test target_name)
     # CTest sees one LABELS property containing multiple labels.
     string(REPLACE ";" "\\\\;" ttl_test_labels_escaped "${ttl_test_labels}")
     set(ttl_test_properties LABELS "${ttl_test_labels_escaped}" TIMEOUT "${TTL_TEST_TIMEOUT}")
+    if(TTL_TEST_CUDA)
+        # CUDA tests share an explicitly named logical resource.  The resource name is independent of the number,
+        # model, or topology of GPUs on the host and prevents concurrent tests from corrupting one another's runtime.
+        list(APPEND ttl_test_properties RESOURCE_LOCK ttl_cuda)
+    endif()
     if(TTL_TEST_SERIAL OR TTL_TEST_MULTI_GPU)
         list(APPEND ttl_test_properties RUN_SERIAL TRUE)
     endif()
@@ -114,21 +130,33 @@ ttl_add_test(
     ttl_contract_tests
     SOURCES
         contract/public_api_contract_test.cpp
-    LABELS contract unit
+    LABELS contract
 )
 
 ttl_add_test(
-    ttl_host_tests
+    ttl_common_tests
     SOURCES
         unit/common/common_test.cpp
         unit/common/error_test.cpp
+    LABELS unit common
+)
+
+ttl_add_test(
+    ttl_tensor_host_tests
+    SOURCES
         unit/tensor/dtype_test.cpp
         unit/tensor/shape_scalar_test.cpp
         unit/tensor/value_test.cpp
+    LABELS unit tensor
+)
+
+ttl_add_test(
+    ttl_runtime_host_tests
+    SOURCES
         unit/runtime/cuda_check_test.cpp
         unit/runtime/memory_primitives_test.cpp
         unit/runtime/runtime_boundary_test.cpp
-    LABELS unit host
+    LABELS unit runtime
 )
 
 ttl_add_test(
@@ -148,16 +176,40 @@ ttl_add_test(
 )
 
 ttl_add_test(
-    ttl_ops_tests
+    ttl_creation_tests
     CUDA
     SOURCES
-        unit/ops/creation_elementwise_test.cpp
-        unit/ops/elementwise_creation_test.cpp
-        unit/ops/linalg_normalization_test.cpp
-        unit/ops/matmul_attention_random_test.cpp
+        unit/ops/creation_test.cpp
+        unit/ops/elementwise_test.cpp
+    LABELS unit ops
+    TIMEOUT 120
+)
+
+ttl_add_test(
+    ttl_linalg_tests
+    CUDA
+    SOURCES
+        unit/ops/linalg_test.cpp
+        unit/ops/attention_random_test.cpp
+    LABELS unit ops
+    TIMEOUT 120
+)
+
+ttl_add_test(
+    ttl_indexing_tests
+    CUDA
+    SOURCES
         unit/ops/random_selection_test.cpp
-        unit/ops/reduction_indexing_contract_test.cpp
-        unit/ops/reduction_indexing_internal_test.cpp
+        unit/ops/reduction_test.cpp
+        unit/ops/indexing_scan_selection_test.cpp
+    LABELS unit ops
+    TIMEOUT 120
+)
+
+ttl_add_test(
+    ttl_output_contract_tests
+    CUDA
+    SOURCES
         unit/ops/output_contract_test.cpp
     LABELS unit ops
     TIMEOUT 120

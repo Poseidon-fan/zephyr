@@ -4,7 +4,8 @@
 
 #include <gtest/gtest.h>
 
-#include "support/tensor_test_utils.hpp"
+#include "support/test_environment.hpp"
+#include "support/test_tensor.hpp"
 #include "ttl/common/error.hpp"
 #include "ttl/ops/cast.hpp"
 #include "ttl/ops/indexing.hpp"
@@ -17,9 +18,10 @@
 
 namespace ttl {
 
-TEST(ReductionTest, ReducesAxesAndReturnsStableArgIndices) {
-  test::RuntimeSession session;
-  auto &context = session.GetContext();
+class IndexingScanSelectionTest : public test::SingleDeviceTest {};
+
+TEST_F(IndexingScanSelectionTest, ReducesAxesAndReturnsStableArgIndices) {
+  auto &context = GetContext();
   auto input = test::Upload(context, Shape{2, 3}, std::vector<float>{1, 2, 3, 4, 5, 6});
   const auto rows = ReductionOptions{.axes_ = {1}, .keep_dimensions_ = false};
   EXPECT_EQ(test::Download<float>(context, Sum(context, input, rows)), (std::vector<float>{6, 15}));
@@ -31,9 +33,8 @@ TEST(ReductionTest, ReducesAxesAndReturnsStableArgIndices) {
   EXPECT_EQ(test::Download<int64_t>(context, ArgMax(context, ties, 0)), (std::vector<int64_t>{1}));
 }
 
-TEST(SoftmaxTest, NormalizesRowsAndComputesLogSoftmax) {
-  test::RuntimeSession session;
-  auto &context = session.GetContext();
+TEST_F(IndexingScanSelectionTest, NormalizesRowsAndComputesLogSoftmax) {
+  auto &context = GetContext();
   auto input = test::Upload(context, Shape{2, 3}, std::vector<float>{1, 2, 3, -1, -1, -1});
   auto softmax = test::Download<float>(context, Softmax(context, input, SoftmaxOptions{.axes_ = {1}}));
   EXPECT_NEAR(softmax[0], 0.0900306F, 1.0e-6F);
@@ -50,9 +51,8 @@ TEST(SoftmaxTest, NormalizesRowsAndComputesLogSoftmax) {
   EXPECT_THROW(static_cast<void>(Softmax(context, input, SoftmaxOptions{})), InvalidArgumentError);
 }
 
-TEST(NormalizationTest, ComputesLayerAndRmsNormalizationInFloatAccumulation) {
-  test::RuntimeSession session;
-  auto &context = session.GetContext();
+TEST_F(IndexingScanSelectionTest, ComputesLayerAndRmsNormalizationInFloatAccumulation) {
+  auto &context = GetContext();
   auto input = test::Upload(context, Shape{1, 3}, std::vector<float>{1, 2, 3});
   const auto options = NormOptions{.normalized_rank_ = 1, .epsilon_ = 0.0F};
   auto layer = test::Download<float>(context, LayerNorm(context, input, std::nullopt, std::nullopt, options));
@@ -66,9 +66,8 @@ TEST(NormalizationTest, ComputesLayerAndRmsNormalizationInFloatAccumulation) {
   EXPECT_NEAR(rms[2], 1.388730F, 1.0e-5F);
 }
 
-TEST(IndexingTest, SelectsAndGathersAlongArbitraryAxes) {
-  test::RuntimeSession session;
-  auto &context = session.GetContext();
+TEST_F(IndexingScanSelectionTest, SelectsAndGathersAlongArbitraryAxes) {
+  auto &context = GetContext();
   auto input = test::Upload(context, Shape{2, 3}, std::vector<int32_t>{10, 11, 12, 20, 21, 22});
   auto indices = test::Upload(context, Shape{2}, std::vector<int64_t>{2, 0});
   auto selected = IndexSelect(context, input, 1, indices);
@@ -79,9 +78,8 @@ TEST(IndexingTest, SelectsAndGathersAlongArbitraryAxes) {
   EXPECT_EQ(test::Download<int32_t>(context, gathered), (std::vector<int32_t>{11, 10, 22, 21}));
 }
 
-TEST(IndexingTest, GathersBooleanRows) {
-  test::RuntimeSession session;
-  auto &context = session.GetContext();
+TEST_F(IndexingScanSelectionTest, GathersBooleanRows) {
+  auto &context = GetContext();
   auto table = Cast(context, test::Upload(context, Shape{3, 2}, std::vector<uint8_t>{1, 0, 0, 1, 1, 1}), DType::BOOL);
   auto indices = test::Upload(context, Shape{2}, std::vector<int32_t>{2, 0});
   auto output = GatherRows(context, table, indices);
@@ -89,18 +87,16 @@ TEST(IndexingTest, GathersBooleanRows) {
   EXPECT_EQ(test::Download<uint8_t>(context, output), (std::vector<uint8_t>{1, 1, 1, 0}));
 }
 
-TEST(IndexingTest, SurfacesDeviceSideBoundsFailureAtExplicitErrorBoundary) {
-  test::RuntimeSession session;
-  auto &context = session.GetContext();
+TEST_F(IndexingScanSelectionTest, SurfacesDeviceSideBoundsFailureAtExplicitErrorBoundary) {
+  auto &context = GetContext();
   auto input = test::Upload(context, Shape{2}, std::vector<float>{1, 2});
   auto invalid_index = test::Upload(context, Shape{1}, std::vector<int64_t>{2});
   static_cast<void>(IndexSelect(context, input, 0, invalid_index));
   EXPECT_THROW(context.CheckAsyncErrors(), DeviceError);
 }
 
-TEST(IndexingTest, ScattersElementsIntoCopiedAndInPlaceOutputs) {
-  test::RuntimeSession session;
-  auto &context = session.GetContext();
+TEST_F(IndexingScanSelectionTest, ScattersElementsIntoCopiedAndInPlaceOutputs) {
+  auto &context = GetContext();
   auto input = test::Upload(context, Shape{2, 4}, std::vector<int32_t>{0, 1, 2, 3, 10, 11, 12, 13});
   auto indices = test::Upload(context, Shape{2, 2}, std::vector<int64_t>{3, 1, 0, 2});
   auto source = test::Upload(context, Shape{2, 2}, std::vector<int32_t>{30, 10, 100, 120});
@@ -113,9 +109,8 @@ TEST(IndexingTest, ScattersElementsIntoCopiedAndInPlaceOutputs) {
   EXPECT_EQ(test::Download<int32_t>(context, input), (std::vector<int32_t>{0, 10, 2, 30, 100, 11, 120, 13}));
 }
 
-TEST(ScanTest, ComputesStridedAndModularCumulativeSums) {
-  test::RuntimeSession session;
-  auto &context = session.GetContext();
+TEST_F(IndexingScanSelectionTest, ComputesStridedAndModularCumulativeSums) {
+  auto &context = GetContext();
   auto input = test::Upload(context, Shape{2, 3}, std::vector<int32_t>{1, 2, 3, 4, 5, 6});
   EXPECT_EQ(test::Download<int32_t>(context, CumulativeSum(context, input, 1)),
             (std::vector<int32_t>{1, 3, 6, 4, 9, 15}));
@@ -131,9 +126,8 @@ TEST(ScanTest, ComputesStridedAndModularCumulativeSums) {
   EXPECT_EQ(test::Download<uint8_t>(context, CumulativeSum(context, bytes, 0)), (std::vector<uint8_t>{250, 4}));
 }
 
-TEST(TopKTest, ReturnsSortedValuesAndOriginalIndices) {
-  test::RuntimeSession session;
-  auto &context = session.GetContext();
+TEST_F(IndexingScanSelectionTest, ReturnsSortedValuesAndOriginalIndices) {
+  auto &context = GetContext();
   auto input = test::Upload(context, Shape{2, 4}, std::vector<float>{3, 9, 1, 7, -1, -5, 4, 2});
   auto [values, indices] = TopK(context, input, TopKOptions{.axis_ = 1, .k_ = 2});
   EXPECT_EQ(test::Download<float>(context, values), (std::vector<float>{9, 7, 4, 2}));

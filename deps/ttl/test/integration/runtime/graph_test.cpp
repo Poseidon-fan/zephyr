@@ -30,6 +30,8 @@
 namespace ttl {
 namespace {
 
+class GraphDeviceTest : public test::CudaDeviceTest {};
+
 std::atomic<int> graph_exec_destroy_failures{0};
 
 auto EndCaptureThenReportFailure(cudaStream_t stream, cudaGraph_t *graph) -> cudaError_t {
@@ -66,25 +68,21 @@ auto FailGetDevice(int *device) -> cudaError_t {
   return cudaErrorUnknown;
 }
 
-[[nodiscard]] auto MakeGraphRuntimeOptions(const std::shared_ptr<ErrorSink> &error_sink) -> RuntimeOptions {
-  auto options = test::MakeRuntimeOptions({Device{0}}, error_sink);
+[[nodiscard]] auto MakeGraphRuntimeOptions(Device device, const std::shared_ptr<ErrorSink> &error_sink)
+    -> RuntimeOptions {
+  auto options = test::MakeRuntimeOptions({device}, error_sink);
   return options;
 }
 
-[[nodiscard]] auto HasTwoDevices() -> bool {
-  int device_count = 0;
-  const auto status = cudaGetDeviceCount(&device_count);
-  EXPECT_EQ(status, cudaSuccess);
-  return status == cudaSuccess && device_count >= 2;
-}
+[[nodiscard]] auto HasTwoDevices() -> bool { return test::GetTestDevices(2).size() >= 2; }
 
 }  // namespace
 
-TEST(GraphIntegrationTest, ReleasesCaptureRegistrationWhenNativeEndReportsFailure) {
+TEST_F(GraphDeviceTest, ReleasesCaptureRegistrationWhenNativeEndReportsFailure) {
   auto sink = std::make_shared<test::RecordingErrorSink>();
-  Runtime runtime{MakeGraphRuntimeOptions(sink)};
+  Runtime runtime{MakeGraphRuntimeOptions(GetDevice(), sink)};
   {
-    auto context = runtime.CreateExecutionContext(Device{0});
+    auto context = runtime.CreateExecutionContext(GetDevice());
     auto output = Empty(context, Shape{4}, DType::FLOAT32);
     FillOut(context, output, Scalar{1.0F});
     context.Synchronize();
@@ -107,11 +105,11 @@ TEST(GraphIntegrationTest, ReleasesCaptureRegistrationWhenNativeEndReportsFailur
   EXPECT_TRUE(sink->GetRecords().empty());
 }
 
-TEST(GraphIntegrationTest, CleansNativeGraphWhenInstantiationFails) {
+TEST_F(GraphDeviceTest, CleansNativeGraphWhenInstantiationFails) {
   auto sink = std::make_shared<test::RecordingErrorSink>();
-  Runtime runtime{MakeGraphRuntimeOptions(sink)};
+  Runtime runtime{MakeGraphRuntimeOptions(GetDevice(), sink)};
   {
-    auto context = runtime.CreateExecutionContext(Device{0});
+    auto context = runtime.CreateExecutionContext(GetDevice());
     auto output = Empty(context, Shape{4}, DType::FLOAT32);
     FillOut(context, output, Scalar{1.0F});
     context.Synchronize();
@@ -132,11 +130,11 @@ TEST(GraphIntegrationTest, CleansNativeGraphWhenInstantiationFails) {
   EXPECT_TRUE(sink->GetRecords().empty());
 }
 
-TEST(GraphIntegrationTest, RetriesFailedNativeGraphDestructionFromRuntimePoll) {
+TEST_F(GraphDeviceTest, RetriesFailedNativeGraphDestructionFromRuntimePoll) {
   auto sink = std::make_shared<test::RecordingErrorSink>();
-  Runtime runtime{MakeGraphRuntimeOptions(sink)};
+  Runtime runtime{MakeGraphRuntimeOptions(GetDevice(), sink)};
   {
-    auto context = runtime.CreateExecutionContext(Device{0});
+    auto context = runtime.CreateExecutionContext(GetDevice());
     auto output = Empty(context, Shape{4}, DType::FLOAT32);
     FillOut(context, output, Scalar{1.0F});
     context.Synchronize();
@@ -159,11 +157,11 @@ TEST(GraphIntegrationTest, RetriesFailedNativeGraphDestructionFromRuntimePoll) {
   EXPECT_FALSE(sink->GetRecords().empty());
 }
 
-TEST(GraphIntegrationTest, RetainsReplayResourcesUntilLaunchCompletion) {
+TEST_F(GraphDeviceTest, RetainsReplayResourcesUntilLaunchCompletion) {
   auto sink = std::make_shared<test::RecordingErrorSink>();
-  Runtime runtime{MakeGraphRuntimeOptions(sink)};
+  Runtime runtime{MakeGraphRuntimeOptions(GetDevice(), sink)};
   {
-    auto context = runtime.CreateExecutionContext(Device{0});
+    auto context = runtime.CreateExecutionContext(GetDevice());
     auto output = Empty(context, Shape{1024}, DType::FLOAT32);
     FillOut(context, output, Scalar{1.0F});
     context.Synchronize();
@@ -188,11 +186,11 @@ TEST(GraphIntegrationTest, RetainsReplayResourcesUntilLaunchCompletion) {
   EXPECT_TRUE(sink->GetRecords().empty());
 }
 
-TEST(GraphIntegrationTest, RetriesAbortWhenCleanupCannotSelectTheCaptureDevice) {
+TEST_F(GraphDeviceTest, RetriesAbortWhenCleanupCannotSelectTheCaptureDevice) {
   auto sink = std::make_shared<test::RecordingErrorSink>();
-  Runtime runtime{MakeGraphRuntimeOptions(sink)};
+  Runtime runtime{MakeGraphRuntimeOptions(GetDevice(), sink)};
   {
-    auto context = runtime.CreateExecutionContext(Device{0});
+    auto context = runtime.CreateExecutionContext(GetDevice());
     auto output = Empty(context, Shape{4}, DType::FLOAT32);
     auto capture = context.BeginCapture(GraphCaptureOptions{.name_ = "abort retry"});
     FillOut(context, output, Scalar{2.0F});
@@ -212,13 +210,13 @@ TEST(GraphIntegrationTest, RetriesAbortWhenCleanupCannotSelectTheCaptureDevice) 
   EXPECT_FALSE(sink->GetRecords().empty());
 }
 
-TEST(GraphIntegrationTest, RejectsWrongReplayStreamAndRetainsRuntimeRegistration) {
+TEST_F(GraphDeviceTest, RejectsWrongReplayStreamAndRetainsRuntimeRegistration) {
   auto sink = std::make_shared<test::RecordingErrorSink>();
-  Runtime runtime{test::MakeRuntimeOptions({Device{0}}, sink)};
+  Runtime runtime{test::MakeRuntimeOptions({GetDevice()}, sink)};
   std::optional<CapturedGraph> graph;
   {
-    auto capture_context = runtime.CreateExecutionContext(Device{0});
-    auto other_context = runtime.CreateExecutionContext(Device{0});
+    auto capture_context = runtime.CreateExecutionContext(GetDevice());
+    auto other_context = runtime.CreateExecutionContext(GetDevice());
     auto output = Empty(capture_context, Shape{4}, DType::FLOAT32);
     FillOut(capture_context, output, Scalar{1.0F});
     capture_context.Synchronize();
@@ -238,13 +236,13 @@ TEST(GraphIntegrationTest, RejectsWrongReplayStreamAndRetainsRuntimeRegistration
   EXPECT_TRUE(sink->GetRecords().empty());
 }
 
-TEST(GraphIntegrationTest, CaptureTransactionOwnsContextStateAfterPublicHandleDestruction) {
+TEST_F(GraphDeviceTest, CaptureTransactionOwnsContextStateAfterPublicHandleDestruction) {
   auto sink = std::make_shared<test::RecordingErrorSink>();
-  Runtime runtime{test::MakeRuntimeOptions({Device{0}}, sink)};
+  Runtime runtime{test::MakeRuntimeOptions({GetDevice()}, sink)};
   std::optional<CaptureSession> capture;
   std::optional<Tensor> output;
   {
-    auto context = runtime.CreateExecutionContext(Device{0});
+    auto context = runtime.CreateExecutionContext(GetDevice());
     output.emplace(Empty(context, Shape{4}, DType::FLOAT32));
     FillOut(context, *output, Scalar{1.0F});
     context.Synchronize();
@@ -267,11 +265,11 @@ TEST(GraphIntegrationTest, CaptureTransactionOwnsContextStateAfterPublicHandleDe
   EXPECT_TRUE(sink->GetRecords().empty());
 }
 
-TEST(GraphIntegrationTest, CaptureTransactionCanAbortOnAnotherHostThread) {
+TEST_F(GraphDeviceTest, CaptureTransactionCanAbortOnAnotherHostThread) {
   auto sink = std::make_shared<test::RecordingErrorSink>();
-  Runtime runtime{test::MakeRuntimeOptions({Device{0}}, sink)};
+  Runtime runtime{test::MakeRuntimeOptions({GetDevice()}, sink)};
   {
-    auto context = runtime.CreateExecutionContext(Device{0});
+    auto context = runtime.CreateExecutionContext(GetDevice());
     auto session = context.BeginCapture(GraphCaptureOptions{.name_ = "cross-thread abort"});
     std::thread abort_thread{[capture = std::move(session)]() mutable { capture.Abort(); }};
     abort_thread.join();
@@ -289,14 +287,15 @@ TEST(GraphIntegrationTest, CapturesAndReplaysCheckedNcclExtensionOnFixedRankWork
   }
 
   auto sink = std::make_shared<test::RecordingErrorSink>();
-  Runtime runtime{test::MakeRuntimeOptions({Device{0}, Device{1}}, sink)};
-  const std::array rank_order{Device{0}, Device{1}};
+  const auto devices = test::GetTestDevices(2);
+  Runtime runtime{test::MakeRuntimeOptions({devices[0], devices[1]}, sink)};
+  const std::array rank_order{devices[0], devices[1]};
   auto communicator_group = LocalCommunicatorGroup::Create(runtime, rank_order);
   {
     std::vector<ExecutionContext> contexts;
     contexts.reserve(2);
-    contexts.push_back(runtime.CreateExecutionContext(Device{0}));
-    contexts.push_back(runtime.CreateExecutionContext(Device{1}));
+    contexts.push_back(runtime.CreateExecutionContext(devices[0]));
+    contexts.push_back(runtime.CreateExecutionContext(devices[1]));
     std::array inputs{
         test::Upload(contexts[0], Shape{2}, std::vector<float>{1, 2}),
         test::Upload(contexts[1], Shape{2}, std::vector<float>{10, 20}),

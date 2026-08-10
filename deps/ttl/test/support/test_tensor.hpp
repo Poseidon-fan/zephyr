@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cmath>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -54,6 +55,18 @@ template <TensorStorageType T>
   return values;
 }
 
+// Short names are kept as the single canonical upload/download API used by CUDA tests. They intentionally delegate to
+// the checked conversion helpers above so shape, dtype, and BOOL storage validation has one implementation.
+template <TensorStorageType T>
+[[nodiscard]] auto Upload(ExecutionContext &context, const Shape &shape, std::span<const T> values) -> Tensor {
+  return TensorFromValues<T>(context, shape, values);
+}
+
+template <TensorStorageType T>
+[[nodiscard]] auto Upload(ExecutionContext &context, const Shape &shape, const std::vector<T> &values) -> Tensor {
+  return TensorFromValues<T>(context, shape, std::span<const T>{values});
+}
+
 [[nodiscard]] auto BoolTensorFromValues(ExecutionContext &context, const Shape &shape, std::span<const uint8_t> values)
     -> Tensor;
 [[nodiscard]] auto BoolTensorFromValues(ExecutionContext &context, const Shape &shape,
@@ -65,6 +78,16 @@ template <TensorStorageType T>
 [[nodiscard]] auto FloatingTensorFromValues(ExecutionContext &context, const Shape &shape, DType dtype,
                                             std::initializer_list<float> values) -> Tensor;
 [[nodiscard]] auto FloatingTensorToValues(ExecutionContext &context, const Tensor &tensor) -> std::vector<float>;
+
+template <TensorStorageType T>
+[[nodiscard]] auto Download(ExecutionContext &context, const Tensor &tensor) -> std::vector<T> {
+  if constexpr (std::same_as<T, uint8_t>) {
+    if (tensor.GetDType() == DType::BOOL) {
+      return BoolTensorToValues(context, tensor);
+    }
+  }
+  return TensorToValues<T>(context, tensor);
+}
 
 void ExpectShape(const Tensor &tensor, std::initializer_list<int64_t> dimensions);
 void ExpectFloatValues(ExecutionContext &context, const Tensor &tensor, std::span<const float> expected,

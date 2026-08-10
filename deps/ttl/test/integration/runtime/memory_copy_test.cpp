@@ -30,12 +30,7 @@
 namespace ttl {
 namespace {
 
-[[nodiscard]] auto HasDevices(int count) -> bool {
-  int device_count = 0;
-  const auto status = cudaGetDeviceCount(&device_count);
-  EXPECT_EQ(status, cudaSuccess);
-  return status == cudaSuccess && device_count >= count;
-}
+class RuntimeMemoryTestFixture : public test::CudaDeviceTest {};
 
 [[nodiscard]] auto HasBidirectionalPeerAccess(Device first, Device second) -> bool {
   int first_to_second = 0;
@@ -64,11 +59,11 @@ auto FailEventQuery(cudaEvent_t event) -> cudaError_t {
 
 }  // namespace
 
-TEST(RuntimeMemoryIntegrationTest, CopiesThroughPinnedMemoryAndTreatsMovedBufferAsEmpty) {
+TEST_F(RuntimeMemoryTestFixture, CopiesThroughPinnedMemoryAndTreatsMovedBufferAsEmpty) {
   auto sink = std::make_shared<test::RecordingErrorSink>();
-  Runtime runtime{test::MakeRuntimeOptions({Device{0}}, sink)};
+  Runtime runtime{test::MakeRuntimeOptions({GetDevice()}, sink)};
   {
-    auto context = runtime.CreateExecutionContext(Device{0});
+    auto context = runtime.CreateExecutionContext(GetDevice());
     auto source = runtime.AllocatePinned(4 * sizeof(int32_t));
     const std::array<int32_t, 4> expected{3, -5, 8, 13};
     std::memcpy(source.GetData(), expected.data(), source.GetSizeBytes());
@@ -95,11 +90,11 @@ TEST(RuntimeMemoryIntegrationTest, CopiesThroughPinnedMemoryAndTreatsMovedBuffer
   EXPECT_TRUE(sink->GetRecords().empty());
 }
 
-TEST(RuntimeMemoryIntegrationTest, ReusesPinnedSizeClassesAndTracksContextMirror) {
+TEST_F(RuntimeMemoryTestFixture, ReusesPinnedSizeClassesAndTracksContextMirror) {
   auto sink = std::make_shared<test::RecordingErrorSink>();
-  Runtime runtime{test::MakeRuntimeOptions({Device{0}}, sink)};
+  Runtime runtime{test::MakeRuntimeOptions({GetDevice()}, sink)};
   {
-    auto context = runtime.CreateExecutionContext(Device{0});
+    auto context = runtime.CreateExecutionContext(GetDevice());
     const auto baseline = runtime.GetStatistics().pinned_memory_;
     EXPECT_GE(baseline.outstanding_buffer_count_, 1);
 
@@ -141,9 +136,9 @@ TEST(RuntimeMemoryIntegrationTest, ReusesPinnedSizeClassesAndTracksContextMirror
   EXPECT_TRUE(sink->GetRecords().empty());
 }
 
-TEST(RuntimeMemoryIntegrationTest, TreatsZeroBytePinnedBufferAsOwnedEmptyStorage) {
+TEST_F(RuntimeMemoryTestFixture, TreatsZeroBytePinnedBufferAsOwnedEmptyStorage) {
   auto sink = std::make_shared<test::RecordingErrorSink>();
-  Runtime runtime{test::MakeRuntimeOptions({Device{0}}, sink)};
+  Runtime runtime{test::MakeRuntimeOptions({GetDevice()}, sink)};
   {
     auto buffer = runtime.AllocatePinned(0);
     EXPECT_EQ(buffer.GetData(), nullptr);
@@ -155,7 +150,7 @@ TEST(RuntimeMemoryIntegrationTest, TreatsZeroBytePinnedBufferAsOwnedEmptyStorage
   EXPECT_TRUE(sink->GetRecords().empty());
 }
 
-TEST(RuntimeMemoryIntegrationTest, PreservesAllocationAndRecoveryFailuresWhenPinnedTrimFails) {
+TEST_F(RuntimeMemoryTestFixture, PreservesAllocationAndRecoveryFailuresWhenPinnedTrimFails) {
   auto sink = std::make_shared<test::RecordingErrorSink>();
   internal::PinnedMemoryCache cache{sink, 4096, std::source_location::current()};
   const auto cached_capacity = internal::PinnedMemoryCache::GetSizeClass(1, std::source_location::current());
@@ -186,12 +181,12 @@ TEST(RuntimeMemoryIntegrationTest, PreservesAllocationAndRecoveryFailuresWhenPin
   EXPECT_TRUE(sink->GetRecords().empty());
 }
 
-TEST(RuntimeMemoryIntegrationTest, QuarantinesPinnedRetirementWhenEventQueryFails) {
+TEST_F(RuntimeMemoryTestFixture, QuarantinesPinnedRetirementWhenEventQueryFails) {
   auto sink = std::make_shared<test::RecordingErrorSink>();
-  auto options = test::MakeRuntimeOptions({Device{0}}, sink);
+  auto options = test::MakeRuntimeOptions({GetDevice()}, sink);
   Runtime runtime{options};
   {
-    auto context = runtime.CreateExecutionContext(Device{0});
+    auto context = runtime.CreateExecutionContext(GetDevice());
     const auto baseline = runtime.GetStatistics().pinned_memory_;
     {
       auto buffer = runtime.AllocatePinned(1);
@@ -212,9 +207,9 @@ TEST(RuntimeMemoryIntegrationTest, QuarantinesPinnedRetirementWhenEventQueryFail
   EXPECT_FALSE(sink->GetRecords().empty());
 }
 
-TEST(RuntimeMemoryIntegrationTest, QuarantinesPinnedAllocationWhenNativeFreeFails) {
+TEST_F(RuntimeMemoryTestFixture, QuarantinesPinnedAllocationWhenNativeFreeFails) {
   auto sink = std::make_shared<test::RecordingErrorSink>();
-  auto options = test::MakeRuntimeOptions({Device{0}}, sink);
+  auto options = test::MakeRuntimeOptions({GetDevice()}, sink);
   options.pinned_memory_.max_cached_bytes_ = 0;
   Runtime runtime{options};
   const auto baseline = runtime.GetStatistics().pinned_memory_;
@@ -234,7 +229,7 @@ TEST(RuntimeMemoryIntegrationTest, QuarantinesPinnedAllocationWhenNativeFreeFail
   EXPECT_FALSE(sink->GetRecords().empty());
 }
 
-TEST(RuntimeMemoryIntegrationTest, WrapsBorrowedDeviceMemoryAndExternalStream) {
+TEST_F(RuntimeMemoryTestFixture, WrapsBorrowedDeviceMemoryAndExternalStream) {
   ASSERT_EQ(cudaSetDevice(0), cudaSuccess);
   cudaStream_t native_stream = nullptr;
   ASSERT_EQ(cudaStreamCreateWithFlags(&native_stream, cudaStreamNonBlocking), cudaSuccess);
@@ -242,16 +237,16 @@ TEST(RuntimeMemoryIntegrationTest, WrapsBorrowedDeviceMemoryAndExternalStream) {
   ASSERT_EQ(cudaMalloc(&device_pointer, 4 * sizeof(float)), cudaSuccess);
 
   auto sink = std::make_shared<test::RecordingErrorSink>();
-  Runtime runtime{test::MakeRuntimeOptions({Device{0}}, sink)};
+  Runtime runtime{test::MakeRuntimeOptions({GetDevice()}, sink)};
   {
-    auto context = runtime.WrapExternalStream(Device{0}, native_stream);
+    auto context = runtime.WrapExternalStream(GetDevice(), native_stream);
     EXPECT_TRUE(context.IsExternalStream());
     {
       auto tensor = runtime.FromBlob(context,
                                      ExternalDeviceMemory{
                                          .pointer_ = device_pointer,
                                          .capacity_bytes_ = 4 * sizeof(float),
-                                         .device_ = Device{0},
+                                         .device_ = GetDevice(),
                                          .owner_ = nullptr,
                                      },
                                      Shape{2, 2}, Strides{2, 1}, DType::FLOAT32);
@@ -267,49 +262,51 @@ TEST(RuntimeMemoryIntegrationTest, WrapsBorrowedDeviceMemoryAndExternalStream) {
   EXPECT_TRUE(sink->GetRecords().empty());
 }
 
-TEST(RuntimeMemoryIntegrationTest, ShutdownCanResumeAfterOutstandingContextIsReleased) {
+TEST_F(RuntimeMemoryTestFixture, ShutdownCanResumeAfterOutstandingContextIsReleased) {
   auto sink = std::make_shared<test::RecordingErrorSink>();
-  Runtime runtime{test::MakeRuntimeOptions({Device{0}}, sink)};
+  Runtime runtime{test::MakeRuntimeOptions({GetDevice()}, sink)};
   {
-    auto context = runtime.CreateExecutionContext(Device{0});
+    auto context = runtime.CreateExecutionContext(GetDevice());
     EXPECT_THROW(runtime.Shutdown(), InvalidArgumentError);
     EXPECT_EQ(runtime.GetStatus(), RuntimeStatus::CLOSING);
-    EXPECT_THROW(static_cast<void>(runtime.CreateExecutionContext(Device{0})), InvalidArgumentError);
+    EXPECT_THROW(static_cast<void>(runtime.CreateExecutionContext(GetDevice())), InvalidArgumentError);
   }
   runtime.Shutdown();
   EXPECT_EQ(runtime.GetStatus(), RuntimeStatus::CLOSED);
   EXPECT_TRUE(sink->GetRecords().empty());
 }
 
-TEST(RuntimeMemoryIntegrationTest, WaitsForEventsRecordedOnAnotherDevice) {
-  if (!HasDevices(2)) {
+TEST_F(RuntimeMemoryTestFixture, WaitsForEventsRecordedOnAnotherDevice) {
+  const auto devices = test::GetTestDevices(2);
+  if (devices.size() < 2) {
     GTEST_SKIP() << "requires at least two CUDA devices";
   }
   auto sink = std::make_shared<test::RecordingErrorSink>();
-  Runtime runtime{test::MakeRuntimeOptions({Device{0}, Device{1}}, sink)};
+  Runtime runtime{test::MakeRuntimeOptions({devices[0], devices[1]}, sink)};
   {
-    auto producer = runtime.CreateExecutionContext(Device{0});
-    auto consumer = runtime.CreateExecutionContext(Device{1});
+    auto producer = runtime.CreateExecutionContext(devices[0]);
+    auto consumer = runtime.CreateExecutionContext(devices[1]);
     auto source = Full(producer, Shape{1024}, Scalar{7.0F}, DType::FLOAT32);
     const auto ready = producer.RecordEvent();
     consumer.Wait(ready);
     consumer.Synchronize();
-    EXPECT_EQ(source.GetDevice(), Device{0});
+    EXPECT_EQ(source.GetDevice(), devices[0]);
   }
   runtime.Shutdown();
   EXPECT_TRUE(sink->GetRecords().empty());
 }
 
-TEST(RuntimeMemoryIntegrationTest, CopiesPeerTensorsInBothDirections) {
-  if (!HasDevices(2) || !HasBidirectionalPeerAccess(Device{0}, Device{1})) {
+TEST_F(RuntimeMemoryTestFixture, CopiesPeerTensorsInBothDirections) {
+  const auto devices = test::GetTestDevices(2);
+  if (devices.size() < 2 || !HasBidirectionalPeerAccess(devices[0], devices[1])) {
     GTEST_SKIP() << "requires bidirectional peer access between two CUDA devices";
   }
   auto sink = std::make_shared<test::RecordingErrorSink>();
-  Runtime runtime{test::MakeRuntimeOptions({Device{0}, Device{1}}, sink)};
+  Runtime runtime{test::MakeRuntimeOptions({devices[0], devices[1]}, sink)};
   {
     std::array contexts{
-        runtime.CreateExecutionContext(Device{0}),
-        runtime.CreateExecutionContext(Device{1}),
+        runtime.CreateExecutionContext(devices[0]),
+        runtime.CreateExecutionContext(devices[1]),
     };
     for (size_t source_index = 0; source_index < contexts.size(); ++source_index) {
       const auto destination_index = 1 - source_index;

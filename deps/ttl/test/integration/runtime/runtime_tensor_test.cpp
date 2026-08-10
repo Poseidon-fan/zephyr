@@ -27,6 +27,9 @@
 namespace ttl {
 namespace {
 
+class RuntimeTensorTest : public test::SingleDeviceTest {};
+class RuntimeConstructionTest : public test::CudaDeviceTest {};
+
 std::atomic<uint64_t> retirement_not_ready_clear_count{0};
 
 auto ReportRetirementNotReady(cudaEvent_t event) -> cudaError_t {
@@ -49,41 +52,38 @@ TEST(RuntimeTest, ValidatesOptionsBeforeCreatingNativeResources) {
                InvalidArgumentError);
 }
 
-TEST(RuntimeTest, OwnsDeviceContextAndRequiresExplicitCleanShutdown) {
-  test::RuntimeSession session;
-  const auto &properties = session.GetRuntime().GetDeviceProperties(Device{0});
-  EXPECT_EQ(properties.device_, Device{0});
+TEST_F(RuntimeTensorTest, OwnsDeviceContextAndRequiresExplicitCleanShutdown) {
+  const auto &properties = GetRuntime().GetDeviceProperties(GetDevice());
+  EXPECT_EQ(properties.device_, GetDevice());
   EXPECT_GE(properties.compute_capability_.GetSmVersion(), 80);
-  EXPECT_EQ(session.GetRuntime().GetStatus(), RuntimeStatus::RUNNING);
-  EXPECT_TRUE(session.GetRuntime().CanAccessPeer(Device{0}, Device{0}));
-  session.Close();
-  EXPECT_EQ(session.GetRuntime().GetStatus(), RuntimeStatus::CLOSED);
-  EXPECT_TRUE(session.GetErrorSink()->GetRecords().empty());
+  EXPECT_EQ(GetRuntime().GetStatus(), RuntimeStatus::RUNNING);
+  EXPECT_TRUE(GetRuntime().CanAccessPeer(GetDevice(), GetDevice()));
+  ShutdownRuntime();
+  EXPECT_EQ(GetRuntime().GetStatus(), RuntimeStatus::CLOSED);
 }
 
-TEST(RuntimeTest, ExposesAllocatorAndLifecycleStatistics) {
-  test::RuntimeSession session;
-  const auto before = session.GetRuntime().GetStatistics();
+TEST_F(RuntimeTensorTest, ExposesAllocatorAndLifecycleStatistics) {
+  const auto before = GetRuntime().GetStatistics();
   ASSERT_EQ(before.devices_.size(), 1);
   EXPECT_EQ(before.status_, RuntimeStatus::RUNNING);
   EXPECT_EQ(before.execution_context_count_, 1);
   EXPECT_GE(before.devices_[0].outstanding_storage_count_, 1);
 
-  auto tensor = Empty(session.GetContext(), Shape{1024}, DType::FLOAT32);
-  const auto during = session.GetRuntime().GetStatistics();
+  auto tensor = Empty(GetContext(), Shape{1024}, DType::FLOAT32);
+  const auto during = GetRuntime().GetStatistics();
   EXPECT_GE(during.devices_[0].logical_live_bytes_, before.devices_[0].logical_live_bytes_ + 4096);
   EXPECT_GE(during.devices_[0].allocation_count_, before.devices_[0].allocation_count_ + 1);
   EXPECT_GT(during.devices_[0].blas_workspace_bytes_, 0);
   static_cast<void>(tensor);
 }
 
-TEST(RuntimeTest, ReclaimsCompletedDeviceRetirementOnDemand) {
+TEST_F(RuntimeConstructionTest, ReclaimsCompletedDeviceRetirementOnDemand) {
   auto sink = std::make_shared<test::RecordingErrorSink>();
-  auto options = test::MakeRuntimeOptions({Device{0}}, sink);
+  auto options = test::MakeRuntimeOptions({GetDevice()}, sink);
   options.device_memory_.max_live_bytes_ = 16384;
   Runtime runtime{options};
   {
-    auto context = runtime.CreateExecutionContext(Device{0});
+    auto context = runtime.CreateExecutionContext(GetDevice());
     const auto baseline = runtime.GetStatistics().devices_[0].logical_live_bytes_;
     {
       auto tensor = Empty(context, Shape{2048}, DType::FLOAT32);
@@ -103,11 +103,11 @@ TEST(RuntimeTest, ReclaimsCompletedDeviceRetirementOnDemand) {
   EXPECT_TRUE(sink->GetRecords().empty());
 }
 
-TEST(RuntimeTest, ClearsIncompleteDeviceRetirementBeforeCallerThreadAllocation) {
+TEST_F(RuntimeConstructionTest, ClearsIncompleteDeviceRetirementBeforeCallerThreadAllocation) {
   auto sink = std::make_shared<test::RecordingErrorSink>();
-  Runtime runtime{test::MakeRuntimeOptions({Device{0}}, sink)};
+  Runtime runtime{test::MakeRuntimeOptions({GetDevice()}, sink)};
   {
-    auto context = runtime.CreateExecutionContext(Device{0});
+    auto context = runtime.CreateExecutionContext(GetDevice());
     {
       auto tensor = Empty(context, Shape{1024}, DType::FLOAT32);
       static_cast<void>(tensor);
@@ -129,16 +129,16 @@ TEST(RuntimeTest, ClearsIncompleteDeviceRetirementBeforeCallerThreadAllocation) 
   EXPECT_TRUE(sink->GetRecords().empty());
 }
 
-TEST(RuntimeTest, SerializesConcurrentContextCreationAndShutdown) {
+TEST_F(RuntimeConstructionTest, SerializesConcurrentContextCreationAndShutdown) {
   auto sink = std::make_shared<test::RecordingErrorSink>();
-  Runtime runtime{test::MakeRuntimeOptions({Device{0}}, sink)};
+  Runtime runtime{test::MakeRuntimeOptions({GetDevice()}, sink)};
   std::optional<ExecutionContext> context;
   std::exception_ptr creation_error;
   std::exception_ptr shutdown_error;
 
   std::thread creator{[&] {
     try {
-      context.emplace(runtime.CreateExecutionContext(Device{0}));
+      context.emplace(runtime.CreateExecutionContext(GetDevice()));
     } catch (...) {
       creation_error = std::current_exception();
     }
@@ -163,9 +163,8 @@ TEST(RuntimeTest, SerializesConcurrentContextCreationAndShutdown) {
   }
 }
 
-TEST(TensorTest, AllocatesCopiesAndClassifiesViews) {
-  test::RuntimeSession session;
-  auto &context = session.GetContext();
+TEST_F(RuntimeTensorTest, AllocatesCopiesAndClassifiesViews) {
+  auto &context = GetContext();
   const std::vector<int32_t> host{0, 1, 2, 3, 4, 5};
   auto tensor = test::Upload(context, Shape{2, 3}, host);
   tensor.RecordUsage(context.GetStream());
@@ -184,9 +183,8 @@ TEST(TensorTest, AllocatesCopiesAndClassifiesViews) {
   EXPECT_EQ(ClassifyAlias(tensor, tensor), AliasKind::EXACT);
 }
 
-TEST(TensorTest, HandlesScalarAndEmptyStorage) {
-  test::RuntimeSession session;
-  auto &context = session.GetContext();
+TEST_F(RuntimeTensorTest, HandlesScalarAndEmptyStorage) {
+  auto &context = GetContext();
   auto scalar = Full(context, Shape{}, Scalar{int64_t{7}}, DType::INT64);
   EXPECT_EQ(test::Download<int64_t>(context, scalar), (std::vector<int64_t>{7}));
 
@@ -196,11 +194,11 @@ TEST(TensorTest, HandlesScalarAndEmptyStorage) {
   EXPECT_TRUE(test::Download<float>(context, empty).empty());
 }
 
-TEST(RuntimeHandleTest, MovedFromHandlesFailDeterministically) {
+TEST_F(RuntimeConstructionTest, MovedFromHandlesFailDeterministically) {
   auto sink = std::make_shared<test::RecordingErrorSink>();
-  Runtime runtime{test::MakeRuntimeOptions({Device{0}}, sink)};
+  Runtime runtime{test::MakeRuntimeOptions({GetDevice()}, sink)};
   {
-    auto context = runtime.CreateExecutionContext(Device{0});
+    auto context = runtime.CreateExecutionContext(GetDevice());
 
     auto tensor = Empty(context, Shape{1}, DType::FLOAT32);
     auto moved_tensor = std::move(tensor);
@@ -232,8 +230,8 @@ TEST(RuntimeHandleTest, MovedFromHandlesFailDeterministically) {
     moved_context.Synchronize();
 
     EXPECT_EQ(moved_tensor.GetDType(), DType::FLOAT32);
-    EXPECT_EQ(moved_stream.GetDevice(), Device{0});
-    EXPECT_EQ(moved_event.GetDevice(), Device{0});
+    EXPECT_EQ(moved_stream.GetDevice(), GetDevice());
+    EXPECT_EQ(moved_event.GetDevice(), GetDevice());
     EXPECT_EQ(moved_generator.GetSeed(), 7);
   }
   runtime.Shutdown();

@@ -4,7 +4,8 @@
 
 #include <gtest/gtest.h>
 
-#include "support/tensor_test_utils.hpp"
+#include "support/test_environment.hpp"
+#include "support/test_tensor.hpp"
 #include "ttl/ops/attention.hpp"
 #include "ttl/ops/matmul.hpp"
 #include "ttl/ops/random.hpp"
@@ -13,9 +14,10 @@
 
 namespace ttl {
 
-TEST(MatmulTest, ComputesMatrixProductAndLinearBias) {
-  test::RuntimeSession session;
-  auto &context = session.GetContext();
+class AttentionRandomTest : public test::SingleDeviceTest {};
+
+TEST_F(AttentionRandomTest, ComputesMatrixProductAndLinearBias) {
+  auto &context = GetContext();
   auto lhs = test::Upload(context, Shape{2, 3}, std::vector<float>{1, 2, 3, 4, 5, 6});
   auto rhs = test::Upload(context, Shape{3, 2}, std::vector<float>{1, 2, 3, 4, 5, 6});
   auto product = Matmul(context, lhs, rhs, MatmulOptions{.allow_tf32_ = false});
@@ -30,9 +32,8 @@ TEST(MatmulTest, ComputesMatrixProductAndLinearBias) {
   EXPECT_EQ(test::Download<float>(context, linear), (std::vector<float>{11, 0, 14, 1}));
 }
 
-TEST(MatmulTest, AppliesStridedLinearBiasBeforeActivation) {
-  test::RuntimeSession session;
-  auto &context = session.GetContext();
+TEST_F(AttentionRandomTest, AppliesStridedLinearBiasBeforeActivation) {
+  auto &context = GetContext();
   auto input = test::Upload(context, Shape{2, 3}, std::vector<float>{1, 2, 3, 4, 5, 6});
   auto weight = test::Upload(context, Shape{2, 3}, std::vector<float>{1, 0, 0, 0, 1, 1});
   auto bias_storage = test::Upload(context, Shape{4}, std::vector<float>{10, 1000, -10, 1000});
@@ -52,9 +53,8 @@ TEST(MatmulTest, AppliesStridedLinearBiasBeforeActivation) {
   EXPECT_EQ(test::Download<float>(context, with_relu), (std::vector<float>{11, 0, 14, 1}));
 }
 
-TEST(AttentionTest, ComputesReferenceScaledDotProductAttention) {
-  test::RuntimeSession session;
-  auto &context = session.GetContext();
+TEST_F(AttentionRandomTest, ComputesReferenceScaledDotProductAttention) {
+  auto &context = GetContext();
   auto query = test::Upload(context, Shape{1, 1, 2, 2}, std::vector<float>{1, 0, 0, 1});
   auto key = test::Upload(context, Shape{1, 1, 2, 2}, std::vector<float>{1, 0, 0, 1});
   auto value = test::Upload(context, Shape{1, 1, 2, 1}, std::vector<float>{10, 20});
@@ -65,9 +65,8 @@ TEST(AttentionTest, ComputesReferenceScaledDotProductAttention) {
   EXPECT_NEAR(values[1], 17.310586F, 1.0e-4F);
 }
 
-TEST(RandomTest, ReproduciblyAdvancesIndependentPhiloxGenerators) {
-  test::RuntimeSession session;
-  auto &context = session.GetContext();
+TEST_F(AttentionRandomTest, ReproduciblyAdvancesIndependentPhiloxGenerators) {
+  auto &context = GetContext();
   Generator first{context, 12345};
   Generator second{context, 12345};
   const auto options = UniformOptions{.low_ = -2.0, .high_ = 3.0};

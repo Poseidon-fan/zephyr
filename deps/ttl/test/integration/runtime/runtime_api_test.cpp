@@ -21,13 +21,6 @@
 namespace ttl::test {
 namespace {
 
-[[nodiscard]] auto MakeRuntimeOptions(std::vector<Device> devices, std::shared_ptr<ErrorSink> sink) -> RuntimeOptions {
-  RuntimeOptions options;
-  options.devices_ = std::move(devices);
-  options.error_sink_ = std::move(sink);
-  return options;
-}
-
 TEST(RuntimeValidationTest, RejectsMissingSinkDevicesDuplicatesAndInvalidPoolConfiguration) {
   const auto devices = GetTestDevices(1);
   if (devices.empty()) {

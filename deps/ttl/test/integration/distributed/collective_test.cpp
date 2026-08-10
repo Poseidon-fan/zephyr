@@ -4,7 +4,6 @@
 #include <utility>
 #include <vector>
 
-#include <cuda_runtime_api.h>
 #include <gtest/gtest.h>
 
 #include "support/tensor_test_utils.hpp"
@@ -21,13 +20,6 @@
 
 namespace ttl {
 namespace {
-
-[[nodiscard]] auto RequireTwoDevices() -> bool {
-  int device_count = 0;
-  const auto status = cudaGetDeviceCount(&device_count);
-  EXPECT_EQ(status, cudaSuccess);
-  return status == cudaSuccess && device_count >= 2;
-}
 
 [[nodiscard]] auto MakeCalls(std::array<ExecutionContext, 2> &contexts, std::array<Tensor, 2> &outputs,
                              const std::array<Tensor, 2> &inputs, LocalCommunicatorGroup &group)
@@ -57,15 +49,16 @@ void Synchronize(std::array<ExecutionContext, 2> &contexts) {
 }  // namespace
 
 TEST(CollectiveIntegrationTest, ExecutesProcessLocalCollectivesAndPointToPoint) {
-  if (!RequireTwoDevices()) {
+  const auto devices = test::GetTestDevices(2);
+  if (devices.size() < 2) {
     GTEST_SKIP() << "requires at least two CUDA devices";
   }
+  const std::array rank_order{devices[0], devices[1]};
 
   auto sink = std::make_shared<test::RecordingErrorSink>();
-  Runtime runtime{test::MakeRuntimeOptions({Device{0}, Device{1}}, sink)};
+  Runtime runtime{test::MakeRuntimeOptions({devices[0], devices[1]}, sink)};
   {
-    std::array contexts{runtime.CreateExecutionContext(Device{0}), runtime.CreateExecutionContext(Device{1})};
-    const std::array rank_order{Device{0}, Device{1}};
+    std::array contexts{runtime.CreateExecutionContext(devices[0]), runtime.CreateExecutionContext(devices[1])};
     auto group = LocalCommunicatorGroup::Create(runtime, rank_order);
 
     std::array inputs{
@@ -218,15 +211,16 @@ TEST(CollectiveIntegrationTest, ExecutesProcessLocalCollectivesAndPointToPoint) 
 }
 
 TEST(CollectiveIntegrationTest, ValidatesEveryRankBeforeEnqueue) {
-  if (!RequireTwoDevices()) {
+  const auto devices = test::GetTestDevices(2);
+  if (devices.size() < 2) {
     GTEST_SKIP() << "requires at least two CUDA devices";
   }
+  const std::array rank_order{devices[0], devices[1]};
 
   auto sink = std::make_shared<test::RecordingErrorSink>();
-  Runtime runtime{test::MakeRuntimeOptions({Device{0}, Device{1}}, sink)};
+  Runtime runtime{test::MakeRuntimeOptions({devices[0], devices[1]}, sink)};
   {
-    std::array contexts{runtime.CreateExecutionContext(Device{0}), runtime.CreateExecutionContext(Device{1})};
-    const std::array rank_order{Device{0}, Device{1}};
+    std::array contexts{runtime.CreateExecutionContext(devices[0]), runtime.CreateExecutionContext(devices[1])};
     auto group = LocalCommunicatorGroup::Create(runtime, rank_order);
     std::array inputs{
         Empty(contexts[0], Shape{2}, DType::FLOAT32),
@@ -244,15 +238,16 @@ TEST(CollectiveIntegrationTest, ValidatesEveryRankBeforeEnqueue) {
 }
 
 TEST(CollectiveIntegrationTest, ExecutesCheckedCustomNcclSubmission) {
-  if (!RequireTwoDevices()) {
+  const auto devices = test::GetTestDevices(2);
+  if (devices.size() < 2) {
     GTEST_SKIP() << "requires at least two CUDA devices";
   }
+  const std::array rank_order{devices[0], devices[1]};
 
   auto sink = std::make_shared<test::RecordingErrorSink>();
-  Runtime runtime{test::MakeRuntimeOptions({Device{0}, Device{1}}, sink)};
+  Runtime runtime{test::MakeRuntimeOptions({devices[0], devices[1]}, sink)};
   {
-    std::array contexts{runtime.CreateExecutionContext(Device{0}), runtime.CreateExecutionContext(Device{1})};
-    const std::array rank_order{Device{0}, Device{1}};
+    std::array contexts{runtime.CreateExecutionContext(devices[0]), runtime.CreateExecutionContext(devices[1])};
     auto group = LocalCommunicatorGroup::Create(runtime, rank_order);
     std::array inputs{
         test::Upload(contexts[0], Shape{2}, std::vector<float>{1, 2}),
@@ -291,14 +286,15 @@ TEST(CollectiveIntegrationTest, ExecutesCheckedCustomNcclSubmission) {
 }
 
 TEST(CollectiveIntegrationTest, MovedFromCommunicatorHandlesFailDeterministically) {
-  if (!RequireTwoDevices()) {
+  const auto devices = test::GetTestDevices(2);
+  if (devices.size() < 2) {
     GTEST_SKIP() << "requires at least two CUDA devices";
   }
+  const std::array rank_order{devices[0], devices[1]};
 
   auto sink = std::make_shared<test::RecordingErrorSink>();
-  Runtime runtime{test::MakeRuntimeOptions({Device{0}, Device{1}}, sink)};
+  Runtime runtime{test::MakeRuntimeOptions({devices[0], devices[1]}, sink)};
   {
-    const std::array rank_order{Device{0}, Device{1}};
     auto group = LocalCommunicatorGroup::Create(runtime, rank_order);
 
     auto communicator = std::move(group.GetCommunicator(0));
