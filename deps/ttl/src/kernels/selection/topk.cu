@@ -10,7 +10,8 @@
 #include <type_traits>
 
 #include <cuda_runtime.h>
-#include <cub/cub.cuh>
+#include <thrust/iterator/counting_iterator.h>
+#include <thrust/iterator/transform_iterator.h>
 #include <cub/device/device_segmented_radix_sort.cuh>
 
 #include "ttl/common/error.hpp"
@@ -37,8 +38,8 @@ struct SegmentOffset final {
   __host__ __device__ auto operator()(int32_t segment) const noexcept -> int32_t { return segment * axis_size_; }
 };
 
-using SegmentCountingIterator = cub::CountingInputIterator<int32_t>;
-using SegmentOffsetIterator = cub::TransformInputIterator<int32_t, SegmentOffset, SegmentCountingIterator>;
+using SegmentCountingIterator = thrust::counting_iterator<int32_t>;
+using SegmentOffsetIterator = thrust::transform_iterator<SegmentOffset, SegmentCountingIterator>;
 
 [[nodiscard]] auto MakeSegmentOffsetIterator(int32_t start, int32_t axis_size) -> SegmentOffsetIterator {
   return SegmentOffsetIterator{SegmentCountingIterator{start}, SegmentOffset{axis_size}};
