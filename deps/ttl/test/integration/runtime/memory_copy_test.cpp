@@ -13,7 +13,7 @@
 #include <cuda_runtime_api.h>
 #include <gtest/gtest.h>
 
-#include "support/tensor_test_utils.hpp"
+#include "support/runtime_session.hpp"
 #include "ttl/common/device.hpp"
 #include "ttl/common/error.hpp"
 #include "ttl/internal/runtime/cuda_api.hpp"
@@ -27,10 +27,10 @@
 #include "ttl/tensor/shape.hpp"
 #include "ttl/tensor/tensor.hpp"
 
-namespace ttl {
+namespace ttl::test {
 namespace {
 
-class RuntimeMemoryTestFixture : public test::CudaDeviceTest {};
+class RuntimeMemoryTestFixture : public CudaDeviceTest {};
 
 [[nodiscard]] auto HasBidirectionalPeerAccess(Device first, Device second) -> bool {
   int first_to_second = 0;
@@ -60,8 +60,8 @@ auto FailEventQuery(cudaEvent_t event) -> cudaError_t {
 }  // namespace
 
 TEST_F(RuntimeMemoryTestFixture, CopiesThroughPinnedMemoryAndTreatsMovedBufferAsEmpty) {
-  auto sink = std::make_shared<test::RecordingErrorSink>();
-  Runtime runtime{test::MakeRuntimeOptions({GetDevice()}, sink)};
+  auto sink = std::make_shared<RecordingErrorSink>();
+  Runtime runtime{MakeRuntimeOptions({GetDevice()}, sink)};
   {
     auto context = runtime.CreateExecutionContext(GetDevice());
     auto source = runtime.AllocatePinned(4 * sizeof(int32_t));
@@ -91,8 +91,8 @@ TEST_F(RuntimeMemoryTestFixture, CopiesThroughPinnedMemoryAndTreatsMovedBufferAs
 }
 
 TEST_F(RuntimeMemoryTestFixture, ReusesPinnedSizeClassesAndTracksContextMirror) {
-  auto sink = std::make_shared<test::RecordingErrorSink>();
-  Runtime runtime{test::MakeRuntimeOptions({GetDevice()}, sink)};
+  auto sink = std::make_shared<RecordingErrorSink>();
+  Runtime runtime{MakeRuntimeOptions({GetDevice()}, sink)};
   {
     auto context = runtime.CreateExecutionContext(GetDevice());
     const auto baseline = runtime.GetStatistics().pinned_memory_;
@@ -137,8 +137,8 @@ TEST_F(RuntimeMemoryTestFixture, ReusesPinnedSizeClassesAndTracksContextMirror) 
 }
 
 TEST_F(RuntimeMemoryTestFixture, TreatsZeroBytePinnedBufferAsOwnedEmptyStorage) {
-  auto sink = std::make_shared<test::RecordingErrorSink>();
-  Runtime runtime{test::MakeRuntimeOptions({GetDevice()}, sink)};
+  auto sink = std::make_shared<RecordingErrorSink>();
+  Runtime runtime{MakeRuntimeOptions({GetDevice()}, sink)};
   {
     auto buffer = runtime.AllocatePinned(0);
     EXPECT_EQ(buffer.GetData(), nullptr);
@@ -151,7 +151,7 @@ TEST_F(RuntimeMemoryTestFixture, TreatsZeroBytePinnedBufferAsOwnedEmptyStorage) 
 }
 
 TEST_F(RuntimeMemoryTestFixture, PreservesAllocationAndRecoveryFailuresWhenPinnedTrimFails) {
-  auto sink = std::make_shared<test::RecordingErrorSink>();
+  auto sink = std::make_shared<RecordingErrorSink>();
   internal::PinnedMemoryCache cache{sink, 4096, std::source_location::current()};
   const auto cached_capacity = internal::PinnedMemoryCache::GetSizeClass(1, std::source_location::current());
   const auto cached_allocation = cache.Acquire(1, cached_capacity, std::source_location::current());
@@ -182,8 +182,8 @@ TEST_F(RuntimeMemoryTestFixture, PreservesAllocationAndRecoveryFailuresWhenPinne
 }
 
 TEST_F(RuntimeMemoryTestFixture, QuarantinesPinnedRetirementWhenEventQueryFails) {
-  auto sink = std::make_shared<test::RecordingErrorSink>();
-  auto options = test::MakeRuntimeOptions({GetDevice()}, sink);
+  auto sink = std::make_shared<RecordingErrorSink>();
+  auto options = MakeRuntimeOptions({GetDevice()}, sink);
   Runtime runtime{options};
   {
     auto context = runtime.CreateExecutionContext(GetDevice());
@@ -208,8 +208,8 @@ TEST_F(RuntimeMemoryTestFixture, QuarantinesPinnedRetirementWhenEventQueryFails)
 }
 
 TEST_F(RuntimeMemoryTestFixture, QuarantinesPinnedAllocationWhenNativeFreeFails) {
-  auto sink = std::make_shared<test::RecordingErrorSink>();
-  auto options = test::MakeRuntimeOptions({GetDevice()}, sink);
+  auto sink = std::make_shared<RecordingErrorSink>();
+  auto options = MakeRuntimeOptions({GetDevice()}, sink);
   options.pinned_memory_.max_cached_bytes_ = 0;
   Runtime runtime{options};
   const auto baseline = runtime.GetStatistics().pinned_memory_;
@@ -236,8 +236,8 @@ TEST_F(RuntimeMemoryTestFixture, WrapsBorrowedDeviceMemoryAndExternalStream) {
   void *device_pointer = nullptr;
   ASSERT_EQ(cudaMalloc(&device_pointer, 4 * sizeof(float)), cudaSuccess);
 
-  auto sink = std::make_shared<test::RecordingErrorSink>();
-  Runtime runtime{test::MakeRuntimeOptions({GetDevice()}, sink)};
+  auto sink = std::make_shared<RecordingErrorSink>();
+  Runtime runtime{MakeRuntimeOptions({GetDevice()}, sink)};
   {
     auto context = runtime.WrapExternalStream(GetDevice(), native_stream);
     EXPECT_TRUE(context.IsExternalStream());
@@ -252,7 +252,7 @@ TEST_F(RuntimeMemoryTestFixture, WrapsBorrowedDeviceMemoryAndExternalStream) {
                                      Shape{2, 2}, Strides{2, 1}, DType::FLOAT32);
       const std::vector<float> expected{1.0F, 2.0F, 4.0F, 8.0F};
       CopyFromHostBlocking(context, tensor, std::as_bytes(std::span{expected}));
-      EXPECT_EQ(test::Download<float>(context, tensor), expected);
+      EXPECT_EQ(Download<float>(context, tensor), expected);
     }
     context.Synchronize();
   }
@@ -263,8 +263,8 @@ TEST_F(RuntimeMemoryTestFixture, WrapsBorrowedDeviceMemoryAndExternalStream) {
 }
 
 TEST_F(RuntimeMemoryTestFixture, ShutdownCanResumeAfterOutstandingContextIsReleased) {
-  auto sink = std::make_shared<test::RecordingErrorSink>();
-  Runtime runtime{test::MakeRuntimeOptions({GetDevice()}, sink)};
+  auto sink = std::make_shared<RecordingErrorSink>();
+  Runtime runtime{MakeRuntimeOptions({GetDevice()}, sink)};
   {
     auto context = runtime.CreateExecutionContext(GetDevice());
     EXPECT_THROW(runtime.Shutdown(), InvalidArgumentError);
@@ -277,12 +277,12 @@ TEST_F(RuntimeMemoryTestFixture, ShutdownCanResumeAfterOutstandingContextIsRelea
 }
 
 TEST_F(RuntimeMemoryTestFixture, WaitsForEventsRecordedOnAnotherDevice) {
-  const auto devices = test::GetTestDevices(2);
+  const auto devices = GetTestDevices(2);
   if (devices.size() < 2) {
     GTEST_SKIP() << "requires at least two CUDA devices";
   }
-  auto sink = std::make_shared<test::RecordingErrorSink>();
-  Runtime runtime{test::MakeRuntimeOptions({devices[0], devices[1]}, sink)};
+  auto sink = std::make_shared<RecordingErrorSink>();
+  Runtime runtime{MakeRuntimeOptions({devices[0], devices[1]}, sink)};
   {
     auto producer = runtime.CreateExecutionContext(devices[0]);
     auto consumer = runtime.CreateExecutionContext(devices[1]);
@@ -297,12 +297,12 @@ TEST_F(RuntimeMemoryTestFixture, WaitsForEventsRecordedOnAnotherDevice) {
 }
 
 TEST_F(RuntimeMemoryTestFixture, CopiesPeerTensorsInBothDirections) {
-  const auto devices = test::GetTestDevices(2);
+  const auto devices = GetTestDevices(2);
   if (devices.size() < 2 || !HasBidirectionalPeerAccess(devices[0], devices[1])) {
     GTEST_SKIP() << "requires bidirectional peer access between two CUDA devices";
   }
-  auto sink = std::make_shared<test::RecordingErrorSink>();
-  Runtime runtime{test::MakeRuntimeOptions({devices[0], devices[1]}, sink)};
+  auto sink = std::make_shared<RecordingErrorSink>();
+  Runtime runtime{MakeRuntimeOptions({devices[0], devices[1]}, sink)};
   {
     std::array contexts{
         runtime.CreateExecutionContext(devices[0]),
@@ -311,15 +311,15 @@ TEST_F(RuntimeMemoryTestFixture, CopiesPeerTensorsInBothDirections) {
     for (size_t source_index = 0; source_index < contexts.size(); ++source_index) {
       const auto destination_index = 1 - source_index;
       const std::vector<int32_t> expected{3, -5, 8, 13};
-      auto source = test::Upload(contexts[source_index], Shape{4}, expected);
+      auto source = Upload(contexts[source_index], Shape{4}, expected);
       auto destination = Empty(contexts[destination_index], Shape{4}, DType::INT32);
       const auto source_ready = contexts[source_index].RecordEvent();
       CopyPeerOut(contexts[destination_index], destination, source, source_ready);
-      EXPECT_EQ(test::Download<int32_t>(contexts[destination_index], destination), expected);
+      EXPECT_EQ(Download<int32_t>(contexts[destination_index], destination), expected);
     }
   }
   runtime.Shutdown();
   EXPECT_TRUE(sink->GetRecords().empty());
 }
 
-}  // namespace ttl
+}  // namespace ttl::test

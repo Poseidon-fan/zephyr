@@ -8,7 +8,7 @@
 
 #include <gtest/gtest.h>
 
-#include "support/tensor_test_utils.hpp"
+#include "support/runtime_session.hpp"
 #include "ttl/common/error.hpp"
 #include "ttl/runtime/device_error.cuh"
 #include "ttl/runtime/generator.hpp"
@@ -18,7 +18,7 @@
 #include "ttl/tensor/shape.hpp"
 #include "ttl/tensor/tensor.hpp"
 
-namespace ttl {
+namespace ttl::test {
 namespace {
 
 __global__ void AddOneKernel(const float *input, float *output, size_t count) {
@@ -113,20 +113,20 @@ void SubmitAddOneParallel(ExecutionContext &context, const Tensor &input, Tensor
 }  // namespace
 
 TEST(CudaKernelLaunchTest, RunsExternalKernelUsingOnlyPublicApi) {
-  test::RuntimeSession session;
+  RuntimeSession session;
   auto &context = session.GetContext();
-  auto input = test::Upload(context, Shape{5}, std::vector<float>{-2.0F, -0.0F, 1.0F, 4.0F, 9.0F});
+  auto input = Upload(context, Shape{5}, std::vector<float>{-2.0F, -0.0F, 1.0F, 4.0F, 9.0F});
   auto output = Empty(context, Shape{5}, DType::FLOAT32);
 
   SubmitAddOne(context, input, output, CudaCapturePolicy::FORBIDDEN);
-  EXPECT_EQ(test::Download<float>(context, output), (std::vector<float>{-1.0F, 1.0F, 2.0F, 5.0F, 10.0F}));
+  EXPECT_EQ(Download<float>(context, output), (std::vector<float>{-1.0F, 1.0F, 2.0F, 5.0F, 10.0F}));
 }
 
 TEST(CudaKernelLaunchTest, RunsOneSubmissionAcrossPrimaryAndAuxiliaryStreams) {
-  test::RuntimeSession session;
+  RuntimeSession session;
   auto context = session.GetRuntime().CreateExecutionContext(session.GetDevice(),
                                                              ExecutionContextOptions{.max_auxiliary_stream_count_ = 1});
-  auto input = test::Upload(context, Shape{6}, std::vector<float>{-2.0F, -0.0F, 1.0F, 4.0F, 9.0F, 16.0F});
+  auto input = Upload(context, Shape{6}, std::vector<float>{-2.0F, -0.0F, 1.0F, 4.0F, 9.0F, 16.0F});
   auto output = Empty(context, Shape{6}, DType::FLOAT32);
   const std::array inputs{input};
   const std::array outputs{&output};
@@ -159,11 +159,11 @@ TEST(CudaKernelLaunchTest, RunsOneSubmissionAcrossPrimaryAndAuxiliaryStreams) {
           .auxiliary_workspaces_ = auxiliary_workspaces,
       });
 
-  EXPECT_EQ(test::Download<float>(context, output), (std::vector<float>{-1.0F, 1.0F, 2.0F, 5.0F, 10.0F, 17.0F}));
+  EXPECT_EQ(Download<float>(context, output), (std::vector<float>{-1.0F, 1.0F, 2.0F, 5.0F, 10.0F, 17.0F}));
 }
 
 TEST(CudaKernelLaunchTest, PublishesDependenciesBetweenPrimaryAndAuxiliaryStreams) {
-  test::RuntimeSession session;
+  RuntimeSession session;
   auto context = session.GetRuntime().CreateExecutionContext(session.GetDevice(),
                                                              ExecutionContextOptions{.max_auxiliary_stream_count_ = 1});
   auto output = Empty(context, Shape{2}, DType::FLOAT32);
@@ -184,11 +184,11 @@ TEST(CudaKernelLaunchTest, PublishesDependenciesBetweenPrimaryAndAuxiliaryStream
       },
       CudaKernelLaunchOptions{.auxiliary_stream_count_ = 1});
 
-  EXPECT_EQ(test::Download<float>(context, output), (std::vector<float>{42.0F, 42.0F}));
+  EXPECT_EQ(Download<float>(context, output), (std::vector<float>{42.0F, 42.0F}));
 }
 
 TEST(CudaKernelLaunchTest, RejectsUnregisteredAndWronglyTypedPointers) {
-  test::RuntimeSession session;
+  RuntimeSession session;
   auto &context = session.GetContext();
   auto input = Empty(context, Shape{1}, DType::FLOAT32);
   auto output = Empty(context, Shape{1}, DType::FLOAT32);
@@ -205,7 +205,7 @@ TEST(CudaKernelLaunchTest, RejectsUnregisteredAndWronglyTypedPointers) {
 }
 
 TEST(CudaKernelLaunchTest, RejectsInvalidWorkspaceAndCaptureOptions) {
-  test::RuntimeSession session;
+  RuntimeSession session;
   auto &context = session.GetContext();
   auto output = Empty(context, Shape{1}, DType::FLOAT32);
   const std::array<Tensor, 0> inputs{};
@@ -245,9 +245,9 @@ TEST(CudaKernelLaunchTest, RejectsInvalidWorkspaceAndCaptureOptions) {
 }
 
 TEST(CudaKernelLaunchTest, PoisonsContextAfterLaunchError) {
-  test::RuntimeSession session;
+  RuntimeSession session;
   auto &context = session.GetContext();
-  auto input = test::Upload(context, Shape{1}, std::vector<float>{4.0F});
+  auto input = Upload(context, Shape{1}, std::vector<float>{4.0F});
   auto output = Empty(context, Shape{1}, DType::FLOAT32);
   const std::array inputs{input};
   const std::array outputs{&output};
@@ -264,7 +264,7 @@ TEST(CudaKernelLaunchTest, PoisonsContextAfterLaunchError) {
 }
 
 TEST(CudaKernelLaunchTest, ReportsExternalDeviceSemanticErrorsThroughContext) {
-  test::RuntimeSession session;
+  RuntimeSession session;
   auto &context = session.GetContext();
   const std::array<Tensor, 0> inputs{};
   const std::array<Tensor *, 0> outputs{};
@@ -275,14 +275,14 @@ TEST(CudaKernelLaunchTest, ReportsExternalDeviceSemanticErrorsThroughContext) {
   });
   EXPECT_THROW(context.CheckAsyncErrors(), DeviceError);
 
-  auto input = test::Upload(context, Shape{1}, std::vector<float>{4.0F});
+  auto input = Upload(context, Shape{1}, std::vector<float>{4.0F});
   auto output = Empty(context, Shape{1}, DType::FLOAT32);
   SubmitAddOne(context, input, output, CudaCapturePolicy::FORBIDDEN);
-  EXPECT_EQ(test::Download<float>(context, output), (std::vector<float>{5.0F}));
+  EXPECT_EQ(Download<float>(context, output), (std::vector<float>{5.0F}));
 }
 
 TEST(CudaKernelLaunchTest, ReservesGraphSafePhiloxBlocksForExternalKernel) {
-  test::RuntimeSession session;
+  RuntimeSession session;
   auto &context = session.GetContext();
   Generator generator{context, 1234};
   auto first = Empty(context, Shape{4}, DType::INT64);
@@ -299,17 +299,17 @@ TEST(CudaKernelLaunchTest, ReservesGraphSafePhiloxBlocksForExternalKernel) {
 
   submit(first);
   submit(second);
-  const auto first_values = test::Download<int64_t>(context, first);
-  const auto second_values = test::Download<int64_t>(context, second);
+  const auto first_values = Download<int64_t>(context, first);
+  const auto second_values = Download<int64_t>(context, second);
   EXPECT_NE(first_values, second_values);
 
   generator.SetSeed(context, 1234);
   submit(second);
-  EXPECT_EQ(test::Download<int64_t>(context, second), first_values);
+  EXPECT_EQ(Download<int64_t>(context, second), first_values);
 }
 
 TEST(CudaKernelLaunchTest, PublishesPhiloxReservationToAuxiliaryStreams) {
-  test::RuntimeSession session;
+  RuntimeSession session;
   auto context = session.GetRuntime().CreateExecutionContext(session.GetDevice(),
                                                              ExecutionContextOptions{.max_auxiliary_stream_count_ = 1});
   Generator generator{context, 1234};
@@ -332,11 +332,11 @@ TEST(CudaKernelLaunchTest, PublishesPhiloxReservationToAuxiliaryStreams) {
   submit(expected, false);
   generator.SetSeed(context, 1234);
   submit(actual, true);
-  EXPECT_EQ(test::Download<int64_t>(context, actual), test::Download<int64_t>(context, expected));
+  EXPECT_EQ(Download<int64_t>(context, actual), Download<int64_t>(context, expected));
 }
 
 TEST(CudaKernelLaunchTest, CapturedPhiloxReservationReadsCurrentDeviceSeedOnReplay) {
-  test::RuntimeSession session;
+  RuntimeSession session;
   auto &context = session.GetContext();
   Generator generator{context, 1234};
   auto output = Empty(context, Shape{4}, DType::INT64);
@@ -363,21 +363,21 @@ TEST(CudaKernelLaunchTest, CapturedPhiloxReservationReadsCurrentDeviceSeedOnRepl
 
   generator.SetSeed(context, 1234);
   graph.Launch(context);
-  const auto first_seed_values = test::Download<int64_t>(context, output);
+  const auto first_seed_values = Download<int64_t>(context, output);
   generator.SetSeed(context, 5678);
   graph.Launch(context);
-  const auto second_seed_values = test::Download<int64_t>(context, output);
+  const auto second_seed_values = Download<int64_t>(context, output);
   EXPECT_NE(second_seed_values, first_seed_values);
 
   generator.SetSeed(context, 1234);
   graph.Launch(context);
-  EXPECT_EQ(test::Download<int64_t>(context, output), first_seed_values);
+  EXPECT_EQ(Download<int64_t>(context, output), first_seed_values);
 }
 
 TEST(CudaKernelLaunchTest, FailsContextAndPreservesExceptionAfterPartialSubmission) {
-  test::RuntimeSession session;
+  RuntimeSession session;
   auto &context = session.GetContext();
-  auto input = test::Upload(context, Shape{1}, std::vector<float>{4.0F});
+  auto input = Upload(context, Shape{1}, std::vector<float>{4.0F});
   auto output = Empty(context, Shape{1}, DType::FLOAT32);
   const std::array inputs{input};
   const std::array outputs{&output};
@@ -394,9 +394,9 @@ TEST(CudaKernelLaunchTest, FailsContextAndPreservesExceptionAfterPartialSubmissi
 }
 
 TEST(CudaKernelLaunchTest, ReplaysCaptureSafeExternalKernel) {
-  test::RuntimeSession session;
+  RuntimeSession session;
   auto &context = session.GetContext();
-  auto input = test::Upload(context, Shape{4}, std::vector<float>{0.0F, 1.0F, 2.0F, 3.0F});
+  auto input = Upload(context, Shape{4}, std::vector<float>{0.0F, 1.0F, 2.0F, 3.0F});
   auto output = Empty(context, Shape{4}, DType::FLOAT32);
 
   SubmitAddOne(context, input, output, CudaCapturePolicy::SAFE);
@@ -409,14 +409,14 @@ TEST(CudaKernelLaunchTest, ReplaysCaptureSafeExternalKernel) {
   context.Synchronize();
 
   EXPECT_EQ(graph.GetLaunchCount(), 2);
-  EXPECT_EQ(test::Download<float>(context, output), (std::vector<float>{1.0F, 2.0F, 3.0F, 4.0F}));
+  EXPECT_EQ(Download<float>(context, output), (std::vector<float>{1.0F, 2.0F, 3.0F, 4.0F}));
 }
 
 TEST(CudaKernelLaunchTest, ReplaysCaptureSafeExternalKernelAcrossAuxiliaryStream) {
-  test::RuntimeSession session;
+  RuntimeSession session;
   auto context = session.GetRuntime().CreateExecutionContext(session.GetDevice(),
                                                              ExecutionContextOptions{.max_auxiliary_stream_count_ = 1});
-  auto input = test::Upload(context, Shape{6}, std::vector<float>{0.0F, 1.0F, 2.0F, 3.0F, 4.0F, 5.0F});
+  auto input = Upload(context, Shape{6}, std::vector<float>{0.0F, 1.0F, 2.0F, 3.0F, 4.0F, 5.0F});
   auto output = Empty(context, Shape{6}, DType::FLOAT32);
 
   SubmitAddOneParallel(context, input, output, CudaCapturePolicy::SAFE);
@@ -429,14 +429,14 @@ TEST(CudaKernelLaunchTest, ReplaysCaptureSafeExternalKernelAcrossAuxiliaryStream
   context.Synchronize();
 
   EXPECT_EQ(graph.GetLaunchCount(), 2);
-  EXPECT_EQ(test::Download<float>(context, output), (std::vector<float>{1.0F, 2.0F, 3.0F, 4.0F, 5.0F, 6.0F}));
+  EXPECT_EQ(Download<float>(context, output), (std::vector<float>{1.0F, 2.0F, 3.0F, 4.0F, 5.0F, 6.0F}));
 }
 
 TEST(CudaKernelLaunchTest, FailsContextAfterParallelCallbackException) {
-  test::RuntimeSession session;
+  RuntimeSession session;
   auto context = session.GetRuntime().CreateExecutionContext(session.GetDevice(),
                                                              ExecutionContextOptions{.max_auxiliary_stream_count_ = 1});
-  auto input = test::Upload(context, Shape{1}, std::vector<float>{4.0F});
+  auto input = Upload(context, Shape{1}, std::vector<float>{4.0F});
   auto output = Empty(context, Shape{1}, DType::FLOAT32);
   const std::array inputs{input};
   const std::array outputs{&output};
@@ -455,9 +455,9 @@ TEST(CudaKernelLaunchTest, FailsContextAfterParallelCallbackException) {
 }
 
 TEST(CudaKernelLaunchTest, MovedFromCapturedGraphFailsDeterministically) {
-  test::RuntimeSession session;
+  RuntimeSession session;
   auto &context = session.GetContext();
-  auto input = test::Upload(context, Shape{1}, std::vector<float>{1.0F});
+  auto input = Upload(context, Shape{1}, std::vector<float>{1.0F});
   auto output = Empty(context, Shape{1}, DType::FLOAT32);
 
   SubmitAddOne(context, input, output, CudaCapturePolicy::SAFE);
@@ -476,7 +476,7 @@ TEST(CudaKernelLaunchTest, MovedFromCapturedGraphFailsDeterministically) {
 }
 
 TEST(CudaKernelLaunchTest, RejectsDefaultPolicyDuringCapture) {
-  test::RuntimeSession session;
+  RuntimeSession session;
   auto &context = session.GetContext();
   auto input = Empty(context, Shape{1}, DType::FLOAT32);
   auto output = Empty(context, Shape{1}, DType::FLOAT32);
@@ -486,10 +486,10 @@ TEST(CudaKernelLaunchTest, RejectsDefaultPolicyDuringCapture) {
 }
 
 TEST(CudaKernelLaunchTest, RecordsStorageUsageAcrossExplicitlyOrderedStreams) {
-  test::RuntimeSession session;
+  RuntimeSession session;
   auto &producer = session.GetContext();
   auto consumer = session.GetRuntime().CreateExecutionContext(session.GetDevice());
-  auto input = test::Upload(producer, Shape{4}, std::vector<float>{1, 2, 3, 4});
+  auto input = Upload(producer, Shape{4}, std::vector<float>{1, 2, 3, 4});
   auto intermediate = Empty(producer, Shape{4}, DType::FLOAT32);
   auto output = Empty(consumer, Shape{4}, DType::FLOAT32);
 
@@ -499,7 +499,7 @@ TEST(CudaKernelLaunchTest, RecordsStorageUsageAcrossExplicitlyOrderedStreams) {
   SubmitAddOne(consumer, intermediate, output, CudaCapturePolicy::FORBIDDEN);
   intermediate = Empty(producer, Shape{0}, DType::FLOAT32);
 
-  EXPECT_EQ(test::Download<float>(consumer, output), (std::vector<float>{3, 4, 5, 6}));
+  EXPECT_EQ(Download<float>(consumer, output), (std::vector<float>{3, 4, 5, 6}));
 }
 
-}  // namespace ttl
+}  // namespace ttl::test

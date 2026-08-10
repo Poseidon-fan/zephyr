@@ -20,9 +20,9 @@
 namespace ttl::test {
 namespace {
 
-class CreationElementwiseTest : public SingleDeviceTest {};
+class CreationOperatorTest : public SingleDeviceTest {};
 
-TEST_F(CreationElementwiseTest, FullZerosOnesAndFillCoverEveryDTypeAndEmptyTensor) {
+TEST_F(CreationOperatorTest, FullZerosOnesAndFillCoverEveryDTypeAndEmptyTensor) {
   for (DType dtype : {DType::FLOAT32, DType::FLOAT16, DType::BFLOAT16}) {
     Tensor full = Full(GetContext(), Shape{2, 2}, Scalar{2.5}, dtype);
     ExpectFloatValues(GetContext(), full, {2.5F, 2.5F, 2.5F, 2.5F}, 0.01F, 0.01F);
@@ -43,7 +43,7 @@ TEST_F(CreationElementwiseTest, FullZerosOnesAndFillCoverEveryDTypeAndEmptyTenso
   EXPECT_THROW(static_cast<void>(Full(GetContext(), Shape{1}, Scalar{int64_t{256}}, DType::UINT8)), OverflowError);
 }
 
-TEST_F(CreationElementwiseTest, ArangeHandlesPositiveNegativeFloatingEmptyAndInvalidRanges) {
+TEST_F(CreationOperatorTest, ArangeHandlesPositiveNegativeFloatingEmptyAndInvalidRanges) {
   Tensor positive = Arange(GetContext(), Scalar{int64_t{-2}}, Scalar{int64_t{5}}, Scalar{int64_t{2}}, DType::INT32);
   ExpectValues<int32_t>(GetContext(), positive, {-2, 0, 2, 4});
 
@@ -62,7 +62,7 @@ TEST_F(CreationElementwiseTest, ArangeHandlesPositiveNegativeFloatingEmptyAndInv
                InvalidArgumentError);
 }
 
-TEST_F(CreationElementwiseTest, CastConvertsSupportedValuesAndReportsOutOfRangeValuesAsynchronously) {
+TEST_F(CreationOperatorTest, CastConvertsSupportedValuesAndReportsOutOfRangeValuesAsynchronously) {
   Tensor integers = TensorFromValues<int32_t>(GetContext(), Shape{4}, {-2, 0, 3, 9});
   Tensor floating = Cast(GetContext(), integers, DType::FLOAT32);
   ExpectFloatValues(GetContext(), floating, {-2, 0, 3, 9});
@@ -76,7 +76,7 @@ TEST_F(CreationElementwiseTest, CastConvertsSupportedValuesAndReportsOutOfRangeV
   EXPECT_NO_THROW(GetContext().Synchronize());
 }
 
-TEST_F(CreationElementwiseTest, ConcatAndStackSupportNegativeAxesEmptyExtentsAndRejectMismatches) {
+TEST_F(CreationOperatorTest, ConcatAndStackSupportNegativeAxesEmptyExtentsAndRejectMismatches) {
   const std::array<Tensor, 2> inputs{
       TensorFromValues<int32_t>(GetContext(), Shape{2, 1}, {1, 2}),
       TensorFromValues<int32_t>(GetContext(), Shape{2, 2}, {3, 4, 5, 6}),
@@ -102,7 +102,7 @@ TEST_F(CreationElementwiseTest, ConcatAndStackSupportNegativeAxesEmptyExtentsAnd
   EXPECT_THROW(static_cast<void>(Stack(GetContext(), inputs, 0)), InvalidArgumentError);
 }
 
-TEST_F(CreationElementwiseTest, ArithmeticBroadcastsSupportsScalarsAndAllowsExactOutputAlias) {
+TEST_F(CreationOperatorTest, ArithmeticBroadcastsSupportsScalarsAndAllowsExactOutputAlias) {
   Tensor matrix = TensorFromValues<int32_t>(GetContext(), Shape{2, 3}, {1, 2, 3, 4, 5, 6});
   Tensor row = TensorFromValues<int32_t>(GetContext(), Shape{3}, {10, 20, 30});
 
@@ -120,7 +120,7 @@ TEST_F(CreationElementwiseTest, ArithmeticBroadcastsSupportsScalarsAndAllowsExac
   EXPECT_THROW(static_cast<void>(Add(GetContext(), matrix, bad_shape)), InvalidArgumentError);
 }
 
-TEST_F(CreationElementwiseTest, IntegerDivisionByZeroUsesExplicitAsynchronousErrorBoundary) {
+TEST_F(CreationOperatorTest, IntegerDivisionByZeroUsesExplicitAsynchronousErrorBoundary) {
   Tensor dividend = TensorFromValues<int32_t>(GetContext(), Shape{3}, {8, 9, 10});
   Tensor divisor = TensorFromValues<int32_t>(GetContext(), Shape{3}, {2, 0, 5});
   Tensor output = Divide(GetContext(), dividend, divisor);
@@ -129,7 +129,7 @@ TEST_F(CreationElementwiseTest, IntegerDivisionByZeroUsesExplicitAsynchronousErr
   EXPECT_NO_THROW(GetContext().Synchronize());
 }
 
-TEST_F(CreationElementwiseTest, ComparisonsCoverTensorScalarBroadcastAndNanRules) {
+TEST_F(CreationOperatorTest, ComparisonsCoverTensorScalarBroadcastAndNanRules) {
   Tensor lhs = FloatingTensorFromValues(GetContext(), Shape{2, 2}, DType::FLOAT32,
                                         {1.0F, 2.0F, std::numeric_limits<float>::quiet_NaN(), 4.0F});
   Tensor rhs = FloatingTensorFromValues(GetContext(), Shape{2}, DType::FLOAT32, {2.0F, 2.0F});
@@ -142,7 +142,7 @@ TEST_F(CreationElementwiseTest, ComparisonsCoverTensorScalarBroadcastAndNanRules
   ExpectBoolValues(GetContext(), GreaterEqual(GetContext(), lhs, Scalar{2.0}), {0, 1, 0, 1});
 }
 
-TEST_F(CreationElementwiseTest, UnaryFloatingFunctionsMatchIndependentHostReferences) {
+TEST_F(CreationOperatorTest, UnaryFloatingFunctionsMatchIndependentHostReferences) {
   Tensor input = FloatingTensorFromValues(GetContext(), Shape{3}, DType::FLOAT32, {-1.0F, 0.0F, 1.0F});
   ExpectFloatValues(GetContext(), Negate(GetContext(), input), {1, 0, -1});
   ExpectFloatValues(GetContext(), Abs(GetContext(), input), {1, 0, 1});
@@ -166,7 +166,7 @@ TEST_F(CreationElementwiseTest, UnaryFloatingFunctionsMatchIndependentHostRefere
   EXPECT_THROW(static_cast<void>(Clamp(GetContext(), input, Scalar{2.0}, Scalar{1.0})), InvalidArgumentError);
 }
 
-TEST_F(CreationElementwiseTest, LogicalWhereAndGeluCoverBooleanBroadcastAndBothApproximations) {
+TEST_F(CreationOperatorTest, LogicalWhereAndGeluCoverBooleanBroadcastAndBothApproximations) {
   Tensor lhs = BoolTensorFromValues(GetContext(), Shape{2, 2}, {1, 0, 1, 0});
   Tensor rhs = BoolTensorFromValues(GetContext(), Shape{2}, {1, 1});
   ExpectBoolValues(GetContext(), LogicalAnd(GetContext(), lhs, rhs), {1, 0, 1, 0});

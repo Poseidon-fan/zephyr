@@ -10,7 +10,7 @@
 #include "ttl/common/error.hpp"
 #include "ttl/tensor/dtype.hpp"
 
-namespace ttl {
+namespace ttl::test {
 
 TEST(DTypeTest, ReportsCompleteMetadata) {
   constexpr std::array expected{
@@ -75,4 +75,4 @@ TEST(DTypeTest, ConvertsBFloat16WithRoundToNearestEven) {
   EXPECT_TRUE(std::isnan(BFloat16ToFloat(FloatToBFloat16(std::numeric_limits<float>::quiet_NaN()))));
 }
 
-}  // namespace ttl
+}  // namespace ttl::test

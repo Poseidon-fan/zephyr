@@ -11,7 +11,7 @@
 #include <cuda_runtime_api.h>
 #include <gtest/gtest.h>
 
-#include "support/tensor_test_utils.hpp"
+#include "support/runtime_session.hpp"
 #include "ttl/common/device.hpp"
 #include "ttl/common/error.hpp"
 #include "ttl/internal/runtime/cuda_api.hpp"
@@ -24,11 +24,11 @@
 #include "ttl/tensor/shape.hpp"
 #include "ttl/tensor/tensor.hpp"
 
-namespace ttl {
+namespace ttl::test {
 namespace {
 
-class RuntimeTensorTest : public test::SingleDeviceTest {};
-class RuntimeConstructionTest : public test::CudaDeviceTest {};
+class RuntimeTensorTest : public SingleDeviceTest {};
+class RuntimeConstructionTest : public CudaDeviceTest {};
 
 std::atomic<uint64_t> retirement_not_ready_clear_count{0};
 
@@ -46,10 +46,9 @@ auto ClearRetirementNotReady() -> cudaError_t {
 
 TEST(RuntimeTest, ValidatesOptionsBeforeCreatingNativeResources) {
   EXPECT_THROW(static_cast<void>(Runtime(RuntimeOptions{})), InvalidArgumentError);
-  auto sink = std::make_shared<test::RecordingErrorSink>();
-  EXPECT_THROW(static_cast<void>(Runtime(test::MakeRuntimeOptions({}, sink))), InvalidArgumentError);
-  EXPECT_THROW(static_cast<void>(Runtime(test::MakeRuntimeOptions({Device{0}, Device{0}}, sink))),
-               InvalidArgumentError);
+  auto sink = std::make_shared<RecordingErrorSink>();
+  EXPECT_THROW(static_cast<void>(Runtime(MakeRuntimeOptions({}, sink))), InvalidArgumentError);
+  EXPECT_THROW(static_cast<void>(Runtime(MakeRuntimeOptions({Device{0}, Device{0}}, sink))), InvalidArgumentError);
 }
 
 TEST_F(RuntimeTensorTest, OwnsDeviceContextAndRequiresExplicitCleanShutdown) {
@@ -78,8 +77,8 @@ TEST_F(RuntimeTensorTest, ExposesAllocatorAndLifecycleStatistics) {
 }
 
 TEST_F(RuntimeConstructionTest, ReclaimsCompletedDeviceRetirementOnDemand) {
-  auto sink = std::make_shared<test::RecordingErrorSink>();
-  auto options = test::MakeRuntimeOptions({GetDevice()}, sink);
+  auto sink = std::make_shared<RecordingErrorSink>();
+  auto options = MakeRuntimeOptions({GetDevice()}, sink);
   options.device_memory_.max_live_bytes_ = 16384;
   Runtime runtime{options};
   {
@@ -103,9 +102,37 @@ TEST_F(RuntimeConstructionTest, ReclaimsCompletedDeviceRetirementOnDemand) {
   EXPECT_TRUE(sink->GetRecords().empty());
 }
 
+TEST_F(RuntimeConstructionTest, DeviceBudgetOomIsCountedAndRuntimeRecoversAfterRetirement) {
+  auto sink = std::make_shared<RecordingErrorSink>();
+  auto options = MakeRuntimeOptions({GetDevice()}, sink);
+  options.device_memory_.max_live_bytes_ = 16384;
+  Runtime runtime{options};
+  {
+    auto context = runtime.CreateExecutionContext(GetDevice());
+    const uint64_t baseline_live_bytes = runtime.GetStatistics().devices_.front().logical_live_bytes_;
+    {
+      Tensor live = Empty(context, Shape{3072}, DType::FLOAT32);
+      EXPECT_THROW(static_cast<void>(Empty(context, Shape{2048}, DType::FLOAT32)), OutOfMemoryError);
+      const auto after_oom = runtime.GetStatistics().devices_.front();
+      EXPECT_EQ(after_oom.logical_live_bytes_, baseline_live_bytes + 12288U);
+      EXPECT_GE(after_oom.oom_count_, 1U);
+      FillOut(context, live, Scalar{7.0F});
+      context.Synchronize();
+    }
+
+    context.Synchronize();
+    runtime.Poll();
+    Tensor recovered = Empty(context, Shape{2048}, DType::FLOAT32);
+    FillOut(context, recovered, Scalar{3.0F});
+    ExpectFloatValues(context, recovered, std::vector<float>(2048, 3.0F));
+  }
+  runtime.Shutdown();
+  EXPECT_TRUE(sink->GetRecords().empty());
+}
+
 TEST_F(RuntimeConstructionTest, ClearsIncompleteDeviceRetirementBeforeCallerThreadAllocation) {
-  auto sink = std::make_shared<test::RecordingErrorSink>();
-  Runtime runtime{test::MakeRuntimeOptions({GetDevice()}, sink)};
+  auto sink = std::make_shared<RecordingErrorSink>();
+  Runtime runtime{MakeRuntimeOptions({GetDevice()}, sink)};
   {
     auto context = runtime.CreateExecutionContext(GetDevice());
     {
@@ -130,8 +157,8 @@ TEST_F(RuntimeConstructionTest, ClearsIncompleteDeviceRetirementBeforeCallerThre
 }
 
 TEST_F(RuntimeConstructionTest, SerializesConcurrentContextCreationAndShutdown) {
-  auto sink = std::make_shared<test::RecordingErrorSink>();
-  Runtime runtime{test::MakeRuntimeOptions({GetDevice()}, sink)};
+  auto sink = std::make_shared<RecordingErrorSink>();
+  Runtime runtime{MakeRuntimeOptions({GetDevice()}, sink)};
   std::optional<ExecutionContext> context;
   std::exception_ptr creation_error;
   std::exception_ptr shutdown_error;
@@ -166,9 +193,9 @@ TEST_F(RuntimeConstructionTest, SerializesConcurrentContextCreationAndShutdown) 
 TEST_F(RuntimeTensorTest, AllocatesCopiesAndClassifiesViews) {
   auto &context = GetContext();
   const std::vector<int32_t> host{0, 1, 2, 3, 4, 5};
-  auto tensor = test::Upload(context, Shape{2, 3}, host);
+  auto tensor = Upload(context, Shape{2, 3}, host);
   tensor.RecordUsage(context.GetStream());
-  EXPECT_EQ(test::Download<int32_t>(context, tensor), host);
+  EXPECT_EQ(Download<int32_t>(context, tensor), host);
   EXPECT_TRUE(tensor.IsContiguous());
   EXPECT_TRUE(tensor.IsNonOverlappingDense());
 
@@ -186,17 +213,17 @@ TEST_F(RuntimeTensorTest, AllocatesCopiesAndClassifiesViews) {
 TEST_F(RuntimeTensorTest, HandlesScalarAndEmptyStorage) {
   auto &context = GetContext();
   auto scalar = Full(context, Shape{}, Scalar{int64_t{7}}, DType::INT64);
-  EXPECT_EQ(test::Download<int64_t>(context, scalar), (std::vector<int64_t>{7}));
+  EXPECT_EQ(Download<int64_t>(context, scalar), (std::vector<int64_t>{7}));
 
   auto empty = Empty(context, Shape{2, 0, 4}, DType::FLOAT32);
   EXPECT_EQ(empty.GetNumElements(), 0);
   EXPECT_EQ(empty.GetData<float>(), nullptr);
-  EXPECT_TRUE(test::Download<float>(context, empty).empty());
+  EXPECT_TRUE(Download<float>(context, empty).empty());
 }
 
 TEST_F(RuntimeConstructionTest, MovedFromHandlesFailDeterministically) {
-  auto sink = std::make_shared<test::RecordingErrorSink>();
-  Runtime runtime{test::MakeRuntimeOptions({GetDevice()}, sink)};
+  auto sink = std::make_shared<RecordingErrorSink>();
+  Runtime runtime{MakeRuntimeOptions({GetDevice()}, sink)};
   {
     auto context = runtime.CreateExecutionContext(GetDevice());
 
@@ -238,4 +265,4 @@ TEST_F(RuntimeConstructionTest, MovedFromHandlesFailDeterministically) {
   EXPECT_TRUE(sink->GetRecords().empty());
 }
 
-}  // namespace ttl
+}  // namespace ttl::test

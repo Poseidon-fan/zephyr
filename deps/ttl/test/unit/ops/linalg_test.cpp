@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <numbers>
 #include <optional>
+#include <vector>
 
 #include <gtest/gtest.h>
 
@@ -49,6 +50,35 @@ TEST_F(LinalgNormalizationTest, BatchedMatmulBroadcastsLeadingDimensions) {
   EXPECT_THROW(static_cast<void>(BatchedMatmul(GetContext(), Empty(GetContext(), Shape{2, 2}, DType::FLOAT32),
                                                Empty(GetContext(), Shape{2, 2}, DType::FLOAT32))),
                InvalidArgumentError);
+}
+
+TEST_F(LinalgNormalizationTest, BatchedMatmulBroadcastsMultipleLeadingDimensions) {
+  std::vector<float> lhs_values(1 * 3 * 2 * 4, 0.0F);
+  std::vector<float> rhs_values(3 * 4 * 5, 0.0F);
+  std::vector<float> expected;
+  expected.reserve(1 * 3 * 2 * 5);
+  for (size_t batch = 0; batch < 3; ++batch) {
+    for (size_t row = 0; row < 2; ++row) {
+      lhs_values[(((batch * 2) + row) * 4) + row] = 1.0F;
+    }
+    for (size_t reduction = 0; reduction < 4; ++reduction) {
+      for (size_t column = 0; column < 5; ++column) {
+        rhs_values[(((batch * 4) + reduction) * 5) + column] =
+            static_cast<float>((batch * 100) + (reduction * 10) + column);
+      }
+    }
+    for (size_t row = 0; row < 2; ++row) {
+      for (size_t column = 0; column < 5; ++column) {
+        expected.push_back(static_cast<float>((batch * 100) + (row * 10) + column));
+      }
+    }
+  }
+
+  Tensor lhs = FloatingTensorFromValues(GetContext(), Shape{1, 3, 2, 4}, DType::FLOAT32, lhs_values);
+  Tensor rhs = FloatingTensorFromValues(GetContext(), Shape{3, 4, 5}, DType::FLOAT32, rhs_values);
+  Tensor output = BatchedMatmul(GetContext(), lhs, rhs, {.allow_tf32_ = false});
+  ExpectShape(output, {1, 3, 2, 5});
+  ExpectFloatValues(GetContext(), output, expected);
 }
 
 TEST_F(LinalgNormalizationTest, LinearAppliesWeightBiasAndActivation) {

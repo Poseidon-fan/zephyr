@@ -1,15 +1,18 @@
 #include <atomic>
 #include <cstdint>
 #include <source_location>
+#include <string_view>
 
 #include <cuda_runtime_api.h>
 #include <gtest/gtest.h>
 
-#include "support/tensor_test_utils.hpp"
+#include "support/runtime_session.hpp"
 #include "ttl/common/error.hpp"
+#include "ttl/internal/distributed/nccl_api.hpp"
 #include "ttl/internal/runtime/cuda_api.hpp"
 #include "ttl/internal/runtime/cuda_check.hpp"
 #include "ttl/internal/runtime/error_report.hpp"
+#include "ttl/internal/runtime/library/cublas_api.hpp"
 
 namespace ttl::internal {
 namespace {
@@ -110,6 +113,60 @@ TEST(CudaQueryTest, ReportsUnexpectedErrorWhileClearingNoexceptEventQuery) {
   const auto records = error_sink.GetRecords();
   ASSERT_EQ(records.size(), 1);
   EXPECT_EQ(records[0].code_, ErrorCode::CUDA);
+}
+
+TEST(NativeLibraryCheckTest, ThrowsTypedErrorsAndPreservesOperationContext) {
+  try {
+    CheckCublas(CUBLAS_STATUS_NOT_SUPPORTED, "cublas operation");
+    FAIL() << "CheckCublas did not throw";
+  } catch (const CublasError &error) {
+    EXPECT_EQ(error.GetCode(), ErrorCode::CUBLAS);
+    EXPECT_NE(std::string_view{error.what()}.find("cublas operation"), std::string_view::npos);
+  }
+
+  try {
+    CheckNccl(ncclInvalidArgument, "nccl operation");
+    FAIL() << "CheckNccl did not throw";
+  } catch (const NcclError &error) {
+    EXPECT_EQ(error.GetCode(), ErrorCode::NCCL);
+    EXPECT_NE(std::string_view{error.what()}.find("nccl operation"), std::string_view::npos);
+  }
+}
+
+TEST(NativeLibraryCheckTest, NoexceptChecksReportExactlyOneTypedRecord) {
+  test::RecordingErrorSink error_sink;
+  const ErrorReportContext context = MakeErrorContext();
+  EXPECT_TRUE(TryCublas(CUBLAS_STATUS_SUCCESS, "success", error_sink, context));
+  EXPECT_TRUE(TryNccl(ncclSuccess, "success", error_sink, context));
+  EXPECT_FALSE(TryCublas(CUBLAS_STATUS_EXECUTION_FAILED, "cublas failure", error_sink, context));
+  EXPECT_FALSE(TryNccl(ncclSystemError, "nccl failure", error_sink, context));
+
+  const auto records = error_sink.GetRecords();
+  ASSERT_EQ(records.size(), 2U);
+  EXPECT_EQ(records[0].code_, ErrorCode::CUBLAS);
+  EXPECT_EQ(records[1].code_, ErrorCode::NCCL);
+  EXPECT_EQ(records[0].device_, context.device_);
+  EXPECT_EQ(records[1].stream_id_, context.stream_id_);
+}
+
+TEST(NativeLibraryOverrideTest, RestoresCuBlasAndNcclTablesAfterScopedOverrides) {
+  const auto &cublas_before = GetCublasApi();
+  auto cublas_override = cublas_before;
+  cublas_override.create_ = nullptr;
+  {
+    const ScopedCublasApiOverride scoped{cublas_override};
+    EXPECT_EQ(GetCublasApi().create_, nullptr);
+  }
+  EXPECT_EQ(GetCublasApi().create_, cublas_before.create_);
+
+  const auto &nccl_before = GetNcclApi();
+  auto nccl_override = nccl_before;
+  nccl_override.group_start_ = nullptr;
+  {
+    const ScopedNcclApiOverride scoped{nccl_override};
+    EXPECT_EQ(GetNcclApi().group_start_, nullptr);
+  }
+  EXPECT_EQ(GetNcclApi().group_start_, nccl_before.group_start_);
 }
 
 }  // namespace

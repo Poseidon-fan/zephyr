@@ -11,7 +11,7 @@
 #include "ttl/tensor/scalar.hpp"
 #include "ttl/tensor/shape.hpp"
 
-namespace ttl {
+namespace ttl::test {
 
 TEST(ShapeTest, RepresentsScalarEmptyAndRankEightShapes) {
   const Shape scalar;
@@ -74,4 +74,4 @@ TEST(ScalarTest, PreservesCategoryAndChecksIntegerConversions) {
   EXPECT_TRUE(std::isinf(Scalar{std::numeric_limits<double>::infinity()}.Cast<float>()));
 }
 
-}  // namespace ttl
+}  // namespace ttl::test

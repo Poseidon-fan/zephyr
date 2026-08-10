@@ -11,7 +11,7 @@
 #include <cuda_runtime_api.h>
 #include <gtest/gtest.h>
 
-#include "support/tensor_test_utils.hpp"
+#include "support/runtime_session.hpp"
 #include "ttl/common/device.hpp"
 #include "ttl/common/error.hpp"
 #include "ttl/distributed/collective.hpp"
@@ -27,10 +27,10 @@
 #include "ttl/tensor/shape.hpp"
 #include "ttl/tensor/tensor.hpp"
 
-namespace ttl {
+namespace ttl::test {
 namespace {
 
-class GraphDeviceTest : public test::CudaDeviceTest {};
+class GraphDeviceTest : public CudaDeviceTest {};
 
 std::atomic<int> graph_exec_destroy_failures{0};
 
@@ -70,16 +70,16 @@ auto FailGetDevice(int *device) -> cudaError_t {
 
 [[nodiscard]] auto MakeGraphRuntimeOptions(Device device, const std::shared_ptr<ErrorSink> &error_sink)
     -> RuntimeOptions {
-  auto options = test::MakeRuntimeOptions({device}, error_sink);
+  auto options = MakeRuntimeOptions({device}, error_sink);
   return options;
 }
 
-[[nodiscard]] auto HasTwoDevices() -> bool { return test::GetTestDevices(2).size() >= 2; }
+[[nodiscard]] auto HasTwoDevices() -> bool { return GetTestDevices(2).size() >= 2; }
 
 }  // namespace
 
 TEST_F(GraphDeviceTest, ReleasesCaptureRegistrationWhenNativeEndReportsFailure) {
-  auto sink = std::make_shared<test::RecordingErrorSink>();
+  auto sink = std::make_shared<RecordingErrorSink>();
   Runtime runtime{MakeGraphRuntimeOptions(GetDevice(), sink)};
   {
     auto context = runtime.CreateExecutionContext(GetDevice());
@@ -99,14 +99,14 @@ TEST_F(GraphDeviceTest, ReleasesCaptureRegistrationWhenNativeEndReportsFailure) 
     capture.Abort();
 
     FillOut(context, output, Scalar{3.0F});
-    EXPECT_EQ(test::Download<float>(context, output), (std::vector<float>{3, 3, 3, 3}));
+    EXPECT_EQ(Download<float>(context, output), (std::vector<float>{3, 3, 3, 3}));
   }
   runtime.Shutdown();
   EXPECT_TRUE(sink->GetRecords().empty());
 }
 
 TEST_F(GraphDeviceTest, CleansNativeGraphWhenInstantiationFails) {
-  auto sink = std::make_shared<test::RecordingErrorSink>();
+  auto sink = std::make_shared<RecordingErrorSink>();
   Runtime runtime{MakeGraphRuntimeOptions(GetDevice(), sink)};
   {
     auto context = runtime.CreateExecutionContext(GetDevice());
@@ -131,7 +131,7 @@ TEST_F(GraphDeviceTest, CleansNativeGraphWhenInstantiationFails) {
 }
 
 TEST_F(GraphDeviceTest, RetriesFailedNativeGraphDestructionFromRuntimePoll) {
-  auto sink = std::make_shared<test::RecordingErrorSink>();
+  auto sink = std::make_shared<RecordingErrorSink>();
   Runtime runtime{MakeGraphRuntimeOptions(GetDevice(), sink)};
   {
     auto context = runtime.CreateExecutionContext(GetDevice());
@@ -158,7 +158,7 @@ TEST_F(GraphDeviceTest, RetriesFailedNativeGraphDestructionFromRuntimePoll) {
 }
 
 TEST_F(GraphDeviceTest, RetainsReplayResourcesUntilLaunchCompletion) {
-  auto sink = std::make_shared<test::RecordingErrorSink>();
+  auto sink = std::make_shared<RecordingErrorSink>();
   Runtime runtime{MakeGraphRuntimeOptions(GetDevice(), sink)};
   {
     auto context = runtime.CreateExecutionContext(GetDevice());
@@ -187,7 +187,7 @@ TEST_F(GraphDeviceTest, RetainsReplayResourcesUntilLaunchCompletion) {
 }
 
 TEST_F(GraphDeviceTest, RetriesAbortWhenCleanupCannotSelectTheCaptureDevice) {
-  auto sink = std::make_shared<test::RecordingErrorSink>();
+  auto sink = std::make_shared<RecordingErrorSink>();
   Runtime runtime{MakeGraphRuntimeOptions(GetDevice(), sink)};
   {
     auto context = runtime.CreateExecutionContext(GetDevice());
@@ -211,8 +211,8 @@ TEST_F(GraphDeviceTest, RetriesAbortWhenCleanupCannotSelectTheCaptureDevice) {
 }
 
 TEST_F(GraphDeviceTest, RejectsWrongReplayStreamAndRetainsRuntimeRegistration) {
-  auto sink = std::make_shared<test::RecordingErrorSink>();
-  Runtime runtime{test::MakeRuntimeOptions({GetDevice()}, sink)};
+  auto sink = std::make_shared<RecordingErrorSink>();
+  Runtime runtime{MakeRuntimeOptions({GetDevice()}, sink)};
   std::optional<CapturedGraph> graph;
   {
     auto capture_context = runtime.CreateExecutionContext(GetDevice());
@@ -227,7 +227,7 @@ TEST_F(GraphDeviceTest, RejectsWrongReplayStreamAndRetainsRuntimeRegistration) {
     EXPECT_THROW(graph->Launch(other_context), InvalidArgumentError);
     graph->Launch(capture_context);
     capture_context.Synchronize();
-    EXPECT_EQ(test::Download<float>(capture_context, output), (std::vector<float>{2, 2, 2, 2}));
+    EXPECT_EQ(Download<float>(capture_context, output), (std::vector<float>{2, 2, 2, 2}));
   }
 
   EXPECT_THROW(runtime.Shutdown(), InvalidArgumentError);
@@ -237,8 +237,8 @@ TEST_F(GraphDeviceTest, RejectsWrongReplayStreamAndRetainsRuntimeRegistration) {
 }
 
 TEST_F(GraphDeviceTest, CaptureTransactionOwnsContextStateAfterPublicHandleDestruction) {
-  auto sink = std::make_shared<test::RecordingErrorSink>();
-  Runtime runtime{test::MakeRuntimeOptions({GetDevice()}, sink)};
+  auto sink = std::make_shared<RecordingErrorSink>();
+  Runtime runtime{MakeRuntimeOptions({GetDevice()}, sink)};
   std::optional<CaptureSession> capture;
   std::optional<Tensor> output;
   {
@@ -266,8 +266,8 @@ TEST_F(GraphDeviceTest, CaptureTransactionOwnsContextStateAfterPublicHandleDestr
 }
 
 TEST_F(GraphDeviceTest, CaptureTransactionCanAbortOnAnotherHostThread) {
-  auto sink = std::make_shared<test::RecordingErrorSink>();
-  Runtime runtime{test::MakeRuntimeOptions({GetDevice()}, sink)};
+  auto sink = std::make_shared<RecordingErrorSink>();
+  Runtime runtime{MakeRuntimeOptions({GetDevice()}, sink)};
   {
     auto context = runtime.CreateExecutionContext(GetDevice());
     auto session = context.BeginCapture(GraphCaptureOptions{.name_ = "cross-thread abort"});
@@ -275,7 +275,7 @@ TEST_F(GraphDeviceTest, CaptureTransactionCanAbortOnAnotherHostThread) {
     abort_thread.join();
 
     auto output = Full(context, Shape{2}, Scalar{3.0F}, DType::FLOAT32);
-    EXPECT_EQ(test::Download<float>(context, output), (std::vector<float>{3, 3}));
+    EXPECT_EQ(Download<float>(context, output), (std::vector<float>{3, 3}));
   }
   runtime.Shutdown();
   EXPECT_TRUE(sink->GetRecords().empty());
@@ -286,9 +286,9 @@ TEST(GraphIntegrationTest, CapturesAndReplaysCheckedNcclExtensionOnFixedRankWork
     GTEST_SKIP() << "requires at least two CUDA devices";
   }
 
-  auto sink = std::make_shared<test::RecordingErrorSink>();
-  const auto devices = test::GetTestDevices(2);
-  Runtime runtime{test::MakeRuntimeOptions({devices[0], devices[1]}, sink)};
+  auto sink = std::make_shared<RecordingErrorSink>();
+  const auto devices = GetTestDevices(2);
+  Runtime runtime{MakeRuntimeOptions({devices[0], devices[1]}, sink)};
   const std::array rank_order{devices[0], devices[1]};
   auto communicator_group = LocalCommunicatorGroup::Create(runtime, rank_order);
   {
@@ -297,8 +297,8 @@ TEST(GraphIntegrationTest, CapturesAndReplaysCheckedNcclExtensionOnFixedRankWork
     contexts.push_back(runtime.CreateExecutionContext(devices[0]));
     contexts.push_back(runtime.CreateExecutionContext(devices[1]));
     std::array inputs{
-        test::Upload(contexts[0], Shape{2}, std::vector<float>{1, 2}),
-        test::Upload(contexts[1], Shape{2}, std::vector<float>{10, 20}),
+        Upload(contexts[0], Shape{2}, std::vector<float>{1, 2}),
+        Upload(contexts[1], Shape{2}, std::vector<float>{10, 20}),
     };
     std::array outputs{Empty(contexts[0], Shape{2}, DType::FLOAT32), Empty(contexts[1], Shape{2}, DType::FLOAT32)};
     const std::array warmup_calls{
@@ -343,8 +343,8 @@ TEST(GraphIntegrationTest, CapturesAndReplaysCheckedNcclExtensionOnFixedRankWork
 
       graph_group.Launch();
       graph_group.Synchronize();
-      EXPECT_EQ(test::Download<float>(graph_group.GetContext(0), outputs[0]), (std::vector<float>{11, 22}));
-      EXPECT_EQ(test::Download<float>(graph_group.GetContext(1), outputs[1]), (std::vector<float>{11, 22}));
+      EXPECT_EQ(Download<float>(graph_group.GetContext(0), outputs[0]), (std::vector<float>{11, 22}));
+      EXPECT_EQ(Download<float>(graph_group.GetContext(1), outputs[1]), (std::vector<float>{11, 22}));
     }
   }
   communicator_group.Close();
@@ -352,4 +352,4 @@ TEST(GraphIntegrationTest, CapturesAndReplaysCheckedNcclExtensionOnFixedRankWork
   EXPECT_TRUE(sink->GetRecords().empty());
 }
 
-}  // namespace ttl
+}  // namespace ttl::test

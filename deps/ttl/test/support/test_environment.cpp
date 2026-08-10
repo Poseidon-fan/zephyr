@@ -18,12 +18,10 @@ auto RequireCudaInThisJob() -> bool {
   return value != nullptr && std::string_view{value} == "1";
 }
 
-void SkipOrFailForMissingCuda(std::string_view message) {
-  if (RequireCudaInThisJob()) {
-    FAIL() << message;
-  }
-  GTEST_SKIP() << message;
-}
+// GTest's fatal/skip macros return from the current function.  Keeping them in
+// this helper is unsafe because SetUp() would continue after the helper returns.
+// Callers must invoke the macro in their own SetUp() frame.
+[[nodiscard]] auto MustRunCudaTests() -> bool { return RequireCudaInThisJob(); }
 
 }  // namespace
 
@@ -86,7 +84,11 @@ auto RecordingErrorSink::GetRecords() const -> std::vector<ErrorRecord> {
 void CudaDeviceTest::SetUp() {
   const auto devices = GetTestDevices(1);
   if (devices.empty()) {
-    SkipOrFailForMissingCuda("TTL CUDA tests require one SM80+ NVIDIA GPU");
+    if (MustRunCudaTests()) {
+      FAIL() << "TTL CUDA tests require one SM80+ NVIDIA GPU";
+    }
+    GTEST_SKIP() << "TTL CUDA tests require one SM80+ NVIDIA GPU";
+    return;
   }
   device_ = devices.front();
 }
@@ -94,7 +96,11 @@ void CudaDeviceTest::SetUp() {
 void SingleDeviceTest::SetUp() {
   auto devices = GetTestDevices(1);
   if (devices.empty()) {
-    SkipOrFailForMissingCuda("TTL CUDA tests require one SM80+ NVIDIA GPU");
+    if (MustRunCudaTests()) {
+      FAIL() << "TTL CUDA tests require one SM80+ NVIDIA GPU";
+    }
+    GTEST_SKIP() << "TTL CUDA tests require one SM80+ NVIDIA GPU";
+    return;
   }
 
   device_ = devices.front();
@@ -135,9 +141,16 @@ void SingleDeviceTest::ShutdownRuntime() {
 }
 
 void MultiDeviceTest::SetUp() {
-  devices_ = GetTestDevices(2);
+  // Exercise the complete local world when possible.  Tests use the discovered
+  // world size and therefore cover 2, 3, and larger single-process groups
+  // without encoding a particular developer or CI topology.
+  devices_ = GetTestDevices(GetCudaDeviceCount());
   if (devices_.size() < 2) {
-    SkipOrFailForMissingCuda("TTL multi-GPU tests require at least two SM80+ NVIDIA GPUs");
+    if (MustRunCudaTests()) {
+      FAIL() << "TTL multi-GPU tests require at least two SM80+ NVIDIA GPUs";
+    }
+    GTEST_SKIP() << "TTL multi-GPU tests require at least two SM80+ NVIDIA GPUs";
+    return;
   }
 
   error_sink_ = std::make_shared<RecordingErrorSink>();

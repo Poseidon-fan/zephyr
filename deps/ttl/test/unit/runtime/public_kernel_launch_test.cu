@@ -10,6 +10,7 @@
 #include "support/test_tensor.hpp"
 #include "ttl/common/error.hpp"
 #include "ttl/runtime/device_error.cuh"
+#include "ttl/runtime/graph.hpp"
 #include "ttl/runtime/kernel_launch.hpp"
 #include "ttl/tensor/tensor.hpp"
 
@@ -17,7 +18,7 @@ namespace ttl::test {
 namespace {
 
 __global__ void AddOneKernel(const float *input, float *output, size_t count) {
-  const size_t index = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  const size_t index = (static_cast<size_t>(blockIdx.x) * blockDim.x) + threadIdx.x;
   if (index < count) {
     output[index] = input[index] + 1.0F;
   }
@@ -25,6 +26,12 @@ __global__ void AddOneKernel(const float *input, float *output, size_t count) {
 
 __global__ void ReportErrorKernel(CudaDeviceErrorContext context) {
   ReportCudaDeviceError(context, CudaDeviceErrorCode::USER_DEFINED, 7, 42, 9);
+}
+
+__global__ void MaybeReportErrorKernel(CudaDeviceErrorContext context, bool report) {
+  if (report) {
+    ReportCudaDeviceError(context, CudaDeviceErrorCode::USER_DEFINED, 11, 73, 5);
+  }
 }
 
 TEST_F(SingleDeviceTest, CheckedLaunchProvidesTypedPointersStreamAndAlignedWorkspace) {
@@ -82,6 +89,35 @@ TEST_F(SingleDeviceTest, DeviceSemanticErrorIsStickyAndSurfacedAtExplicitBoundar
     EXPECT_NE(error.GetMessage().find("value bits 42"), std::string_view::npos);
   }
 
+  EXPECT_NO_THROW(GetContext().Synchronize());
+}
+
+TEST_F(SingleDeviceTest, CapturedDeviceSemanticErrorSurfacesAfterGraphReplay) {
+  const std::array<Tensor, 0> inputs{};
+  const std::array<Tensor *, 0> outputs{};
+  const auto submit = [&](bool report, CudaCapturePolicy capture_policy) {
+    SubmitCudaKernel(GetContext(), "captured_device_error", inputs, outputs,
+                     [report](CudaKernelLaunch &launch) {
+                       MaybeReportErrorKernel<<<1, 1, 0, launch.GetStream()>>>(
+                           launch.GetDeviceErrorContext(DType::INT64, DType::INT32), report);
+                     },
+                     {.capture_policy_ = capture_policy});
+  };
+
+  submit(false, CudaCapturePolicy::FORBIDDEN);
+  GetContext().Synchronize();
+  CaptureSession capture = GetContext().BeginCapture({.name_ = "captured device error"});
+  submit(true, CudaCapturePolicy::SAFE);
+  CapturedGraph graph = capture.Finish();
+  graph.Launch(GetContext());
+
+  try {
+    GetContext().CheckAsyncErrors();
+    FAIL() << "expected a DeviceError after graph replay";
+  } catch (const DeviceError &error) {
+    EXPECT_NE(error.GetMessage().find("linear index 11"), std::string_view::npos);
+    EXPECT_NE(error.GetMessage().find("value bits 73"), std::string_view::npos);
+  }
   EXPECT_NO_THROW(GetContext().Synchronize());
 }
 

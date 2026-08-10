@@ -9,13 +9,13 @@
 #include <gtest/gtest.h>
 #include <nccl.h>
 
-#include "support/tensor_test_utils.hpp"
+#include "support/runtime_session.hpp"
 #include "ttl/common/error.hpp"
 #include "ttl/distributed/collective.hpp"
 #include "ttl/distributed/communicator.hpp"
 #include "ttl/distributed/nccl_launch.hpp"
 
-namespace ttl {
+namespace ttl::test {
 namespace {
 
 template <typename Function>
@@ -49,28 +49,28 @@ void Synchronize(std::array<ExecutionContext, 2> &contexts) {
 }
 
 TEST(NcclRankLocalCollectiveTest, ExercisesEveryPublicRankLocalCollective) {
-  const auto devices = test::GetTestDevices(2);
+  const auto devices = GetTestDevices(2);
   if (devices.size() < 2) {
     GTEST_SKIP() << "requires at least two CUDA devices";
   }
 
-  auto sink = std::make_shared<test::RecordingErrorSink>();
-  Runtime runtime{test::MakeRuntimeOptions({devices[0], devices[1]}, sink)};
+  auto sink = std::make_shared<RecordingErrorSink>();
+  Runtime runtime{MakeRuntimeOptions({devices[0], devices[1]}, sink)};
   {
     std::array contexts{runtime.CreateExecutionContext(devices[0]), runtime.CreateExecutionContext(devices[1])};
     auto group = LocalCommunicatorGroup::Create(runtime, std::array{devices[0], devices[1]});
     std::array communicators{&group.GetCommunicator(0), &group.GetCommunicator(1)};
 
-    std::array inputs{test::Upload(contexts[0], Shape{2}, std::vector<float>{1, 2}),
-                      test::Upload(contexts[1], Shape{2}, std::vector<float>{10, 20})};
+    std::array inputs{Upload(contexts[0], Shape{2}, std::vector<float>{1, 2}),
+                      Upload(contexts[1], Shape{2}, std::vector<float>{10, 20})};
     std::array outputs{Empty(contexts[0], Shape{2}, DType::FLOAT32), Empty(contexts[1], Shape{2}, DType::FLOAT32)};
 
     RunRanks(contexts, communicators, [&](size_t rank, ExecutionContext &context, NcclCommunicator &communicator) {
       AllReduceOut(context, outputs[rank], inputs[rank], communicator, ReduceOp::SUM);
     });
     Synchronize(contexts);
-    EXPECT_EQ(test::Download<float>(contexts[0], outputs[0]), (std::vector<float>{11, 22}));
-    EXPECT_EQ(test::Download<float>(contexts[1], outputs[1]), (std::vector<float>{11, 22}));
+    EXPECT_EQ(Download<float>(contexts[0], outputs[0]), (std::vector<float>{11, 22}));
+    EXPECT_EQ(Download<float>(contexts[1], outputs[1]), (std::vector<float>{11, 22}));
 
     std::array extension_outputs{Empty(contexts[0], Shape{2}, DType::FLOAT32),
                                  Empty(contexts[1], Shape{2}, DType::FLOAT32)};
@@ -86,86 +86,86 @@ TEST(NcclRankLocalCollectiveTest, ExercisesEveryPublicRankLocalCollective) {
                        });
     });
     Synchronize(contexts);
-    EXPECT_EQ(test::Download<float>(contexts[0], extension_outputs[0]), (std::vector<float>{11, 22}));
-    EXPECT_EQ(test::Download<float>(contexts[1], extension_outputs[1]), (std::vector<float>{11, 22}));
+    EXPECT_EQ(Download<float>(contexts[0], extension_outputs[0]), (std::vector<float>{11, 22}));
+    EXPECT_EQ(Download<float>(contexts[1], extension_outputs[1]), (std::vector<float>{11, 22}));
 
     outputs = {Empty(contexts[0], Shape{2}, DType::FLOAT32), Empty(contexts[1], Shape{2}, DType::FLOAT32)};
     RunRanks(contexts, communicators, [&](size_t rank, ExecutionContext &context, NcclCommunicator &communicator) {
       ReduceOut(context, outputs[rank], inputs[rank], communicator, ReduceOp::SUM, 0);
     });
     Synchronize(contexts);
-    EXPECT_EQ(test::Download<float>(contexts[0], outputs[0]), (std::vector<float>{11, 22}));
+    EXPECT_EQ(Download<float>(contexts[0], outputs[0]), (std::vector<float>{11, 22}));
 
     outputs = {Empty(contexts[0], Shape{4}, DType::FLOAT32), Empty(contexts[1], Shape{4}, DType::FLOAT32)};
     RunRanks(contexts, communicators, [&](size_t rank, ExecutionContext &context, NcclCommunicator &communicator) {
       AllGatherOut(context, outputs[rank], inputs[rank], communicator);
     });
     Synchronize(contexts);
-    EXPECT_EQ(test::Download<float>(contexts[0], outputs[0]), (std::vector<float>{1, 2, 10, 20}));
-    EXPECT_EQ(test::Download<float>(contexts[1], outputs[1]), (std::vector<float>{1, 2, 10, 20}));
+    EXPECT_EQ(Download<float>(contexts[0], outputs[0]), (std::vector<float>{1, 2, 10, 20}));
+    EXPECT_EQ(Download<float>(contexts[1], outputs[1]), (std::vector<float>{1, 2, 10, 20}));
 
-    inputs = {test::Upload(contexts[0], Shape{4}, std::vector<float>{1, 2, 3, 4}),
-              test::Upload(contexts[1], Shape{4}, std::vector<float>{10, 20, 30, 40})};
+    inputs = {Upload(contexts[0], Shape{4}, std::vector<float>{1, 2, 3, 4}),
+              Upload(contexts[1], Shape{4}, std::vector<float>{10, 20, 30, 40})};
     outputs = {Empty(contexts[0], Shape{2}, DType::FLOAT32), Empty(contexts[1], Shape{2}, DType::FLOAT32)};
     RunRanks(contexts, communicators, [&](size_t rank, ExecutionContext &context, NcclCommunicator &communicator) {
       ReduceScatterOut(context, outputs[rank], inputs[rank], communicator, ReduceOp::SUM);
     });
     Synchronize(contexts);
-    EXPECT_EQ(test::Download<float>(contexts[0], outputs[0]), (std::vector<float>{11, 22}));
-    EXPECT_EQ(test::Download<float>(contexts[1], outputs[1]), (std::vector<float>{33, 44}));
+    EXPECT_EQ(Download<float>(contexts[0], outputs[0]), (std::vector<float>{11, 22}));
+    EXPECT_EQ(Download<float>(contexts[1], outputs[1]), (std::vector<float>{33, 44}));
 
-    inputs = {test::Upload(contexts[0], Shape{2}, std::vector<float>{3, 4}),
-              test::Upload(contexts[1], Shape{2}, std::vector<float>{30, 40})};
+    inputs = {Upload(contexts[0], Shape{2}, std::vector<float>{3, 4}),
+              Upload(contexts[1], Shape{2}, std::vector<float>{30, 40})};
     outputs = {Empty(contexts[0], Shape{2}, DType::FLOAT32), Empty(contexts[1], Shape{2}, DType::FLOAT32)};
     RunRanks(contexts, communicators, [&](size_t rank, ExecutionContext &context, NcclCommunicator &communicator) {
       BroadcastOut(context, outputs[rank], inputs[rank], communicator, 0);
     });
     Synchronize(contexts);
-    EXPECT_EQ(test::Download<float>(contexts[0], outputs[0]), (std::vector<float>{3, 4}));
-    EXPECT_EQ(test::Download<float>(contexts[1], outputs[1]), (std::vector<float>{3, 4}));
+    EXPECT_EQ(Download<float>(contexts[0], outputs[0]), (std::vector<float>{3, 4}));
+    EXPECT_EQ(Download<float>(contexts[1], outputs[1]), (std::vector<float>{3, 4}));
 
-    inputs = {test::Upload(contexts[0], Shape{4}, std::vector<float>{0, 1, 2, 3}),
-              test::Upload(contexts[1], Shape{4}, std::vector<float>{10, 11, 12, 13})};
+    inputs = {Upload(contexts[0], Shape{4}, std::vector<float>{0, 1, 2, 3}),
+              Upload(contexts[1], Shape{4}, std::vector<float>{10, 11, 12, 13})};
     outputs = {Empty(contexts[0], Shape{4}, DType::FLOAT32), Empty(contexts[1], Shape{4}, DType::FLOAT32)};
     RunRanks(contexts, communicators, [&](size_t rank, ExecutionContext &context, NcclCommunicator &communicator) {
       AllToAllOut(context, outputs[rank], inputs[rank], communicator);
     });
     Synchronize(contexts);
-    EXPECT_EQ(test::Download<float>(contexts[0], outputs[0]), (std::vector<float>{0, 1, 10, 11}));
-    EXPECT_EQ(test::Download<float>(contexts[1], outputs[1]), (std::vector<float>{2, 3, 12, 13}));
+    EXPECT_EQ(Download<float>(contexts[0], outputs[0]), (std::vector<float>{0, 1, 10, 11}));
+    EXPECT_EQ(Download<float>(contexts[1], outputs[1]), (std::vector<float>{2, 3, 12, 13}));
 
-    inputs = {test::Upload(contexts[0], Shape{2}, std::vector<float>{0, 1}),
-              test::Upload(contexts[1], Shape{2}, std::vector<float>{10, 11})};
+    inputs = {Upload(contexts[0], Shape{2}, std::vector<float>{0, 1}),
+              Upload(contexts[1], Shape{2}, std::vector<float>{10, 11})};
     outputs = {Empty(contexts[0], Shape{2}, DType::FLOAT32), Empty(contexts[1], Shape{2}, DType::FLOAT32)};
     constexpr std::array<int64_t, 2> counts{1, 1};
     RunRanks(contexts, communicators, [&](size_t rank, ExecutionContext &context, NcclCommunicator &communicator) {
       AllToAllVOut(context, outputs[rank], inputs[rank], counts, counts, communicator);
     });
     Synchronize(contexts);
-    EXPECT_EQ(test::Download<float>(contexts[0], outputs[0]), (std::vector<float>{0, 10}));
-    EXPECT_EQ(test::Download<float>(contexts[1], outputs[1]), (std::vector<float>{1, 11}));
+    EXPECT_EQ(Download<float>(contexts[0], outputs[0]), (std::vector<float>{0, 10}));
+    EXPECT_EQ(Download<float>(contexts[1], outputs[1]), (std::vector<float>{1, 11}));
 
-    inputs = {test::Upload(contexts[0], Shape{2}, std::vector<float>{5, 6}),
-              test::Upload(contexts[1], Shape{2}, std::vector<float>{50, 60})};
+    inputs = {Upload(contexts[0], Shape{2}, std::vector<float>{5, 6}),
+              Upload(contexts[1], Shape{2}, std::vector<float>{50, 60})};
     outputs = {Empty(contexts[0], Shape{4}, DType::FLOAT32), Empty(contexts[1], Shape{4}, DType::FLOAT32)};
     RunRanks(contexts, communicators, [&](size_t rank, ExecutionContext &context, NcclCommunicator &communicator) {
       GatherOut(context, outputs[rank], inputs[rank], communicator, 0);
     });
     Synchronize(contexts);
-    EXPECT_EQ(test::Download<float>(contexts[0], outputs[0]), (std::vector<float>{5, 6, 50, 60}));
+    EXPECT_EQ(Download<float>(contexts[0], outputs[0]), (std::vector<float>{5, 6, 50, 60}));
 
-    inputs = {test::Upload(contexts[0], Shape{4}, std::vector<float>{7, 8, 70, 80}),
-              test::Upload(contexts[1], Shape{4}, std::vector<float>{-1, -1, -1, -1})};
+    inputs = {Upload(contexts[0], Shape{4}, std::vector<float>{7, 8, 70, 80}),
+              Upload(contexts[1], Shape{4}, std::vector<float>{-1, -1, -1, -1})};
     outputs = {Empty(contexts[0], Shape{2}, DType::FLOAT32), Empty(contexts[1], Shape{2}, DType::FLOAT32)};
     RunRanks(contexts, communicators, [&](size_t rank, ExecutionContext &context, NcclCommunicator &communicator) {
       ScatterOut(context, outputs[rank], inputs[rank], communicator, 0);
     });
     Synchronize(contexts);
-    EXPECT_EQ(test::Download<float>(contexts[0], outputs[0]), (std::vector<float>{7, 8}));
-    EXPECT_EQ(test::Download<float>(contexts[1], outputs[1]), (std::vector<float>{70, 80}));
+    EXPECT_EQ(Download<float>(contexts[0], outputs[0]), (std::vector<float>{7, 8}));
+    EXPECT_EQ(Download<float>(contexts[1], outputs[1]), (std::vector<float>{70, 80}));
 
-    std::array send{test::Upload(contexts[0], Shape{2}, std::vector<float>{100, 101}),
-                    test::Upload(contexts[1], Shape{2}, std::vector<float>{200, 201})};
+    std::array send{Upload(contexts[0], Shape{2}, std::vector<float>{100, 101}),
+                    Upload(contexts[1], Shape{2}, std::vector<float>{200, 201})};
     std::array receive{Empty(contexts[0], Shape{2}, DType::FLOAT32), Empty(contexts[1], Shape{2}, DType::FLOAT32)};
     RunRanks(contexts, communicators, [&](size_t rank, ExecutionContext &context, NcclCommunicator &communicator) {
       if (rank == 0) {
@@ -175,7 +175,7 @@ TEST(NcclRankLocalCollectiveTest, ExercisesEveryPublicRankLocalCollective) {
       }
     });
     Synchronize(contexts);
-    EXPECT_EQ(test::Download<float>(contexts[1], receive[1]), (std::vector<float>{100, 101}));
+    EXPECT_EQ(Download<float>(contexts[1], receive[1]), (std::vector<float>{100, 101}));
 
     receive = {Empty(contexts[0], Shape{2}, DType::FLOAT32), Empty(contexts[1], Shape{2}, DType::FLOAT32)};
     RunRanks(contexts, communicators, [&](size_t rank, ExecutionContext &context, NcclCommunicator &communicator) {
@@ -183,8 +183,8 @@ TEST(NcclRankLocalCollectiveTest, ExercisesEveryPublicRankLocalCollective) {
                      communicator);
     });
     Synchronize(contexts);
-    EXPECT_EQ(test::Download<float>(contexts[0], receive[0]), (std::vector<float>{200, 201}));
-    EXPECT_EQ(test::Download<float>(contexts[1], receive[1]), (std::vector<float>{100, 101}));
+    EXPECT_EQ(Download<float>(contexts[0], receive[0]), (std::vector<float>{200, 201}));
+    EXPECT_EQ(Download<float>(contexts[1], receive[1]), (std::vector<float>{100, 101}));
 
     RunRanks(contexts, communicators,
              [](size_t, ExecutionContext &context, NcclCommunicator &communicator) { Barrier(context, communicator); });
@@ -199,4 +199,4 @@ TEST(NcclRankLocalCollectiveTest, ExercisesEveryPublicRankLocalCollective) {
 }
 
 }  // namespace
-}  // namespace ttl
+}  // namespace ttl::test

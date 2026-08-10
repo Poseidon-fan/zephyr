@@ -180,8 +180,16 @@ ttl_add_test(
     CUDA
     SOURCES
         unit/ops/creation_test.cpp
+    LABELS unit ops creation
+    TIMEOUT 120
+)
+
+ttl_add_test(
+    ttl_elementwise_tests
+    CUDA
+    SOURCES
         unit/ops/elementwise_test.cpp
-    LABELS unit ops
+    LABELS unit ops elementwise
     TIMEOUT 120
 )
 
@@ -190,19 +198,61 @@ ttl_add_test(
     CUDA
     SOURCES
         unit/ops/linalg_test.cpp
-        unit/ops/attention_random_test.cpp
-    LABELS unit ops
+    LABELS unit ops linalg
     TIMEOUT 120
 )
 
 ttl_add_test(
-    ttl_indexing_tests
+    ttl_attention_random_tests
+    CUDA
+    SOURCES
+        unit/ops/attention_random_test.cpp
+    LABELS unit ops attention random
+    TIMEOUT 120
+)
+
+ttl_add_test(
+    ttl_reduction_indexing_tests
+    CUDA
+    SOURCES
+        unit/ops/reduction_test.cpp
+    LABELS unit ops indexing reduction scan
+    TIMEOUT 120
+)
+
+ttl_add_test(
+    ttl_operator_contract_tests
+    CUDA
+    SOURCES
+        unit/ops/operator_contract_smoke_test.cpp
+    LABELS unit ops smoke
+    TIMEOUT 120
+)
+
+ttl_add_test(
+    ttl_selection_tests
     CUDA
     SOURCES
         unit/ops/random_selection_test.cpp
-        unit/ops/reduction_test.cpp
-        unit/ops/indexing_scan_selection_test.cpp
-    LABELS unit ops
+    LABELS unit ops selection random
+    TIMEOUT 120
+)
+
+ttl_add_test(
+    ttl_operator_edge_tests
+    CUDA
+    SOURCES
+        unit/ops/operator_edge_case_test.cpp
+    LABELS unit ops edge
+    TIMEOUT 120
+)
+
+ttl_add_test(
+    ttl_dtype_matrix_tests
+    CUDA
+    SOURCES
+        unit/ops/dtype_matrix_test.cpp
+    LABELS unit ops dtype
     TIMEOUT 120
 )
 
@@ -211,7 +261,7 @@ ttl_add_test(
     CUDA
     SOURCES
         unit/ops/output_contract_test.cpp
-    LABELS unit ops
+    LABELS unit ops output
     TIMEOUT 120
 )
 

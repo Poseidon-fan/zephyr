@@ -1,7 +1,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <numeric>
+#include <optional>
 #include <span>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -15,6 +17,7 @@
 #include "ttl/ops/creation.hpp"
 #include "ttl/ops/elementwise.hpp"
 #include "ttl/runtime/graph.hpp"
+#include "ttl/tensor/layout.hpp"
 
 namespace ttl::test {
 namespace {
@@ -23,6 +26,9 @@ class DistributedTest : public MultiDeviceTest {};
 
 TEST_F(DistributedTest, PeerCopyHonorsExplicitProducerEventAcrossDevices) {
   ASSERT_GE(GetDevices().size(), 2U);
+  if (!GetRuntime().CanAccessPeer(GetDevices()[1], GetDevices()[0])) {
+    GTEST_SKIP() << "requires destination-to-source peer access";
+  }
   ExecutionContext producer = GetRuntime().CreateExecutionContext(GetDevices()[0]);
   ExecutionContext consumer = GetRuntime().CreateExecutionContext(GetDevices()[1]);
   Tensor source = TensorFromValues<int32_t>(producer, Shape{4}, {3, 1, 4, 1});
@@ -35,6 +41,45 @@ TEST_F(DistributedTest, PeerCopyHonorsExplicitProducerEventAcrossDevices) {
 
   Tensor wrong_destination = Empty(consumer, Shape{3}, DType::INT32);
   EXPECT_THROW(CopyPeerOut(consumer, wrong_destination, source, source_ready), InvalidArgumentError);
+
+  Tensor wrong_dtype = Empty(consumer, Shape{4}, DType::FLOAT32);
+  EXPECT_THROW(CopyPeerOut(consumer, wrong_dtype, source, source_ready), InvalidArgumentError);
+
+  Tensor destination_storage = Empty(consumer, Shape{8}, DType::INT32);
+  Tensor non_contiguous = Slice(destination_storage, 0, 0, 8, 2);
+  ASSERT_FALSE(non_contiguous.IsContiguous());
+  EXPECT_THROW(CopyPeerOut(consumer, non_contiguous, source, source_ready), InvalidArgumentError);
+
+  Tensor same_device_destination = Empty(producer, Shape{4}, DType::INT32);
+  EXPECT_THROW(CopyPeerOut(producer, same_device_destination, source, source_ready), InvalidArgumentError);
+
+  Event wrong_device_ready = consumer.RecordEvent();
+  EXPECT_THROW(CopyPeerOut(consumer, destination, source, wrong_device_ready), InvalidArgumentError);
+}
+
+TEST_F(DistributedTest, PeerCopyRejectsUnavailablePeerAccessWhenExposedByTheTopology) {
+  std::optional<std::pair<Device, Device>> unsupported_pair;
+  for (Device destination : GetDevices()) {
+    for (Device source : GetDevices()) {
+      if (destination != source && !GetRuntime().CanAccessPeer(destination, source)) {
+        unsupported_pair.emplace(destination, source);
+        break;
+      }
+    }
+    if (unsupported_pair.has_value()) {
+      break;
+    }
+  }
+  if (!unsupported_pair.has_value()) {
+    GTEST_SKIP() << "all discovered device pairs support peer access";
+  }
+
+  ExecutionContext destination_context = GetRuntime().CreateExecutionContext(unsupported_pair->first);
+  ExecutionContext source_context = GetRuntime().CreateExecutionContext(unsupported_pair->second);
+  Tensor source = TensorFromValues<int32_t>(source_context, Shape{2}, {1, 2});
+  Event source_ready = source_context.RecordEvent();
+  Tensor destination = Empty(destination_context, Shape{2}, DType::INT32);
+  EXPECT_THROW(CopyPeerOut(destination_context, destination, source, source_ready), NotSupportedError);
 }
 
 [[nodiscard]] auto MakeRankTensor(ExecutionContext &context, int32_t rank, int64_t length = 2) -> Tensor {
@@ -66,6 +111,103 @@ TEST_F(DistributedTest, CommunicatorGroupLifecycleAndRankMetadataAreAllOrNothing
   EXPECT_NO_THROW(group.Close());
   EXPECT_EQ(group.GetStatus(), CommunicatorStatus::CLOSED);
   EXPECT_NO_THROW(group.Close());
+}
+
+TEST_F(DistributedTest, ReductionCollectivesCoverEverySupportedDTypeAndOperationAcrossTheDiscoveredWorld) {
+  const size_t world = GetDevices().size();
+  LocalCommunicatorGroup group = LocalCommunicatorGroup::Create(GetRuntime(), GetDevices());
+
+  const auto run_integer_all_reduce = [&]<TensorStorageType T>() {
+    std::vector<Tensor> inputs;
+    std::vector<Tensor> outputs;
+    std::vector<LocalCollectiveCall> calls;
+    inputs.reserve(world);
+    outputs.reserve(world);
+    calls.reserve(world);
+    for (size_t rank = 0; rank < world; ++rank) {
+      const auto rank_value = static_cast<T>(rank + 1);
+      inputs.push_back(TensorFromValues<T>(GetContexts()[rank], Shape{2}, {rank_value, static_cast<T>(2)}));
+      outputs.push_back(Empty(GetContexts()[rank], Shape{2}, DTYPE_OF<T>));
+    }
+    for (size_t rank = 0; rank < world; ++rank) {
+      calls.push_back(LocalCollectiveCall{.context_ = &GetContexts()[rank],
+                                          .output_ = &outputs[rank],
+                                          .input_ = &inputs[rank],
+                                          .communicator_ = &group.GetCommunicator(rank)});
+    }
+    const auto verify = [&](ReduceOp operation, T expected_first, T expected_second) {
+      AllReduceLocal(calls, operation);
+      for (size_t rank = 0; rank < world; ++rank) {
+        GetContexts()[rank].Synchronize();
+        EXPECT_EQ(TensorToValues<T>(GetContexts()[rank], outputs[rank]),
+                  (std::vector<T>{expected_first, expected_second}));
+      }
+    };
+    verify(ReduceOp::SUM, static_cast<T>((world * (world + 1)) / 2), static_cast<T>(world * 2));
+    verify(ReduceOp::MINIMUM, static_cast<T>(1), static_cast<T>(2));
+    verify(ReduceOp::MAXIMUM, static_cast<T>(world), static_cast<T>(2));
+  };
+
+  run_integer_all_reduce.template operator()<uint8_t>();
+  run_integer_all_reduce.template operator()<int32_t>();
+  run_integer_all_reduce.template operator()<int64_t>();
+
+  for (DType dtype : {DType::FLOAT16, DType::BFLOAT16, DType::FLOAT32}) {
+    std::vector<Tensor> inputs;
+    std::vector<Tensor> outputs;
+    std::vector<LocalCollectiveCall> calls;
+    inputs.reserve(world);
+    outputs.reserve(world);
+    calls.reserve(world);
+    for (size_t rank = 0; rank < world; ++rank) {
+      inputs.push_back(
+          FloatingTensorFromValues(GetContexts()[rank], Shape{2}, dtype, {static_cast<float>(rank + 1), 2.0F}));
+      outputs.push_back(Empty(GetContexts()[rank], Shape{2}, dtype));
+      calls.push_back(LocalCollectiveCall{.context_ = &GetContexts()[rank],
+                                          .output_ = &outputs[rank],
+                                          .input_ = &inputs[rank],
+                                          .communicator_ = &group.GetCommunicator(rank)});
+    }
+    const auto verify = [&](ReduceOp operation, float expected_first, float expected_second) {
+      AllReduceLocal(calls, operation);
+      for (size_t rank = 0; rank < world; ++rank) {
+        GetContexts()[rank].Synchronize();
+        ExpectFloatValues(GetContexts()[rank], outputs[rank], {expected_first, expected_second}, 0.01F, 0.01F);
+      }
+    };
+    verify(ReduceOp::SUM, (static_cast<float>(world) * static_cast<float>(world + 1)) / 2.0F,
+           static_cast<float>(world * 2));
+    verify(ReduceOp::MINIMUM, 1.0F, 2.0F);
+    verify(ReduceOp::MAXIMUM, static_cast<float>(world), 2.0F);
+  }
+
+  std::vector<Tensor> bool_inputs;
+  std::vector<Tensor> bool_outputs;
+  std::vector<LocalCollectiveCall> bool_calls;
+  bool_inputs.reserve(world);
+  bool_outputs.reserve(world);
+  bool_calls.reserve(world);
+  for (size_t rank = 0; rank < world; ++rank) {
+    bool_inputs.push_back(BoolTensorFromValues(GetContexts()[rank], Shape{2},
+                                               {static_cast<uint8_t>(rank != 0), static_cast<uint8_t>(rank == 0)}));
+    bool_outputs.push_back(Empty(GetContexts()[rank], Shape{2}, DType::BOOL));
+    bool_calls.push_back(LocalCollectiveCall{.context_ = &GetContexts()[rank],
+                                             .output_ = &bool_outputs[rank],
+                                             .input_ = &bool_inputs[rank],
+                                             .communicator_ = &group.GetCommunicator(rank)});
+  }
+  EXPECT_THROW(AllReduceLocal(bool_calls, ReduceOp::SUM), InvalidArgumentError);
+  AllReduceLocal(bool_calls, ReduceOp::MINIMUM);
+  for (size_t rank = 0; rank < world; ++rank) {
+    GetContexts()[rank].Synchronize();
+    ExpectBoolValues(GetContexts()[rank], bool_outputs[rank], {0, 0});
+  }
+  AllReduceLocal(bool_calls, ReduceOp::MAXIMUM);
+  for (size_t rank = 0; rank < world; ++rank) {
+    GetContexts()[rank].Synchronize();
+    ExpectBoolValues(GetContexts()[rank], bool_outputs[rank], {1, 1});
+  }
+  group.Close();
 }
 
 TEST_F(DistributedTest, LocalCollectivesImplementReductionGatherBroadcastScatterAndAllToAll) {

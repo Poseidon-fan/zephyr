@@ -5,7 +5,7 @@
 
 #include "ttl/common/error.hpp"
 
-namespace ttl {
+namespace ttl::test {
 
 TEST(ErrorTest, PreservesStructuredCodeMessageAndLocation) {
   const auto location = std::source_location::current();
@@ -31,4 +31,4 @@ TEST(ErrorTest, NamesEveryStableErrorCode) {
   EXPECT_EQ(ErrorCodeToString(static_cast<ErrorCode>(255)), "UNKNOWN");
 }
 
-}  // namespace ttl
+}  // namespace ttl::test
