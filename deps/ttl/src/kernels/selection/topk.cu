@@ -10,9 +10,8 @@
 #include <type_traits>
 
 #include <cuda_runtime.h>
+#include <cub/cub.cuh>
 #include <cub/device/device_segmented_radix_sort.cuh>
-#include <cub/iterator/counting_input_iterator.cuh>
-#include <cub/iterator/transform_input_iterator.cuh>
 
 #include "ttl/common/error.hpp"
 #include "ttl/internal/common/checked_math.hpp"

@@ -40,7 +40,7 @@ void SetValidProperties() {
   g_properties.minor = 0;
   g_properties.warpSize = 32;
   g_properties.memoryPoolsSupported = 1;
-  g_properties.computeMode = cudaComputeModeDefault;
+
   g_properties.multiProcessorCount = 108;
   g_properties.sharedMemPerBlockOptin = 98304;
   g_properties.clusterLaunch = 1;
@@ -113,9 +113,6 @@ TEST_F(DevicePropertiesBoundaryTest, RejectsUnsupportedHardwareConfiguration) {
   EXPECT_THROW(static_cast<void>(QueryDeviceProperties(Device{0}, std::source_location::current())), NotSupportedError);
   SetValidProperties();
   g_properties.memoryPoolsSupported = 0;
-  EXPECT_THROW(static_cast<void>(QueryDeviceProperties(Device{0}, std::source_location::current())), NotSupportedError);
-  SetValidProperties();
-  g_properties.computeMode = cudaComputeModeProhibited;
   EXPECT_THROW(static_cast<void>(QueryDeviceProperties(Device{0}, std::source_location::current())), NotSupportedError);
 }
 

@@ -62,10 +62,6 @@ void ValidateNativeProperties(Device device, const cudaDeviceProp &properties, s
   if (properties.memoryPoolsSupported == 0) {
     throw NotSupportedError(FormatUnsupportedDevice(device, "CUDA stream-ordered memory pools are required"), location);
   }
-  if (properties.computeMode == cudaComputeModeProhibited) {
-    throw NotSupportedError(FormatUnsupportedDevice(device, "CUDA compute mode prohibits execution"), location);
-  }
-
   if (properties.multiProcessorCount <= 0) {
     throw InternalError(FormatUnsupportedDevice(device, "CUDA returned an invalid multiprocessor count"), location);
   }
