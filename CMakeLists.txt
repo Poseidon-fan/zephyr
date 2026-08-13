@@ -19,6 +19,17 @@ project(
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# scikit-build-core puts the build dir under build/{wheel_tag}, which clangd does
+# not search; mirror the compilation database where clangd expects to find it.
+add_custom_target(
+    clangd-db ALL
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_BINARY_DIR}/compile_commands.json"
+            "${PROJECT_SOURCE_DIR}/build/compile_commands.json"
+    COMMENT "Exporting compile_commands.json for clangd"
+    VERBATIM
+)
+
 option(ZEPHYR_BUILD_PYTHON "Build the Zephyr Python extension" ON)
 
 add_library(zephyr_project_warnings INTERFACE)
