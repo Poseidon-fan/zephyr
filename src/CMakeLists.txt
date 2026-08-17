@@ -10,7 +10,11 @@ target_include_directories(
 )
 
 target_compile_features(zephyr_core PUBLIC cxx_std_20 cuda_std_20)
-target_link_libraries(zephyr_core PRIVATE ttl::ttl zephyr::project_warnings)
+target_link_libraries(
+    zephyr_core
+    PUBLIC fmt::fmt
+    PRIVATE spdlog::spdlog ttl::ttl zephyr::project_warnings
+)
 
 set_target_properties(
     zephyr_core

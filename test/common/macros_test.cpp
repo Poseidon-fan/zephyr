@@ -1,13 +1,3 @@
-//===----------------------------------------------------------------------===//
-//
-//                                Zephyr
-//
-// macros_test.cpp
-//
-// Identification: test/common/macros_test.cpp
-//
-//===----------------------------------------------------------------------===//
-
 #include <cstdint>
 
 #include "common/exception.h"

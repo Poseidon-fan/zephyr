@@ -2,6 +2,7 @@ add_library(
     zephyr_common
     OBJECT
     exception.cpp
+    logger.cpp
     macros.cpp
 )
 
@@ -12,7 +13,7 @@ target_include_directories(
 )
 
 target_compile_features(zephyr_common PUBLIC cxx_std_20)
-target_link_libraries(zephyr_common PRIVATE zephyr::project_warnings)
+target_link_libraries(zephyr_common PRIVATE spdlog::spdlog zephyr::project_warnings)
 
 set_target_properties(
     zephyr_common

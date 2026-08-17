@@ -1,13 +1,3 @@
-//===----------------------------------------------------------------------===//
-//
-//                                Zephyr
-//
-// exception_test.cpp
-//
-// Identification: test/common/exception_test.cpp
-//
-//===----------------------------------------------------------------------===//
-
 #include <array>
 #include <cstdint>
 #include <source_location>
@@ -61,7 +51,10 @@ TEST(ExceptionTest, ExceptionTypeToString) {
   for (const auto &[type, name] : cases) {
     EXPECT_EQ(Exception::ExceptionTypeToString(type), name);
   }
-  EXPECT_EQ(Exception::ExceptionTypeToString(static_cast<ExceptionType>(UINT8_MAX)), "Unknown");
+  // Exercise the defensive fallback with an unnamed value of the fixed underlying type.
+  constexpr auto unknown_type =
+      static_cast<ExceptionType>(UINT8_MAX);  // NOLINT(clang-analyzer-optin.core.EnumCastOutOfRange)
+  EXPECT_EQ(Exception::ExceptionTypeToString(unknown_type), "Unknown");
 }
 
 TEST(ExceptionTest, SpecializedExceptions) {
