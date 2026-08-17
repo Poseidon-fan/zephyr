@@ -5,7 +5,6 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
-#include <utility>
 
 namespace zephyr {
 
@@ -21,7 +20,8 @@ enum class ExceptionType : uint8_t {
 /** Base class for all exceptions reported by Zephyr. */
 class Exception : public std::runtime_error {
  public:
-  Exception(ExceptionType type, std::string message, std::source_location location = std::source_location::current());
+  Exception(ExceptionType type, const std::string &message,
+            std::source_location location = std::source_location::current());
 
   /** @return the category of this exception */
   [[nodiscard]] auto GetType() const noexcept -> ExceptionType;
@@ -40,37 +40,41 @@ class Exception : public std::runtime_error {
 /** A public API argument violates its documented contract. */
 class InvalidArgumentException final : public Exception {
  public:
-  explicit InvalidArgumentException(std::string message,
+  explicit InvalidArgumentException(const std::string &message,
                                     std::source_location location = std::source_location::current())
-      : Exception(ExceptionType::INVALID_ARGUMENT, std::move(message), location) {}
+      : Exception(ExceptionType::INVALID_ARGUMENT, message, location) {}
 };
 
 /** The requested operation is intentionally unsupported. */
 class NotImplementedException final : public Exception {
  public:
-  explicit NotImplementedException(std::string message, std::source_location location = std::source_location::current())
-      : Exception(ExceptionType::NOT_IMPLEMENTED, std::move(message), location) {}
+  explicit NotImplementedException(const std::string &message,
+                                   std::source_location location = std::source_location::current())
+      : Exception(ExceptionType::NOT_IMPLEMENTED, message, location) {}
 };
 
 /** Engine or model configuration is invalid or inconsistent. */
 class ConfigurationException final : public Exception {
  public:
-  explicit ConfigurationException(std::string message, std::source_location location = std::source_location::current())
-      : Exception(ExceptionType::CONFIGURATION, std::move(message), location) {}
+  explicit ConfigurationException(const std::string &message,
+                                  std::source_location location = std::source_location::current())
+      : Exception(ExceptionType::CONFIGURATION, message, location) {}
 };
 
 /** A required host or device allocation cannot be satisfied. */
 class OutOfMemoryException final : public Exception {
  public:
-  explicit OutOfMemoryException(std::string message, std::source_location location = std::source_location::current())
-      : Exception(ExceptionType::OUT_OF_MEMORY, std::move(message), location) {}
+  explicit OutOfMemoryException(const std::string &message,
+                                std::source_location location = std::source_location::current())
+      : Exception(ExceptionType::OUT_OF_MEMORY, message, location) {}
 };
 
 /** Zephyr detected a broken internal invariant. */
 class InternalException final : public Exception {
  public:
-  explicit InternalException(std::string message, std::source_location location = std::source_location::current())
-      : Exception(ExceptionType::INTERNAL, std::move(message), location) {}
+  explicit InternalException(const std::string &message,
+                             std::source_location location = std::source_location::current())
+      : Exception(ExceptionType::INTERNAL, message, location) {}
 };
 
 }  // namespace zephyr

@@ -1,24 +1,13 @@
-//===----------------------------------------------------------------------===//
-//
-//                                Zephyr
-//
-// exception.cpp
-//
-// Identification: src/common/exception.cpp
-//
-//===----------------------------------------------------------------------===//
-
 #include "common/exception.h"
 
 #include <source_location>
 #include <string>
 #include <string_view>
-#include <utility>
 
 namespace zephyr {
 
-Exception::Exception(ExceptionType type, std::string message, std::source_location location)
-    : std::runtime_error(std::move(message)), type_(type), location_(location) {}
+Exception::Exception(ExceptionType type, const std::string &message, std::source_location location)
+    : std::runtime_error(message), type_(type), location_(location) {}
 
 auto Exception::GetType() const noexcept -> ExceptionType { return type_; }
 

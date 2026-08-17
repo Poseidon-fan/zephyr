@@ -1,4 +1,9 @@
-add_library(zephyr_common OBJECT exception.cpp)
+add_library(
+    zephyr_common
+    OBJECT
+    exception.cpp
+    macros.cpp
+)
 
 target_include_directories(
     zephyr_common
