@@ -31,6 +31,7 @@ add_custom_target(
 )
 
 option(ZEPHYR_BUILD_PYTHON "Build the Zephyr Python extension" ON)
+option(ZEPHYR_BUILD_TESTING "Build the Zephyr test suite" OFF)
 
 add_library(zephyr_project_warnings INTERFACE)
 add_library(zephyr::project_warnings ALIAS zephyr_project_warnings)
@@ -47,4 +48,9 @@ add_subdirectory(deps)
 add_subdirectory(src)
 if(ZEPHYR_BUILD_PYTHON)
     add_subdirectory(bindings/python)
+endif()
+if(ZEPHYR_BUILD_TESTING)
+    enable_testing()
+    zephyr_require_googletest()
+    add_subdirectory(test)
 endif()

@@ -1,11 +1,6 @@
-file(
-    GLOB_RECURSE ZEPHYR_CORE_SOURCES
-    CONFIGURE_DEPENDS
-    "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/*.cu"
-)
+add_subdirectory(common)
 
-add_library(zephyr_core STATIC ${ZEPHYR_CORE_SOURCES})
+add_library(zephyr_core STATIC vector_adder.cpp ${ALL_OBJECT_FILES})
 add_library(zephyr::core ALIAS zephyr_core)
 
 target_include_directories(
