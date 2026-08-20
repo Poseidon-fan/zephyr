@@ -23,6 +23,12 @@ auto Exception::ExceptionTypeToString(ExceptionType type) noexcept -> std::strin
       return "Configuration";
     case ExceptionType::OUT_OF_MEMORY:
       return "Out of Memory";
+    case ExceptionType::IO:
+      return "IO";
+    case ExceptionType::KV_CACHE_CAPACITY:
+      return "KV Cache Capacity";
+    case ExceptionType::EXECUTION:
+      return "Execution";
     case ExceptionType::INTERNAL:
       return "Internal";
   }

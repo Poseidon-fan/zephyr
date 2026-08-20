@@ -10,15 +10,29 @@ namespace zephyr {
 
 /** LogLevel controls the severity threshold of the Zephyr logger. */
 enum class LogLevel : uint8_t {
+  /** Fine-grained execution tracing. */
   TRACE = 0,
+
+  /** Development diagnostics. */
   DEBUG,
+
+  /** Normal lifecycle and operational events. */
   INFO,
+
+  /** Recoverable abnormal conditions. */
   WARN,
+
+  /** Failed operations that require caller intervention. */
   ERROR,
+
+  /** Disables all logging. */
   OFF,
 };
 
-/** Sets the runtime logging threshold for the Zephyr logger. */
+/**
+ * Sets the runtime logging threshold for the process-wide Zephyr logger.
+ * @param level minimum enabled severity
+ */
 void SetLogLevel(LogLevel level);
 
 /** @return the runtime logging threshold of the Zephyr logger */
@@ -26,11 +40,14 @@ void SetLogLevel(LogLevel level);
 
 namespace internal {
 
+/** @return whether the supplied level is enabled by the runtime logger */
 [[nodiscard]] auto ShouldLog(LogLevel level) noexcept -> bool;
 
+/** Formats and emits one log record without allowing logging failures to escape. */
 void LogMessage(LogLevel level, std::source_location location, fmt::string_view format,
                 fmt::format_args arguments) noexcept;
 
+/** Type-safe front end used by the public logging macros. */
 template <typename... Args>
 void Log(LogLevel level, std::source_location location, fmt::format_string<Args...> format, Args &&...args) noexcept {
   LogMessage(level, location, format.get(), fmt::make_format_args(args...));

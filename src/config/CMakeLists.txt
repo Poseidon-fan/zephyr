@@ -1,26 +1,24 @@
 add_library(
-    zephyr_common
+    zephyr_config
     OBJECT
-    exception.cpp
-    logger.cpp
-    macros.cpp
+        config.cpp
 )
 
 target_include_directories(
-    zephyr_common
+    zephyr_config
     PUBLIC
         $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/src/include>
 )
 
-target_compile_features(zephyr_common PUBLIC cxx_std_20)
+target_compile_features(zephyr_config PUBLIC cxx_std_20)
 target_link_libraries(
-    zephyr_common
+    zephyr_config
     PUBLIC ttl::ttl
-    PRIVATE spdlog::spdlog zephyr::project_warnings
+    PRIVATE zephyr::project_warnings
 )
 
 set_target_properties(
-    zephyr_common
+    zephyr_config
     PROPERTIES
         POSITION_INDEPENDENT_CODE ON
         CXX_EXTENSIONS OFF
@@ -30,6 +28,6 @@ set_target_properties(
 
 set(
     ALL_OBJECT_FILES
-    ${ALL_OBJECT_FILES} $<TARGET_OBJECTS:zephyr_common>
+    ${ALL_OBJECT_FILES} $<TARGET_OBJECTS:zephyr_config>
     PARENT_SCOPE
 )
