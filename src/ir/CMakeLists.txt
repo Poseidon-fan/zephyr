@@ -1,27 +1,29 @@
 add_library(
-    zephyr_common
+    zephyr_ir
     OBJECT
-    exception.cpp
-    logger.cpp
-    macros.cpp
-    tensor_type.cpp
+        model.cpp
+        value.cpp
+        operation/core.cpp
+        operation/tensor.cpp
 )
 
 target_include_directories(
-    zephyr_common
+    zephyr_ir
     PUBLIC
         $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/src/include>
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/src
 )
 
-target_compile_features(zephyr_common PUBLIC cxx_std_20)
+target_compile_features(zephyr_ir PUBLIC cxx_std_20)
 target_link_libraries(
-    zephyr_common
+    zephyr_ir
     PUBLIC ttl::ttl
-    PRIVATE spdlog::spdlog zephyr::project_warnings
+    PRIVATE zephyr::project_warnings
 )
 
 set_target_properties(
-    zephyr_common
+    zephyr_ir
     PROPERTIES
         POSITION_INDEPENDENT_CODE ON
         CXX_EXTENSIONS OFF
@@ -31,6 +33,6 @@ set_target_properties(
 
 set(
     ALL_OBJECT_FILES
-    ${ALL_OBJECT_FILES} $<TARGET_OBJECTS:zephyr_common>
+    ${ALL_OBJECT_FILES} $<TARGET_OBJECTS:zephyr_ir>
     PARENT_SCOPE
 )

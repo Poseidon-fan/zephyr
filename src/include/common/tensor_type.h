@@ -15,6 +15,9 @@ struct DynamicDimension final {
   std::string name_;
 
   [[nodiscard]] auto operator==(const DynamicDimension &) const -> bool = default;
+
+  /** Returns the canonical symbol spelling. */
+  [[nodiscard]] auto ToString() const -> std::string { return name_; }
 };
 
 /** One static extent or one invocation-bound dynamic extent. */
@@ -32,6 +35,9 @@ struct TensorType final {
   Shape shape_;
 
   [[nodiscard]] auto operator==(const TensorType &) const -> bool = default;
+
+  /** Returns the canonical textual tensor type. */
+  [[nodiscard]] auto ToString() const -> std::string;
 };
 
 /** One half-open interval used to select a tensor dimension. */

@@ -1,5 +1,6 @@
 #include <cstdint>
 
+#include "common/exception.h"
 #include "common/tensor_type.h"
 #include "gtest/gtest.h"
 
@@ -16,6 +17,23 @@ TEST(TensorTypeTest, SupportsStaticAndDynamicDimensions) {
   ASSERT_EQ(type.shape_.size(), 2U);
   EXPECT_EQ(std::get<DynamicDimension>(type.shape_[0]).name_, "tokens");
   EXPECT_EQ(std::get<int64_t>(type.shape_[1]), 4096);
+  EXPECT_EQ(type.ToString(), "tensor<[tokens, 4096], bf16>");
+}
+
+TEST(TensorTypeTest, FormatsScalarAndStaticTypes) {
+  EXPECT_EQ((TensorType{.dtype_ = ttl::DType::FLOAT32, .shape_ = {}}).ToString(), "tensor<[], f32>");
+  EXPECT_EQ((TensorType{.dtype_ = ttl::DType::INT64, .shape_ = {int64_t{2}, int64_t{3}}}).ToString(),
+            "tensor<[2, 3], i64>");
+}
+
+TEST(TensorTypeTest, RejectsInvalidDTypeWhenFormatted) {
+  const auto type = TensorType{.dtype_ = static_cast<ttl::DType>(255), .shape_ = {}};
+  EXPECT_THROW(type.ToString(), InvalidArgumentException);
+}
+
+TEST(TensorTypeTest, SupportsUint8) {
+  const auto type = TensorType{.dtype_ = ttl::DType::UINT8, .shape_ = {int64_t{8}}};
+  EXPECT_EQ(type.ToString(), "tensor<[8], u8>");
 }
 
 TEST(TensorTypeTest, EqualityIncludesShapeAndDtype) {

@@ -1,5 +1,6 @@
 add_subdirectory(common)
 add_subdirectory(config)
+add_subdirectory(ir)
 
 add_library(zephyr_core STATIC vector_adder.cpp ${ALL_OBJECT_FILES})
 add_library(zephyr::core ALIAS zephyr_core)
