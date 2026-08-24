@@ -21,7 +21,7 @@ auto FormatOperands(const Operation &operation, const OperationIndices &operatio
     if (index != 0) {
       text += ", ";
     }
-    text += ValueToString(operation.GetOperands()[index], operation_indices);
+    text += operation.GetOperands()[index]->ToString(operation_indices);
   }
   return text + ")";
 }
@@ -69,6 +69,13 @@ void RequireFloating(const TensorType &type, std::string_view operation) {
   }
 }
 
+auto RequireValue(const Value *value, std::string_view operation) -> const Value & {
+  if (value == nullptr) {
+    throw InvalidArgumentException{std::string{operation} + " operand must not be null"};
+  }
+  return *value;
+}
+
 auto StaticExtent(const Dimension &dimension, std::string_view name) -> int64_t {
   const auto *extent = std::get_if<int64_t>(&dimension);
   if (extent == nullptr || *extent <= 0) {
@@ -85,28 +92,28 @@ void VerifyResultTypes(const Operation &operation, std::span<const TensorType> e
 }
 
 auto InferLinearType(const Value &input, const Parameter *weight, const Parameter *bias) -> TensorType {
-  const auto &input_type = GetType(input);
+  const auto &input_type = input.GetType();
   internal::VerifyTensorType(input_type);
   if (weight == nullptr) {
     throw InvalidArgumentException{"core.linear weight must not be null"};
   }
   internal::VerifyParameterType(*weight);
-  if (input_type.shape_.empty() || weight->type_.shape_.size() != 2) {
+  if (input_type.shape_.empty() || weight->GetType().shape_.size() != 2) {
     throw InvalidArgumentException{"core.linear requires a ranked input and rank-2 weight"};
   }
   RequireFloating(input_type, Linear::NAME);
-  internal::VerifySameDType(input_type, weight->type_, Linear::NAME);
+  internal::VerifySameDType(input_type, weight->GetType(), Linear::NAME);
 
-  const auto output_features = StaticExtent(weight->type_.shape_[0], "linear output features");
-  const auto input_features = StaticExtent(weight->type_.shape_[1], "linear input features");
+  const auto output_features = StaticExtent(weight->GetType().shape_[0], "linear output features");
+  const auto input_features = StaticExtent(weight->GetType().shape_[1], "linear input features");
   if (StaticExtent(input_type.shape_.back(), "linear input features") != input_features) {
     throw InvalidArgumentException{"core.linear input and weight feature dimensions do not match"};
   }
   if (bias != nullptr) {
     internal::VerifyParameterType(*bias);
-    internal::VerifySameDType(input_type, bias->type_, Linear::NAME);
-    if (bias->type_.shape_.size() != 1 ||
-        StaticExtent(bias->type_.shape_[0], "linear bias features") != output_features) {
+    internal::VerifySameDType(input_type, bias->GetType(), Linear::NAME);
+    if (bias->GetType().shape_.size() != 1 ||
+        StaticExtent(bias->GetType().shape_[0], "linear bias features") != output_features) {
       throw InvalidArgumentException{"core.linear bias shape does not match output features"};
     }
   }
@@ -116,8 +123,9 @@ auto InferLinearType(const Value &input, const Parameter *weight, const Paramete
   return TensorType{.dtype_ = input_type.dtype_, .shape_ = std::move(shape)};
 }
 
-auto MakeLinearOperands(Value input, const Parameter *weight, const Parameter *bias) -> std::vector<Value> {
-  auto operands = std::vector<Value>{input, weight};
+auto MakeLinearOperands(const Value *input, const Parameter *weight, const Parameter *bias)
+    -> std::vector<const Value *> {
+  auto operands = std::vector<const Value *>{input, weight};
   if (bias != nullptr) {
     operands.emplace_back(bias);
   }
@@ -125,7 +133,7 @@ auto MakeLinearOperands(Value input, const Parameter *weight, const Parameter *b
 }
 
 auto InferEmbeddingType(const Value &indices, const Parameter *weight) -> TensorType {
-  const auto &index_type = GetType(indices);
+  const auto &index_type = indices.GetType();
   internal::VerifyTensorType(index_type);
   if (!ttl::IsIntegral(index_type.dtype_)) {
     throw InvalidArgumentException{"core.embedding indices must use an integral dtype"};
@@ -134,30 +142,30 @@ auto InferEmbeddingType(const Value &indices, const Parameter *weight) -> Tensor
     throw InvalidArgumentException{"core.embedding weight must not be null"};
   }
   internal::VerifyParameterType(*weight);
-  if (weight->type_.shape_.size() != 2) {
+  if (weight->GetType().shape_.size() != 2) {
     throw InvalidArgumentException{"core.embedding weight must have rank 2"};
   }
-  RequireFloating(weight->type_, Embedding::NAME);
-  static_cast<void>(StaticExtent(weight->type_.shape_[0], "embedding vocabulary"));
-  const auto hidden = StaticExtent(weight->type_.shape_[1], "embedding hidden size");
+  RequireFloating(weight->GetType(), Embedding::NAME);
+  static_cast<void>(StaticExtent(weight->GetType().shape_[0], "embedding vocabulary"));
+  const auto hidden = StaticExtent(weight->GetType().shape_[1], "embedding hidden size");
 
   auto shape = index_type.shape_;
   shape.emplace_back(hidden);
-  return TensorType{.dtype_ = weight->type_.dtype_, .shape_ = std::move(shape)};
+  return TensorType{.dtype_ = weight->GetType().dtype_, .shape_ = std::move(shape)};
 }
 
 auto InferRmsNormType(const Value &input, const Parameter *weight, float epsilon) -> TensorType {
-  const auto &input_type = GetType(input);
+  const auto &input_type = input.GetType();
   internal::VerifyTensorType(input_type);
   RequireFloating(input_type, RmsNorm::NAME);
   if (weight == nullptr) {
     throw InvalidArgumentException{"core.rms_norm weight must not be null"};
   }
   internal::VerifyParameterType(*weight);
-  internal::VerifySameDType(input_type, weight->type_, RmsNorm::NAME);
-  if (input_type.shape_.empty() || weight->type_.shape_.size() != 1 ||
+  internal::VerifySameDType(input_type, weight->GetType(), RmsNorm::NAME);
+  if (input_type.shape_.empty() || weight->GetType().shape_.size() != 1 ||
       StaticExtent(input_type.shape_.back(), "rms norm features") !=
-          StaticExtent(weight->type_.shape_[0], "rms norm weight features")) {
+          StaticExtent(weight->GetType().shape_[0], "rms norm weight features")) {
     throw InvalidArgumentException{"core.rms_norm feature dimensions do not match"};
   }
   if (!std::isfinite(epsilon) || epsilon <= 0.0F) {
@@ -168,9 +176,9 @@ auto InferRmsNormType(const Value &input, const Parameter *weight, float epsilon
 
 auto InferRotaryTypes(const Value &query, const Value &key, const Value &positions, float theta,
                       int64_t rotary_dimension, RotaryLayout layout) -> std::vector<TensorType> {
-  const auto &query_type = GetType(query);
-  const auto &key_type = GetType(key);
-  const auto &position_type = GetType(positions);
+  const auto &query_type = query.GetType();
+  const auto &key_type = key.GetType();
+  const auto &position_type = positions.GetType();
   internal::VerifyTensorType(query_type);
   internal::VerifyTensorType(key_type);
   internal::VerifyTensorType(position_type);
@@ -206,9 +214,9 @@ auto InferRotaryTypes(const Value &query, const Value &key, const Value &positio
 auto InferAttentionType(const Value &query, const Value &key, const Value &value, AttentionMaskKind mask_kind,
                         const std::optional<AttentionWindow> &window, float scale, const std::optional<float> &softcap)
     -> TensorType {
-  const auto &query_type = GetType(query);
-  const auto &key_type = GetType(key);
-  const auto &value_type = GetType(value);
+  const auto &query_type = query.GetType();
+  const auto &key_type = key.GetType();
+  const auto &value_type = value.GetType();
   internal::VerifyTensorType(query_type);
   internal::VerifyTensorType(key_type);
   internal::VerifyTensorType(value_type);
@@ -247,9 +255,9 @@ auto InferAttentionType(const Value &query, const Value &key, const Value &value
   return query_type;
 }
 
-auto MakeMoeOperands(Value input, Value router_logits, const Parameter *selection_bias,
-                     const std::vector<MoeExpertParameters> &experts) -> std::vector<Value> {
-  auto operands = std::vector<Value>{input, router_logits};
+auto MakeMoeOperands(const Value *input, const Value *router_logits, const Parameter *selection_bias,
+                     const std::vector<MoeExpertParameters> &experts) -> std::vector<const Value *> {
+  auto operands = std::vector<const Value *>{input, router_logits};
   if (selection_bias != nullptr) {
     operands.emplace_back(selection_bias);
   }
@@ -265,8 +273,8 @@ auto InferMoeType(const Value &input, const Value &router_logits, const Paramete
                   const std::vector<MoeExpertParameters> &experts, RoutingScoreFunction score_function, int64_t top_k,
                   RoutingWeightNormalization weight_normalization, float routing_scale,
                   const std::optional<ExpertGroupRouting> &group_routing, GatedActivation activation) -> TensorType {
-  const auto &input_type = GetType(input);
-  const auto &router_type = GetType(router_logits);
+  const auto &input_type = input.GetType();
+  const auto &router_type = router_logits.GetType();
   internal::VerifyTensorType(input_type);
   internal::VerifyTensorType(router_type);
   RequireFloating(input_type, Moe::NAME);
@@ -278,7 +286,7 @@ auto InferMoeType(const Value &input, const Value &router_logits, const Paramete
   }
   const auto hidden = StaticExtent(input_type.shape_.back(), "moe hidden size");
   const auto expert_count = StaticExtent(router_type.shape_.back(), "moe expert count");
-  if (experts.empty() || static_cast<int64_t>(experts.size()) != expert_count) {
+  if (experts.empty() || experts.size() != static_cast<size_t>(expert_count)) {
     throw InvalidArgumentException{"core.moe expert parameters do not match router expert count"};
   }
   if (top_k <= 0 || top_k > expert_count) {
@@ -300,8 +308,8 @@ auto InferMoeType(const Value &input, const Value &router_logits, const Paramete
 
   if (selection_bias != nullptr) {
     internal::VerifyParameterType(*selection_bias);
-    if (selection_bias->type_.dtype_ != ttl::DType::FLOAT32 || selection_bias->type_.shape_.size() != 1 ||
-        StaticExtent(selection_bias->type_.shape_[0], "moe selection bias") != expert_count) {
+    if (selection_bias->GetType().dtype_ != ttl::DType::FLOAT32 || selection_bias->GetType().shape_.size() != 1 ||
+        StaticExtent(selection_bias->GetType().shape_[0], "moe selection bias") != expert_count) {
       throw InvalidArgumentException{"core.moe selection bias must be float32[expert_count]"};
     }
   }
@@ -314,22 +322,22 @@ auto InferMoeType(const Value &input, const Value &router_logits, const Paramete
     internal::VerifyParameterType(*expert.gate_weight_);
     internal::VerifyParameterType(*expert.up_weight_);
     internal::VerifyParameterType(*expert.down_weight_);
-    internal::VerifySameDType(input_type, expert.gate_weight_->type_, Moe::NAME);
-    internal::VerifySameDType(input_type, expert.up_weight_->type_, Moe::NAME);
-    internal::VerifySameDType(input_type, expert.down_weight_->type_, Moe::NAME);
-    if (expert.gate_weight_->type_.shape_.size() != 2 || expert.up_weight_->type_.shape_.size() != 2 ||
-        expert.down_weight_->type_.shape_.size() != 2) {
+    internal::VerifySameDType(input_type, expert.gate_weight_->GetType(), Moe::NAME);
+    internal::VerifySameDType(input_type, expert.up_weight_->GetType(), Moe::NAME);
+    internal::VerifySameDType(input_type, expert.down_weight_->GetType(), Moe::NAME);
+    if (expert.gate_weight_->GetType().shape_.size() != 2 || expert.up_weight_->GetType().shape_.size() != 2 ||
+        expert.down_weight_->GetType().shape_.size() != 2) {
       throw InvalidArgumentException{"core.moe expert weights must have rank 2"};
     }
-    const auto current_intermediate = StaticExtent(expert.gate_weight_->type_.shape_[0], "moe intermediate size");
+    const auto current_intermediate = StaticExtent(expert.gate_weight_->GetType().shape_[0], "moe intermediate size");
     if (intermediate == 0) {
       intermediate = current_intermediate;
     }
-    if (current_intermediate != intermediate || expert.up_weight_->type_.shape_[0] != Dimension{intermediate} ||
-        expert.gate_weight_->type_.shape_[1] != Dimension{hidden} ||
-        expert.up_weight_->type_.shape_[1] != Dimension{hidden} ||
-        expert.down_weight_->type_.shape_[0] != Dimension{hidden} ||
-        expert.down_weight_->type_.shape_[1] != Dimension{intermediate}) {
+    if (current_intermediate != intermediate || expert.up_weight_->GetType().shape_[0] != Dimension{intermediate} ||
+        expert.gate_weight_->GetType().shape_[1] != Dimension{hidden} ||
+        expert.up_weight_->GetType().shape_[1] != Dimension{hidden} ||
+        expert.down_weight_->GetType().shape_[0] != Dimension{hidden} ||
+        expert.down_weight_->GetType().shape_[1] != Dimension{intermediate}) {
       throw InvalidArgumentException{"core.moe expert weight shapes are inconsistent"};
     }
   }
@@ -352,13 +360,13 @@ auto InferMoeType(const Value &input, const Value &router_logits, const Paramete
 
 }  // namespace
 
-Linear::Linear(Value input, const Parameter *weight, const Parameter *bias)
-    : Operation(MakeLinearOperands(input, weight, bias), {InferLinearType(input, weight, bias)}),
+Linear::Linear(const Value *input, const Parameter *weight, const Parameter *bias)
+    : Operation(MakeLinearOperands(input, weight, bias), {InferLinearType(RequireValue(input, NAME), weight, bias)}),
       weight_(weight),
       bias_(bias) {}
 
 void Linear::Verify() const {
-  const auto expected = InferLinearType(GetInput(), weight_, bias_);
+  const auto expected = InferLinearType(*GetInput(), weight_, bias_);
   VerifyResultTypes(*this, std::span{&expected, 1});
 }
 
@@ -367,11 +375,11 @@ auto Linear::ToString(const OperationIndices &operation_indices) const -> std::s
          FormatOperands(*this, operation_indices) + FormatResultTypes(*this);
 }
 
-Embedding::Embedding(Value indices, const Parameter *weight)
-    : Operation({indices, weight}, {InferEmbeddingType(indices, weight)}), weight_(weight) {}
+Embedding::Embedding(const Value *indices, const Parameter *weight)
+    : Operation({indices, weight}, {InferEmbeddingType(RequireValue(indices, NAME), weight)}), weight_(weight) {}
 
 void Embedding::Verify() const {
-  const auto expected = InferEmbeddingType(GetIndices(), weight_);
+  const auto expected = InferEmbeddingType(*GetIndices(), weight_);
   VerifyResultTypes(*this, std::span{&expected, 1});
 }
 
@@ -380,11 +388,13 @@ auto Embedding::ToString(const OperationIndices &operation_indices) const -> std
          FormatOperands(*this, operation_indices) + FormatResultTypes(*this);
 }
 
-RmsNorm::RmsNorm(Value input, const Parameter *weight, float epsilon)
-    : Operation({input, weight}, {InferRmsNormType(input, weight, epsilon)}), weight_(weight), epsilon_(epsilon) {}
+RmsNorm::RmsNorm(const Value *input, const Parameter *weight, float epsilon)
+    : Operation({input, weight}, {InferRmsNormType(RequireValue(input, NAME), weight, epsilon)}),
+      weight_(weight),
+      epsilon_(epsilon) {}
 
 void RmsNorm::Verify() const {
-  const auto expected = InferRmsNormType(GetInput(), weight_, epsilon_);
+  const auto expected = InferRmsNormType(*GetInput(), weight_, epsilon_);
   VerifyResultTypes(*this, std::span{&expected, 1});
 }
 
@@ -394,16 +404,18 @@ auto RmsNorm::ToString(const OperationIndices &operation_indices) const -> std::
          FormatResultTypes(*this);
 }
 
-RotaryEmbedding::RotaryEmbedding(Value query, Value key, Value positions, float theta, int64_t rotary_dimension,
-                                 RotaryLayout layout)
-    : Operation({query, key, positions}, InferRotaryTypes(query, key, positions, theta, rotary_dimension, layout)),
+RotaryEmbedding::RotaryEmbedding(const Value *query, const Value *key, const Value *positions, float theta,
+                                 int64_t rotary_dimension, RotaryLayout layout)
+    : Operation({query, key, positions},
+                InferRotaryTypes(RequireValue(query, NAME), RequireValue(key, NAME), RequireValue(positions, NAME),
+                                 theta, rotary_dimension, layout)),
       theta_(theta),
       rotary_dimension_(rotary_dimension),
       layout_(layout) {}
 
 void RotaryEmbedding::Verify() const {
   const auto operands = GetOperands();
-  const auto expected = InferRotaryTypes(operands[0], operands[1], operands[2], theta_, rotary_dimension_, layout_);
+  const auto expected = InferRotaryTypes(*operands[0], *operands[1], *operands[2], theta_, rotary_dimension_, layout_);
   VerifyResultTypes(*this, expected);
 }
 
@@ -415,9 +427,11 @@ auto RotaryEmbedding::ToString(const OperationIndices &operation_indices) const 
          FormatResultTypes(*this);
 }
 
-SelfAttention::SelfAttention(Value query, Value key, Value value, AttentionMaskKind mask_kind,
+SelfAttention::SelfAttention(const Value *query, const Value *key, const Value *value, AttentionMaskKind mask_kind,
                              std::optional<AttentionWindow> window, float scale, std::optional<float> softcap)
-    : Operation({query, key, value}, {InferAttentionType(query, key, value, mask_kind, window, scale, softcap)}),
+    : Operation({query, key, value},
+                {InferAttentionType(RequireValue(query, NAME), RequireValue(key, NAME), RequireValue(value, NAME),
+                                    mask_kind, window, scale, softcap)}),
       mask_kind_(mask_kind),
       window_(window),
       scale_(scale),
@@ -426,7 +440,7 @@ SelfAttention::SelfAttention(Value query, Value key, Value value, AttentionMaskK
 void SelfAttention::Verify() const {
   const auto operands = GetOperands();
   const auto expected =
-      InferAttentionType(operands[0], operands[1], operands[2], mask_kind_, window_, scale_, softcap_);
+      InferAttentionType(*operands[0], *operands[1], *operands[2], mask_kind_, window_, scale_, softcap_);
   VerifyResultTypes(*this, std::span{&expected, 1});
 }
 
@@ -444,12 +458,13 @@ auto SelfAttention::ToString(const OperationIndices &operation_indices) const ->
   return text + "}" + FormatResultTypes(*this);
 }
 
-Moe::Moe(Value input, Value router_logits, const Parameter *selection_bias, std::vector<MoeExpertParameters> experts,
-         RoutingScoreFunction score_function, int64_t top_k, RoutingWeightNormalization weight_normalization,
-         float routing_scale, std::optional<ExpertGroupRouting> group_routing, GatedActivation activation)
+Moe::Moe(const Value *input, const Value *router_logits, const Parameter *selection_bias,
+         std::vector<MoeExpertParameters> experts, RoutingScoreFunction score_function, int64_t top_k,
+         RoutingWeightNormalization weight_normalization, float routing_scale,
+         std::optional<ExpertGroupRouting> group_routing, GatedActivation activation)
     : Operation(MakeMoeOperands(input, router_logits, selection_bias, experts),
-                {InferMoeType(input, router_logits, selection_bias, experts, score_function, top_k,
-                              weight_normalization, routing_scale, group_routing, activation)}),
+                {InferMoeType(RequireValue(input, NAME), RequireValue(router_logits, NAME), selection_bias, experts,
+                              score_function, top_k, weight_normalization, routing_scale, group_routing, activation)}),
       selection_bias_(selection_bias),
       experts_(std::move(experts)),
       score_function_(score_function),
@@ -461,7 +476,7 @@ Moe::Moe(Value input, Value router_logits, const Parameter *selection_bias, std:
 
 void Moe::Verify() const {
   const auto operands = GetOperands();
-  const auto expected = InferMoeType(operands[0], operands[1], selection_bias_, experts_, score_function_, top_k_,
+  const auto expected = InferMoeType(*operands[0], *operands[1], selection_bias_, experts_, score_function_, top_k_,
                                      weight_normalization_, routing_scale_, group_routing_, activation_);
   VerifyResultTypes(*this, std::span{&expected, 1});
 }

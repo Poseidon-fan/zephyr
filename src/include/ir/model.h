@@ -16,7 +16,7 @@ class Model final {
   /** Takes ownership of all graph nodes; values retain non-owning node references. */
   Model(std::string name, std::vector<std::unique_ptr<const Input>> inputs,
         std::vector<std::unique_ptr<const Parameter>> parameters,
-        std::vector<std::unique_ptr<const Operation>> operations, std::vector<Value> outputs);
+        std::vector<std::unique_ptr<const Operation>> operations, std::vector<const Value *> outputs);
 
   Model(const Model &) = delete;
   auto operator=(const Model &) -> Model & = delete;
@@ -27,7 +27,7 @@ class Model final {
   [[nodiscard]] auto GetInputs() const -> std::span<const std::unique_ptr<const Input>> { return inputs_; }
   [[nodiscard]] auto GetParameters() const -> std::span<const std::unique_ptr<const Parameter>> { return parameters_; }
   [[nodiscard]] auto GetOperations() const -> std::span<const std::unique_ptr<const Operation>> { return operations_; }
-  [[nodiscard]] auto GetOutputs() const -> std::span<const Value> { return outputs_; }
+  [[nodiscard]] auto GetOutputs() const -> std::span<const Value *const> { return outputs_; }
 
   /** Checks ownership, topological order, names, and operation invariants. */
   void Verify() const;
@@ -49,7 +49,7 @@ class Model final {
   std::vector<std::unique_ptr<const Operation>> operations_;
 
   /** Outputs in public port order. */
-  std::vector<Value> outputs_;
+  std::vector<const Value *> outputs_;
 };
 
 }  // namespace zephyr::ir

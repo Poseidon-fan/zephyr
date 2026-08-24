@@ -16,9 +16,9 @@ class Linear final : public Operation {
  public:
   static constexpr std::string_view NAME = "core.linear";
 
-  Linear(Value input, const Parameter *weight, const Parameter *bias = nullptr);
+  Linear(const Value *input, const Parameter *weight, const Parameter *bias = nullptr);
 
-  [[nodiscard]] auto GetInput() const -> const Value & { return GetOperands()[0]; }
+  [[nodiscard]] auto GetInput() const -> const Value * { return GetOperands()[0]; }
   [[nodiscard]] auto GetWeight() const -> const Parameter * { return weight_; }
   [[nodiscard]] auto GetBias() const -> const Parameter * { return bias_; }
   [[nodiscard]] auto GetName() const -> std::string_view override { return NAME; }
@@ -35,9 +35,9 @@ class Embedding final : public Operation {
  public:
   static constexpr std::string_view NAME = "core.embedding";
 
-  Embedding(Value indices, const Parameter *weight);
+  Embedding(const Value *indices, const Parameter *weight);
 
-  [[nodiscard]] auto GetIndices() const -> const Value & { return GetOperands()[0]; }
+  [[nodiscard]] auto GetIndices() const -> const Value * { return GetOperands()[0]; }
   [[nodiscard]] auto GetWeight() const -> const Parameter * { return weight_; }
   [[nodiscard]] auto GetName() const -> std::string_view override { return NAME; }
   [[nodiscard]] auto ToString(const OperationIndices &operation_indices) const -> std::string override;
@@ -52,9 +52,9 @@ class RmsNorm final : public Operation {
  public:
   static constexpr std::string_view NAME = "core.rms_norm";
 
-  RmsNorm(Value input, const Parameter *weight, float epsilon);
+  RmsNorm(const Value *input, const Parameter *weight, float epsilon);
 
-  [[nodiscard]] auto GetInput() const -> const Value & { return GetOperands()[0]; }
+  [[nodiscard]] auto GetInput() const -> const Value * { return GetOperands()[0]; }
   [[nodiscard]] auto GetWeight() const -> const Parameter * { return weight_; }
   [[nodiscard]] auto GetEpsilon() const -> float { return epsilon_; }
   [[nodiscard]] auto GetName() const -> std::string_view override { return NAME; }
@@ -71,7 +71,8 @@ class RotaryEmbedding final : public Operation {
  public:
   static constexpr std::string_view NAME = "core.rotary_embedding";
 
-  RotaryEmbedding(Value query, Value key, Value positions, float theta, int64_t rotary_dimension, RotaryLayout layout);
+  RotaryEmbedding(const Value *query, const Value *key, const Value *positions, float theta, int64_t rotary_dimension,
+                  RotaryLayout layout);
 
   [[nodiscard]] auto GetTheta() const -> float { return theta_; }
   [[nodiscard]] auto GetRotaryDimension() const -> int64_t { return rotary_dimension_; }
@@ -91,8 +92,8 @@ class SelfAttention final : public Operation {
  public:
   static constexpr std::string_view NAME = "core.self_attention";
 
-  SelfAttention(Value query, Value key, Value value, AttentionMaskKind mask_kind, std::optional<AttentionWindow> window,
-                float scale, std::optional<float> softcap);
+  SelfAttention(const Value *query, const Value *key, const Value *value, AttentionMaskKind mask_kind,
+                std::optional<AttentionWindow> window, float scale, std::optional<float> softcap);
 
   [[nodiscard]] auto GetMaskKind() const -> AttentionMaskKind { return mask_kind_; }
   [[nodiscard]] auto GetWindow() const -> const std::optional<AttentionWindow> & { return window_; }
@@ -121,9 +122,10 @@ class Moe final : public Operation {
  public:
   static constexpr std::string_view NAME = "core.moe";
 
-  Moe(Value input, Value router_logits, const Parameter *selection_bias, std::vector<MoeExpertParameters> experts,
-      RoutingScoreFunction score_function, int64_t top_k, RoutingWeightNormalization weight_normalization,
-      float routing_scale, std::optional<ExpertGroupRouting> group_routing, GatedActivation activation);
+  Moe(const Value *input, const Value *router_logits, const Parameter *selection_bias,
+      std::vector<MoeExpertParameters> experts, RoutingScoreFunction score_function, int64_t top_k,
+      RoutingWeightNormalization weight_normalization, float routing_scale,
+      std::optional<ExpertGroupRouting> group_routing, GatedActivation activation);
 
   [[nodiscard]] auto GetSelectionBias() const -> const Parameter * { return selection_bias_; }
   [[nodiscard]] auto GetExperts() const -> std::span<const MoeExpertParameters> { return experts_; }

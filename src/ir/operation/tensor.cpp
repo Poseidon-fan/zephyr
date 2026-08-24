@@ -14,13 +14,20 @@
 namespace zephyr::ir {
 namespace {
 
+auto RequireValue(const Value *value, std::string_view operation) -> const Value & {
+  if (value == nullptr) {
+    throw InvalidArgumentException{std::string{operation} + " operand must not be null"};
+  }
+  return *value;
+}
+
 auto FormatOperands(const Operation &operation, const OperationIndices &operation_indices) -> std::string {
   auto text = std::string{"("};
   for (size_t index = 0; index < operation.GetOperands().size(); index++) {
     if (index != 0) {
       text += ", ";
     }
-    text += ValueToString(operation.GetOperands()[index], operation_indices);
+    text += operation.GetOperands()[index]->ToString(operation_indices);
   }
   return text + ")";
 }
@@ -71,7 +78,7 @@ auto InferArithmeticType(const Value &lhs, const Value &rhs, std::string_view op
 }
 
 auto InferActivationType(const Value &input, std::string_view operation) -> TensorType {
-  const auto &type = GetType(input);
+  const auto &type = input.GetType();
   internal::VerifyTensorType(type);
   if (!ttl::IsFloating(type.dtype_)) {
     throw InvalidArgumentException{std::string{operation} + " requires a floating-point tensor"};
@@ -107,7 +114,7 @@ auto GetShapeSignature(const Shape &shape) -> ShapeSignature {
 }
 
 auto InferReshapeType(const Value &input, const Shape &shape) -> TensorType {
-  const auto &input_type = GetType(input);
+  const auto &input_type = input.GetType();
   internal::VerifyTensorType(input_type);
   const auto output_type = TensorType{.dtype_ = input_type.dtype_, .shape_ = shape};
   internal::VerifyTensorType(output_type);
@@ -131,7 +138,7 @@ auto NormalizeDimension(int64_t dimension, size_t rank) -> size_t {
 
 auto InferSplitTypes(const Value &input, int64_t dimension, const std::vector<int64_t> &sizes)
     -> std::vector<TensorType> {
-  const auto &input_type = GetType(input);
+  const auto &input_type = input.GetType();
   internal::VerifyTensorType(input_type);
   const auto index = NormalizeDimension(dimension, input_type.shape_.size());
   const auto *extent = std::get_if<int64_t>(&input_type.shape_[index]);
@@ -165,11 +172,12 @@ auto InferSplitTypes(const Value &input, int64_t dimension, const std::vector<in
 
 }  // namespace
 
-Add::Add(Value lhs, Value rhs) : Operation({lhs, rhs}, {InferArithmeticType(lhs, rhs, NAME)}) {}
+Add::Add(const Value *lhs, const Value *rhs)
+    : Operation({lhs, rhs}, {InferArithmeticType(RequireValue(lhs, NAME), RequireValue(rhs, NAME), NAME)}) {}
 
 void Add::Verify() const {
   const auto operands = GetOperands();
-  const auto expected = InferArithmeticType(operands[0], operands[1], NAME);
+  const auto expected = InferArithmeticType(*operands[0], *operands[1], NAME);
   VerifyResultTypes(*this, std::span{&expected, 1});
 }
 
@@ -178,11 +186,12 @@ auto Add::ToString(const OperationIndices &operation_indices) const -> std::stri
          FormatOperands(*this, operation_indices) + FormatResultTypes(*this);
 }
 
-Multiply::Multiply(Value lhs, Value rhs) : Operation({lhs, rhs}, {InferArithmeticType(lhs, rhs, NAME)}) {}
+Multiply::Multiply(const Value *lhs, const Value *rhs)
+    : Operation({lhs, rhs}, {InferArithmeticType(RequireValue(lhs, NAME), RequireValue(rhs, NAME), NAME)}) {}
 
 void Multiply::Verify() const {
   const auto operands = GetOperands();
-  const auto expected = InferArithmeticType(operands[0], operands[1], NAME);
+  const auto expected = InferArithmeticType(*operands[0], *operands[1], NAME);
   VerifyResultTypes(*this, std::span{&expected, 1});
 }
 
@@ -191,10 +200,10 @@ auto Multiply::ToString(const OperationIndices &operation_indices) const -> std:
          FormatOperands(*this, operation_indices) + FormatResultTypes(*this);
 }
 
-Silu::Silu(Value input) : Operation({input}, {InferActivationType(input, NAME)}) {}
+Silu::Silu(const Value *input) : Operation({input}, {InferActivationType(RequireValue(input, NAME), NAME)}) {}
 
 void Silu::Verify() const {
-  const auto expected = InferActivationType(GetOperands()[0], NAME);
+  const auto expected = InferActivationType(*GetOperands()[0], NAME);
   VerifyResultTypes(*this, std::span{&expected, 1});
 }
 
@@ -203,10 +212,10 @@ auto Silu::ToString(const OperationIndices &operation_indices) const -> std::str
          FormatOperands(*this, operation_indices) + FormatResultTypes(*this);
 }
 
-Sigmoid::Sigmoid(Value input) : Operation({input}, {InferActivationType(input, NAME)}) {}
+Sigmoid::Sigmoid(const Value *input) : Operation({input}, {InferActivationType(RequireValue(input, NAME), NAME)}) {}
 
 void Sigmoid::Verify() const {
-  const auto expected = InferActivationType(GetOperands()[0], NAME);
+  const auto expected = InferActivationType(*GetOperands()[0], NAME);
   VerifyResultTypes(*this, std::span{&expected, 1});
 }
 
@@ -215,11 +224,11 @@ auto Sigmoid::ToString(const OperationIndices &operation_indices) const -> std::
          FormatOperands(*this, operation_indices) + FormatResultTypes(*this);
 }
 
-Reshape::Reshape(Value input, Shape shape)
-    : Operation({input}, {InferReshapeType(input, shape)}), shape_(std::move(shape)) {}
+Reshape::Reshape(const Value *input, Shape shape)
+    : Operation({input}, {InferReshapeType(RequireValue(input, NAME), shape)}), shape_(std::move(shape)) {}
 
 void Reshape::Verify() const {
-  const auto expected = InferReshapeType(GetOperands()[0], shape_);
+  const auto expected = InferReshapeType(*GetOperands()[0], shape_);
   VerifyResultTypes(*this, std::span{&expected, 1});
 }
 
@@ -228,11 +237,13 @@ auto Reshape::ToString(const OperationIndices &operation_indices) const -> std::
          FormatOperands(*this, operation_indices) + FormatResultTypes(*this);
 }
 
-Split::Split(Value input, int64_t dimension, std::vector<int64_t> sizes)
-    : Operation({input}, InferSplitTypes(input, dimension, sizes)), dimension_(dimension), sizes_(std::move(sizes)) {}
+Split::Split(const Value *input, int64_t dimension, std::vector<int64_t> sizes)
+    : Operation({input}, InferSplitTypes(RequireValue(input, NAME), dimension, sizes)),
+      dimension_(dimension),
+      sizes_(std::move(sizes)) {}
 
 void Split::Verify() const {
-  const auto expected = InferSplitTypes(GetOperands()[0], dimension_, sizes_);
+  const auto expected = InferSplitTypes(*GetOperands()[0], dimension_, sizes_);
   VerifyResultTypes(*this, expected);
 }
 

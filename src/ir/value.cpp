@@ -11,7 +11,31 @@
 
 namespace zephyr::ir {
 
-auto OpResult::ToString(const OperationIndices &operation_indices) const -> std::string {
+void Value::AddUse(const Operation *user, uint32_t operand_index) const {
+  if (user == nullptr) {
+    throw InvalidArgumentException{"value use must reference an operation"};
+  }
+  users_.push_back(Use{.user_ = user, .operand_index_ = operand_index});
+}
+
+void Value::ClearUses() const noexcept { users_.clear(); }
+
+void Value::RemoveUses(const Operation *user) const noexcept {
+  std::erase_if(users_, [user](const Use &use) { return use.user_ == user; });
+}
+
+Input::Input(std::string name, TensorType type) : Value(std::move(type)), name_(std::move(name)) {}
+
+auto Input::ToString(const OperationIndices & /*operation_indices*/) const -> std::string { return "%" + name_; }
+
+Parameter::Parameter(std::string name, TensorType type) : Value(std::move(type)), name_(std::move(name)) {}
+
+auto Parameter::ToString(const OperationIndices & /*operation_indices*/) const -> std::string { return "@" + name_; }
+
+OperationResult::OperationResult(const Operation *operation, uint32_t result_index, TensorType type)
+    : Value(std::move(type)), operation_(operation), result_index_(result_index) {}
+
+auto OperationResult::ToString(const OperationIndices &operation_indices) const -> std::string {
   const auto iterator = operation_indices.find(operation_);
   if (iterator == operation_indices.end()) {
     throw ConfigurationException{"operation result references an unknown operation"};
@@ -19,53 +43,20 @@ auto OpResult::ToString(const OperationIndices &operation_indices) const -> std:
   return "%" + std::to_string(iterator->second + result_index_);
 }
 
-auto ValueToString(const Value &value, const OperationIndices &operation_indices) -> std::string {
-  return std::visit(
-      [&operation_indices](const auto &source) -> std::string {
-        using Source = std::remove_cvref_t<decltype(source)>;
-        if constexpr (std::same_as<Source, const Input *>) {
-          if (source == nullptr) {
-            throw InvalidArgumentException{"input value must not be null"};
-          }
-          return "%" + source->name_;
-        } else if constexpr (std::same_as<Source, const Parameter *>) {
-          if (source == nullptr) {
-            throw InvalidArgumentException{"parameter value must not be null"};
-          }
-          return "@" + source->name_;
-        } else {
-          return source.ToString(operation_indices);
-        }
-      },
-      value);
+Operation::Operation(std::vector<const Value *> operands, std::vector<TensorType> result_types)
+    : operands_(std::move(operands)), result_types_(std::move(result_types)) {
+  results_.reserve(result_types_.size());
+  for (uint32_t index = 0; index < result_types_.size(); index++) {
+    results_.push_back(std::unique_ptr<OperationResult>(new OperationResult(this, index, result_types_[index])));
+  }
 }
 
-auto GetType(const Value &value) -> const TensorType & {
-  return std::visit(
-      [](const auto &source) -> const TensorType & {
-        using Source = std::remove_cvref_t<decltype(source)>;
-        if constexpr (std::same_as<Source, const Input *>) {
-          if (source == nullptr) {
-            throw InvalidArgumentException{"input value must not be null"};
-          }
-          return source->type_;
-        } else if constexpr (std::same_as<Source, const Parameter *>) {
-          if (source == nullptr) {
-            throw InvalidArgumentException{"parameter value must not be null"};
-          }
-          return source->type_;
-        } else {
-          if (source.operation_ == nullptr) {
-            throw InvalidArgumentException{"operation result must reference an operation"};
-          }
-          const auto result_types = source.operation_->GetResultTypes();
-          if (source.result_index_ >= result_types.size()) {
-            throw InvalidArgumentException{"operation result index is out of range"};
-          }
-          return result_types[source.result_index_];
-        }
-      },
-      value);
+Operation::~Operation() {
+  for (const auto *operand : operands_) {
+    if (operand != nullptr) {
+      operand->RemoveUses(this);
+    }
+  }
 }
 
 namespace internal {
@@ -102,11 +93,11 @@ void VerifyTensorType(const TensorType &type) {
 }
 
 void VerifyParameterType(const Parameter &parameter) {
-  VerifyTensorType(parameter.type_);
-  if (std::ranges::any_of(parameter.type_.shape_, [](const Dimension &dimension) {
+  VerifyTensorType(parameter.GetType());
+  if (std::ranges::any_of(parameter.GetType().shape_, [](const Dimension &dimension) {
         return std::holds_alternative<DynamicDimension>(dimension);
       })) {
-    throw InvalidArgumentException{"parameter shape must be static: " + parameter.name_};
+    throw InvalidArgumentException{"parameter shape must be static"};
   }
 }
 
@@ -134,8 +125,8 @@ auto BroadcastDimension(const Dimension &lhs, const Dimension &rhs, std::string_
 }  // namespace
 
 auto InferBroadcastType(const Value &lhs, const Value &rhs, std::string_view operation) -> TensorType {
-  const auto &lhs_type = GetType(lhs);
-  const auto &rhs_type = GetType(rhs);
+  const auto &lhs_type = lhs.GetType();
+  const auto &rhs_type = rhs.GetType();
   VerifyTensorType(lhs_type);
   VerifyTensorType(rhs_type);
   VerifySameDType(lhs_type, rhs_type, operation);
