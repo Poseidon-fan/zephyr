@@ -28,7 +28,7 @@ using ParameterViews = std::unordered_map<const ir::Parameter *, BufferView>;
 
 class LoweringVisitor final : public ir::OperationVisitor {
  public:
-  LoweringVisitor(WorkerPlan &plan, bool has_kv_cache, std::span<const DynamicDimensionBinding> bindings,
+  LoweringVisitor(TemplatePlan &plan, bool has_kv_cache, std::span<const DynamicDimensionBinding> bindings,
                   std::span<const ir::Value> outputs, InputViews &inputs)
       : plan_(plan), has_kv_cache_(has_kv_cache), bindings_(bindings), outputs_(outputs), inputs_(inputs) {}
 
@@ -37,7 +37,7 @@ class LoweringVisitor final : public ir::OperationVisitor {
       auto biases = std::vector<std::optional<BufferView>>{};
       biases.emplace_back(
           operation.GetBias() == nullptr ? std::nullopt : std::optional<BufferView>{GetParameter(operation.GetBias())});
-      plan_.execution_.instructions_.push_back(std::make_unique<planner::Linear>(
+      plan_.instructions_.push_back(std::make_unique<planner::Linear>(
           GetValue(operation.GetInput()), std::vector<BufferView>{GetParameter(operation.GetWeight())},
           std::move(biases), results));
     });
@@ -45,14 +45,14 @@ class LoweringVisitor final : public ir::OperationVisitor {
 
   void Visit(const ir::Embedding &operation) override {
     Lower(operation, [this, &operation](auto &results) {
-      plan_.execution_.instructions_.push_back(std::make_unique<planner::Embedding>(
+      plan_.instructions_.push_back(std::make_unique<planner::Embedding>(
           GetValue(operation.GetIndices()), GetParameter(operation.GetWeight()), results[0]));
     });
   }
 
   void Visit(const ir::RmsNorm &operation) override {
     Lower(operation, [this, &operation](auto &results) {
-      plan_.execution_.instructions_.push_back(std::make_unique<planner::RmsNorm>(
+      plan_.instructions_.push_back(std::make_unique<planner::RmsNorm>(
           GetValue(operation.GetInput()), GetParameter(operation.GetWeight()), results[0], operation.GetEpsilon()));
     });
   }
@@ -60,7 +60,7 @@ class LoweringVisitor final : public ir::OperationVisitor {
   void Visit(const ir::RotaryEmbedding &operation) override {
     Lower(operation, [this, &operation](auto &results) {
       const auto operands = operation.GetOperands();
-      plan_.execution_.instructions_.push_back(std::make_unique<planner::RotaryEmbedding>(
+      plan_.instructions_.push_back(std::make_unique<planner::RotaryEmbedding>(
           GetValue(operands[0]), GetValue(operands[1]), GetValue(operands[2]), results[0], results[1],
           operation.GetTheta(), operation.GetRotaryDimension(), operation.GetLayout()));
     });
@@ -84,7 +84,7 @@ class LoweringVisitor final : public ir::OperationVisitor {
                          .kv_head_count_ = GetStaticExtent(key_shape[1], "KV heads"),
                          .head_dimension_ = GetStaticExtent(query_shape[2], "head dimension")});
       }
-      plan_.execution_.instructions_.push_back(std::make_unique<planner::SelfAttention>(
+      plan_.instructions_.push_back(std::make_unique<planner::SelfAttention>(
           GetValue(operands[0]), GetValue(operands[1]), GetValue(operands[2]), results[0],
           GetStaticExtent(query_shape[1], "query heads"), GetStaticExtent(key_shape[1], "KV heads"),
           GetStaticExtent(query_shape[2], "head dimension"), operation.GetMaskKind(), operation.GetWindow(),
@@ -102,7 +102,7 @@ class LoweringVisitor final : public ir::OperationVisitor {
                                             .down_ = GetParameter(expert.down_weight_)});
       }
       const auto operands = operation.GetOperands();
-      plan_.execution_.instructions_.push_back(std::make_unique<planner::Moe>(
+      plan_.instructions_.push_back(std::make_unique<planner::Moe>(
           GetValue(operands[0]), GetValue(operands[1]),
           operation.GetSelectionBias() == nullptr
               ? std::nullopt
@@ -116,7 +116,7 @@ class LoweringVisitor final : public ir::OperationVisitor {
   void Visit(const ir::Add &operation) override {
     Lower(operation, [this, &operation](auto &results) {
       const auto operands = operation.GetOperands();
-      plan_.execution_.instructions_.push_back(
+      plan_.instructions_.push_back(
           std::make_unique<planner::Add>(GetValue(operands[0]), GetValue(operands[1]), results[0]));
     });
   }
@@ -124,21 +124,20 @@ class LoweringVisitor final : public ir::OperationVisitor {
   void Visit(const ir::Multiply &operation) override {
     Lower(operation, [this, &operation](auto &results) {
       const auto operands = operation.GetOperands();
-      plan_.execution_.instructions_.push_back(
+      plan_.instructions_.push_back(
           std::make_unique<planner::Multiply>(GetValue(operands[0]), GetValue(operands[1]), results[0]));
     });
   }
 
   void Visit(const ir::Silu &operation) override {
     Lower(operation, [this, &operation](auto &results) {
-      plan_.execution_.instructions_.push_back(
-          std::make_unique<planner::Silu>(GetValue(operation.GetOperands()[0]), results[0]));
+      plan_.instructions_.push_back(std::make_unique<planner::Silu>(GetValue(operation.GetOperands()[0]), results[0]));
     });
   }
 
   void Visit(const ir::Sigmoid &operation) override {
     Lower(operation, [this, &operation](auto &results) {
-      plan_.execution_.instructions_.push_back(
+      plan_.instructions_.push_back(
           std::make_unique<planner::Sigmoid>(GetValue(operation.GetOperands()[0]), results[0]));
     });
   }
@@ -154,7 +153,7 @@ class LoweringVisitor final : public ir::OperationVisitor {
 
   void Visit(const ir::Split &operation) override {
     Lower(operation, [this, &operation](auto &results) {
-      plan_.execution_.instructions_.push_back(
+      plan_.instructions_.push_back(
           std::make_unique<planner::Split>(GetValue(operation.GetOperands()[0]), operation.GetDimension(), results));
     });
   }
@@ -213,7 +212,7 @@ class LoweringVisitor final : public ir::OperationVisitor {
     return BufferView{.buffer_ = id, .element_offset_ = 0, .shape_ = type.shape_};
   }
 
-  WorkerPlan &plan_;
+  TemplatePlan &plan_;
   bool has_kv_cache_;
   std::span<const DynamicDimensionBinding> bindings_;
   std::span<const ir::Value> outputs_;
@@ -224,18 +223,12 @@ class LoweringVisitor final : public ir::OperationVisitor {
 
 }  // namespace
 
-auto Planner::Lower(const ir::Model &model, ttl::Device device, const PlanConfig &config,
-                    std::span<const DynamicDimensionBinding> bindings) const -> WorkerPlan {
+auto Planner::Lower(const ir::Model &model, const PlanConfig &config,
+                    std::span<const DynamicDimensionBinding> bindings) const -> TemplatePlan {
   const auto has_kv_cache = config.kv_cache_.block_size_ != 0;
-  auto plan = WorkerPlan{
-      .rank_ = 0,
-      .device_ = device,
-      .tensor_parallel_size_ = 1,
-      .data_parallel_size_ = 1,
-      .tensor_parallel_rank_ = 0,
-      .data_parallel_rank_ = 0,
+  auto plan = TemplatePlan{
       .buffers_ = {},
-      .execution_ = {},
+      .instructions_ = {},
       .weights_ = {},
       .kv_cache_ = KVCachePlan{.block_size_ = has_kv_cache ? config.kv_cache_.block_size_ : 0, .entries_ = {}},
       .inputs_ = {},

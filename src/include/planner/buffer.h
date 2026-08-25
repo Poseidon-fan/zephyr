@@ -9,7 +9,7 @@
 
 namespace zephyr::planner {
 
-/** Identifies one allocation in a WorkerPlan. */
+/** Identifies one allocation in a plan. */
 using buffer_id_t = uint32_t;
 
 /** Identifies the lifetime and initialization owner of one planned buffer. */
@@ -27,7 +27,7 @@ enum class BufferKind : uint8_t {
   ACTIVATION,
 };
 
-/** Describes one contiguous allocation in a WorkerPlan. */
+/** Describes one contiguous allocation in a plan. */
 struct BufferSpec final {
   /** Stable identifier referenced by BufferView. */
   buffer_id_t id_;

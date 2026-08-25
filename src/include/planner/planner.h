@@ -12,12 +12,10 @@
 
 namespace zephyr::planner {
 
-/**
- * Converts one logical Model into one rank-neutral WorkerPlan.
- */
+/** Converts one logical Model into one or more rank-local WorkerPlans. */
 class Planner final {
  public:
-  /** Constructs a lower-only Planner. */
+  /** Constructs a Planner. */
   Planner();
 
   Planner(const Planner &) = delete;
@@ -27,21 +25,25 @@ class Planner final {
   ~Planner() = default;
 
   /**
-   * Lowers the model into one WorkerPlan. Parallel expansion is intentionally not part of this stage.
+   * Lowers the model into a rank-neutral template and expands it into WorkerPlans.
    *
    * @param model logical typed SSA model
-   * @param runtime Runtime supplying the device for the rank-neutral plan
+   * @param runtime Runtime supplying devices for the rank-local plans
    * @param config validated planner configuration
    * @param bindings dynamic dimension capacities used to materialize buffers
-   * @return a vector containing the single lowered plan
+   * @return rank-local WorkerPlans
    */
   [[nodiscard]] auto Plan(const ir::Model &model, const ttl::Runtime &runtime, const PlanConfig &config,
                           std::span<const DynamicDimensionBinding> bindings) const -> std::vector<WorkerPlan>;
 
  private:
-  /** Lowers the model into a logical single-Worker plan. */
-  [[nodiscard]] auto Lower(const ir::Model &model, ttl::Device device, const PlanConfig &config,
-                           std::span<const DynamicDimensionBinding> bindings) const -> WorkerPlan;
+  /** Lowers the model into a rank-neutral serial template. */
+  [[nodiscard]] auto Lower(const ir::Model &model, const PlanConfig &config,
+                           std::span<const DynamicDimensionBinding> bindings) const -> TemplatePlan;
+
+  /** Expands a template into rank-local WorkerPlans. */
+  [[nodiscard]] auto Parallelize(const TemplatePlan &plan, const ttl::Runtime &runtime,
+                                 const PlanConfig &config) const -> std::vector<WorkerPlan>;
 };
 
 }  // namespace zephyr::planner

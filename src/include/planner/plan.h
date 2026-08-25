@@ -23,14 +23,14 @@ struct KVCacheEntry final {
   /** Element type of the K/V storage. */
   ttl::DType dtype_;
 
-  /** Number of K/V heads resident on this rank. */
+  /** Number of K/V heads resident in this plan. */
   int64_t kv_head_count_;
 
   /** Width of one attention head. */
   int64_t head_dimension_;
 };
 
-/** Static paged-KV layout shared by all Workers in one executable plan. */
+/** Static paged-KV layout for one plan instance. */
 struct KVCachePlan final {
   /** Number of tokens stored by one logical block. */
   int32_t block_size_;
@@ -78,7 +78,7 @@ struct WeightTarget final {
   std::vector<WeightSourcePart> sources_;
 };
 
-/** All checkpoint-to-device mappings for one Worker. */
+/** All checkpoint-to-device mappings for one plan. */
 struct WeightPlan final {
   std::vector<WeightTarget> targets_;
 };
@@ -99,6 +99,27 @@ struct OutputBinding final {
 
   /** Worker-local source view. */
   BufferView source_;
+};
+
+/** Rank-neutral serial execution template produced before parallel expansion. */
+struct TemplatePlan final {
+  /** All contiguous buffers in the serial template. */
+  std::vector<BufferSpec> buffers_;
+
+  /** Instructions in serial execution order. */
+  std::vector<std::unique_ptr<Instruction>> instructions_;
+
+  /** Complete checkpoint-to-buffer mappings. */
+  WeightPlan weights_;
+
+  /** Logical KV layout used by the template. */
+  KVCachePlan kv_cache_;
+
+  /** Template input bindings. */
+  std::vector<InputBinding> inputs_;
+
+  /** Template output bindings. */
+  std::vector<OutputBinding> outputs_;
 };
 
 /** Complete executable description for one process-wide rank. */

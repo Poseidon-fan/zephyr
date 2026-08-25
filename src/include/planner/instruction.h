@@ -8,7 +8,7 @@ namespace zephyr::planner {
 /** Identifies one communicator specification referenced by a collective instruction. */
 using communicator_id_t = uint32_t;
 
-/** One strongly typed action in a WorkerPlan's execution order. */
+/** One strongly typed action in a plan's execution order. */
 class Instruction {
  public:
   Instruction() = default;
