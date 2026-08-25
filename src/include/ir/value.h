@@ -2,12 +2,12 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <memory>
 #include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "common/tensor_type.h"
@@ -15,105 +15,53 @@
 
 namespace zephyr::ir {
 
-class Model;
 class Operation;
 
-/** Identifies the concrete operation family for lowering dispatch. */
 /** Maps each operation to the first SSA number assigned to its results while printing a model. */
 using OperationIndices = std::unordered_map<const Operation *, size_t>;
 
-/** One reverse SSA edge from a value to an operand slot. */
-struct Use final {
-  /** Operation consuming the value. */
-  const Operation *user_;
-
-  /** Operand position in user_->GetOperands(). */
-  uint32_t operand_index_;
-};
-
-/** Base class for every typed SSA value in the IR. */
-class Value {
- public:
-  Value(const Value &) = delete;
-  auto operator=(const Value &) -> Value & = delete;
-  Value(Value &&) = delete;
-  auto operator=(Value &&) -> Value & = delete;
-  virtual ~Value() = default;
-
-  /** All operation operands that use this value. */
-  [[nodiscard]] auto GetUsers() const -> std::span<const Use> { return users_; }
-
-  /** Element type and logical shape, immutable after construction. */
-  [[nodiscard]] auto GetType() const -> const TensorType & { return type_; }
-
-  /** Returns the canonical textual reference for this value. */
-  [[nodiscard]] virtual auto ToString(const OperationIndices &operation_indices) const -> std::string = 0;
-
- protected:
-  explicit Value(TensorType type) : type_(std::move(type)) {}
-
- private:
-  friend class Model;
-  friend class Operation;
-
-  void AddUse(const Operation *user, uint32_t operand_index) const;
-  void ClearUses() const noexcept;
-  void RemoveUses(const Operation *user) const noexcept;
-
-  const TensorType type_;
-  mutable std::vector<Use> users_;
-};
-
 /** A named tensor supplied by the caller. */
-class Input final : public Value {
- public:
-  Input(std::string name, TensorType type);
-
-  [[nodiscard]] auto ToString(const OperationIndices &operation_indices) const -> std::string override;
-
- private:
-  friend class Model;
-
+struct Input final {
   /** Stable model-facing input name. */
   std::string name_;
+
+  /** Input element type and logical shape. */
+  TensorType type_;
+
+  /** Returns the complete input declaration. */
+  [[nodiscard]] auto ToString() const -> std::string { return "input %" + name_ + " : " + type_.ToString(); }
 };
 
 /** A named, immutable model parameter backed by a checkpoint tensor. */
-class Parameter final : public Value {
- public:
-  Parameter(std::string name, TensorType type);
-
-  [[nodiscard]] auto GetName() const noexcept -> std::string_view { return name_; }
-
-  [[nodiscard]] auto ToString(const OperationIndices &operation_indices) const -> std::string override;
-
- private:
-  friend class Model;
-
+struct Parameter final {
   /** Checkpoint tensor name used by WeightPlan. */
   std::string name_;
+
+  /** Static parameter element type and shape. */
+  TensorType type_;
+
+  /** Returns the complete parameter declaration. */
+  [[nodiscard]] auto ToString() const -> std::string {
+    return "parameter @" + name_ + " : " + type_.ToString();
+  }
 };
 
-/** One result produced by an Operation. */
-class OperationResult final : public Value {
- public:
-  /** Operation defining this result. */
-  [[nodiscard]] auto GetOperation() const -> const Operation * { return operation_; }
+/** Identifies one result produced by an Operation. */
+struct OpResult final {
+  /** Operation that defines this result. */
+  const Operation *operation_;
 
   /** Zero-based result position within the defining operation. */
-  [[nodiscard]] auto GetResultIndex() const -> uint32_t { return result_index_; }
+  uint32_t result_index_;
+
+  [[nodiscard]] auto operator==(const OpResult &) const -> bool = default;
 
   /** Returns the canonical SSA result reference in a model context. */
-  [[nodiscard]] auto ToString(const OperationIndices &operation_indices) const -> std::string override;
-
- private:
-  friend class Operation;
-
-  OperationResult(const Operation *operation, uint32_t result_index, TensorType type);
-
-  const Operation *operation_;
-  uint32_t result_index_;
+  [[nodiscard]] auto ToString(const OperationIndices &operation_indices) const -> std::string;
 };
+
+/** One SSA value in the model graph. */
+using Value = std::variant<const Input *, const Parameter *, OpResult>;
 
 /** Base class for one typed operation in the model SSA graph. */
 class Operation {
@@ -122,18 +70,10 @@ class Operation {
   auto operator=(const Operation &) -> Operation & = delete;
   Operation(Operation &&) = delete;
   auto operator=(Operation &&) -> Operation & = delete;
-  virtual ~Operation();
+  virtual ~Operation() = default;
 
   /** Returns operands in the operation's canonical order. */
-  [[nodiscard]] auto GetOperands() const -> std::span<const Value *const> { return operands_; }
-
-  /** Returns the number of results produced by this operation. */
-  [[nodiscard]] auto GetResultCount() const noexcept -> size_t { return results_.size(); }
-
-  /** Returns one result value in result-index order. */
-  [[nodiscard]] auto GetResult(uint32_t result_index) const -> const OperationResult & {
-    return *results_.at(result_index);
-  }
+  [[nodiscard]] auto GetOperands() const -> std::span<const Value> { return operands_; }
 
   /** Returns result types in result-index order. */
   [[nodiscard]] auto GetResultTypes() const -> std::span<const TensorType> { return result_types_; }
@@ -145,35 +85,34 @@ class Operation {
   virtual void Accept(OperationVisitor &visitor) const = 0;
 
   /** Returns this operation in canonical textual form. */
-  [[nodiscard]] virtual auto ToString(const OperationIndices &operation_indices) const -> std::string = 0;
-
-  /** Checks operation-specific type and attribute invariants. */
-  virtual void Verify() const = 0;
+  [[nodiscard]] virtual auto ToString(const OperationIndices &operation_indices) const -> std::string;
 
  protected:
   /** Constructs an operation with canonical operands and inferred result types. */
-  Operation(std::vector<const Value *> operands, std::vector<TensorType> result_types);
+  Operation(std::vector<Value> operands, std::vector<TensorType> result_types)
+      : operands_(std::move(operands)), result_types_(std::move(result_types)) {}
+
+  /** Formats the canonical operation text with an optional attribute suffix. */
+  [[nodiscard]] auto Format(const OperationIndices &operation_indices, std::string_view attributes = {}) const
+      -> std::string;
 
  private:
   /** Values consumed by this operation. */
-  std::vector<const Value *> operands_;
+  std::vector<Value> operands_;
 
   /** Types of values produced by this operation. */
   std::vector<TensorType> result_types_;
-
-  /** Stable result objects whose addresses are used as SSA identities. */
-  std::vector<std::unique_ptr<OperationResult>> results_;
 };
+
+/** Returns the logical tensor type carried by an SSA value. */
+[[nodiscard]] auto GetType(const Value &value) -> const TensorType &;
+
+/** Returns the canonical textual reference for an SSA value. */
+[[nodiscard]] auto ValueToString(const Value &value, const OperationIndices &operation_indices) -> std::string;
 
 namespace internal {
 
-[[nodiscard]] auto IsValidIdentifier(std::string_view name) noexcept -> bool;
-
-void VerifyTensorType(const TensorType &type);
-void VerifyParameterType(const Parameter &parameter);
-void VerifySameDType(const TensorType &lhs, const TensorType &rhs, std::string_view operation);
-
-[[nodiscard]] auto InferBroadcastType(const Value &lhs, const Value &rhs, std::string_view operation) -> TensorType;
+[[nodiscard]] auto InferBroadcastType(const Value &lhs, const Value &rhs) -> TensorType;
 
 }  // namespace internal
 

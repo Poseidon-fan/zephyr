@@ -15,13 +15,11 @@ class Add final : public Operation {
  public:
   static constexpr std::string_view NAME = "tensor.add";
 
-  Add(const Value *lhs, const Value *rhs);
+  Add(Value lhs, Value rhs);
 
   void Accept(OperationVisitor &visitor) const override { visitor.Visit(*this); }
 
   [[nodiscard]] auto GetName() const -> std::string_view override { return NAME; }
-  [[nodiscard]] auto ToString(const OperationIndices &operation_indices) const -> std::string override;
-  void Verify() const override;
 };
 
 /** Elementwise multiplication with shape broadcasting. */
@@ -29,13 +27,11 @@ class Multiply final : public Operation {
  public:
   static constexpr std::string_view NAME = "tensor.multiply";
 
-  Multiply(const Value *lhs, const Value *rhs);
+  Multiply(Value lhs, Value rhs);
 
   void Accept(OperationVisitor &visitor) const override { visitor.Visit(*this); }
 
   [[nodiscard]] auto GetName() const -> std::string_view override { return NAME; }
-  [[nodiscard]] auto ToString(const OperationIndices &operation_indices) const -> std::string override;
-  void Verify() const override;
 };
 
 /** Applies the SiLU activation elementwise. */
@@ -43,13 +39,11 @@ class Silu final : public Operation {
  public:
   static constexpr std::string_view NAME = "tensor.silu";
 
-  explicit Silu(const Value *input);
+  explicit Silu(Value input);
 
   void Accept(OperationVisitor &visitor) const override { visitor.Visit(*this); }
 
   [[nodiscard]] auto GetName() const -> std::string_view override { return NAME; }
-  [[nodiscard]] auto ToString(const OperationIndices &operation_indices) const -> std::string override;
-  void Verify() const override;
 };
 
 /** Applies the sigmoid activation elementwise. */
@@ -57,13 +51,11 @@ class Sigmoid final : public Operation {
  public:
   static constexpr std::string_view NAME = "tensor.sigmoid";
 
-  explicit Sigmoid(const Value *input);
+  explicit Sigmoid(Value input);
 
   void Accept(OperationVisitor &visitor) const override { visitor.Visit(*this); }
 
   [[nodiscard]] auto GetName() const -> std::string_view override { return NAME; }
-  [[nodiscard]] auto ToString(const OperationIndices &operation_indices) const -> std::string override;
-  void Verify() const override;
 };
 
 /** Changes tensor shape without changing element order or count. */
@@ -71,14 +63,12 @@ class Reshape final : public Operation {
  public:
   static constexpr std::string_view NAME = "tensor.reshape";
 
-  Reshape(const Value *input, Shape shape);
+  Reshape(Value input, Shape shape);
 
   void Accept(OperationVisitor &visitor) const override { visitor.Visit(*this); }
 
   [[nodiscard]] auto GetShape() const -> const Shape & { return shape_; }
   [[nodiscard]] auto GetName() const -> std::string_view override { return NAME; }
-  [[nodiscard]] auto ToString(const OperationIndices &operation_indices) const -> std::string override;
-  void Verify() const override;
 
  private:
   Shape shape_;
@@ -89,7 +79,7 @@ class Split final : public Operation {
  public:
   static constexpr std::string_view NAME = "tensor.split";
 
-  Split(const Value *input, size_t dimension, std::vector<int64_t> sizes);
+  Split(Value input, size_t dimension, std::vector<int64_t> sizes);
 
   void Accept(OperationVisitor &visitor) const override { visitor.Visit(*this); }
 
@@ -97,7 +87,6 @@ class Split final : public Operation {
   [[nodiscard]] auto GetSizes() const -> std::span<const int64_t> { return sizes_; }
   [[nodiscard]] auto GetName() const -> std::string_view override { return NAME; }
   [[nodiscard]] auto ToString(const OperationIndices &operation_indices) const -> std::string override;
-  void Verify() const override;
 
  private:
   size_t dimension_;

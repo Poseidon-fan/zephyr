@@ -1,12 +1,14 @@
 #include "planner/planner.h"
 
+#include <algorithm>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <span>
 #include <string>
+#include <type_traits>
 #include <unordered_map>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -20,14 +22,15 @@
 namespace zephyr::planner {
 namespace {
 
-using ValueViews = std::unordered_map<const ir::Value *, BufferView>;
+using InputViews = std::unordered_map<const ir::Input *, BufferView>;
+using ResultViews = std::unordered_map<const ir::Operation *, std::vector<BufferView>>;
 using ParameterViews = std::unordered_map<const ir::Parameter *, BufferView>;
 
 class LoweringVisitor final : public ir::OperationVisitor {
  public:
   LoweringVisitor(WorkerPlan &plan, bool has_kv_cache, std::span<const DynamicDimensionBinding> bindings,
-                  const std::unordered_set<const ir::Value *> &outputs, ValueViews &values)
-      : plan_(plan), has_kv_cache_(has_kv_cache), bindings_(bindings), outputs_(outputs), values_(values) {}
+                  std::span<const ir::Value> outputs, InputViews &inputs)
+      : plan_(plan), has_kv_cache_(has_kv_cache), bindings_(bindings), outputs_(outputs), inputs_(inputs) {}
 
   void Visit(const ir::Linear &operation) override {
     Lower(operation, [this, &operation](auto &results) {
@@ -69,15 +72,15 @@ class LoweringVisitor final : public ir::OperationVisitor {
         throw ConfigurationException{"decoder planning requires causal SelfAttention"};
       }
       const auto operands = operation.GetOperands();
-      const auto &query_shape = operands[0]->GetType().shape_;
-      const auto &key_shape = operands[1]->GetType().shape_;
+      const auto &query_shape = ir::GetType(operands[0]).shape_;
+      const auto &key_shape = ir::GetType(operands[1]).shape_;
       auto layer = std::optional<kv_layer_id_t>{};
       if (has_kv_cache_) {
         // Decoder attention consumes only the current step, so each causal layer receives one persistent KV entry.
         layer = static_cast<kv_layer_id_t>(plan_.kv_cache_.entries_.size());
         plan_.kv_cache_.entries_.push_back(
             KVCacheEntry{.kv_layer_id_ = *layer,
-                         .dtype_ = operands[0]->GetType().dtype_,
+                         .dtype_ = ir::GetType(operands[0]).dtype_,
                          .kv_head_count_ = GetStaticExtent(key_shape[1], "KV heads"),
                          .head_dimension_ = GetStaticExtent(query_shape[2], "head dimension")});
       }
@@ -156,20 +159,32 @@ class LoweringVisitor final : public ir::OperationVisitor {
     });
   }
 
-  [[nodiscard]] auto GetValue(const ir::Value *value) const -> BufferView { return values_.at(value); }
+  [[nodiscard]] auto GetValue(const ir::Value &value) -> BufferView {
+    return std::visit(
+        [this](const auto &source) -> BufferView {
+          using Source = std::remove_cvref_t<decltype(source)>;
+          if constexpr (std::same_as<Source, const ir::Input *>) {
+            return inputs_.at(source);
+          } else if constexpr (std::same_as<Source, const ir::Parameter *>) {
+            return GetParameter(source);
+          } else {
+            return results_.at(source.operation_).at(source.result_index_);
+          }
+        },
+        value);
+  }
 
   auto GetParameter(const ir::Parameter *parameter) -> BufferView {
     if (const auto iterator = parameters_.find(parameter); iterator != parameters_.end()) {
       return iterator->second;
     }
-    const auto view = Allocate(parameter->GetType(), BufferKind::WEIGHT);
-    const auto slice = MakeFullSlice(parameter->GetType().shape_, "parameter dimension");
-    plan_.weights_.targets_.push_back(WeightTarget{
-        .buffer_ = view.buffer_,
-        .sources_ = {WeightSourcePart{
-            .source_name_ = std::string{parameter->GetName()}, .source_slice_ = slice, .target_slice_ = slice}}});
+    const auto view = Allocate(parameter->type_, BufferKind::WEIGHT);
+    const auto slice = MakeFullSlice(parameter->type_.shape_, "parameter dimension");
+    plan_.weights_.targets_.push_back(
+        WeightTarget{.buffer_ = view.buffer_,
+                     .sources_ = {WeightSourcePart{
+                         .source_name_ = parameter->name_, .source_slice_ = slice, .target_slice_ = slice}}});
     parameters_.emplace(parameter, view);
-    values_.emplace(parameter, view);
     return view;
   }
 
@@ -177,16 +192,18 @@ class LoweringVisitor final : public ir::OperationVisitor {
   template <typename OperationType, typename Lowering>
   void Lower(const OperationType &operation, Lowering &&lowering) {
     auto results = std::vector<BufferView>{};
-    results.reserve(operation.GetResultCount());
-    for (size_t index = 0; index < operation.GetResultCount(); index++) {
-      const auto &result = operation.GetResult(static_cast<uint32_t>(index));
-      results.push_back(
-          Allocate(result.GetType(), outputs_.contains(&result) ? BufferKind::OUTPUT : BufferKind::ACTIVATION));
+    results.reserve(operation.GetResultTypes().size());
+    for (size_t index = 0; index < operation.GetResultTypes().size(); index++) {
+      const auto result = ir::OpResult{.operation_ = &operation, .result_index_ = static_cast<uint32_t>(index)};
+      const auto &type = operation.GetResultTypes()[index];
+      results.push_back(Allocate(type, IsOutput(result) ? BufferKind::OUTPUT : BufferKind::ACTIVATION));
     }
     std::forward<Lowering>(lowering)(results);
-    for (size_t index = 0; index < operation.GetResultCount(); index++) {
-      values_.emplace(&operation.GetResult(static_cast<uint32_t>(index)), results[index]);
-    }
+    results_.emplace(&operation, std::move(results));
+  }
+
+  [[nodiscard]] auto IsOutput(const ir::OpResult &result) const -> bool {
+    return std::ranges::find(outputs_, ir::Value{result}) != outputs_.end();
   }
 
   auto Allocate(const TensorType &type, BufferKind kind) -> BufferView {
@@ -199,9 +216,10 @@ class LoweringVisitor final : public ir::OperationVisitor {
   WorkerPlan &plan_;
   bool has_kv_cache_;
   std::span<const DynamicDimensionBinding> bindings_;
-  const std::unordered_set<const ir::Value *> &outputs_;
-  ValueViews &values_;
+  std::span<const ir::Value> outputs_;
+  InputViews &inputs_;
   ParameterViews parameters_;
+  ResultViews results_;
 };
 
 }  // namespace
@@ -223,31 +241,28 @@ auto Planner::Lower(const ir::Model &model, ttl::Device device, const PlanConfig
       .inputs_ = {},
       .outputs_ = {}};
 
-  auto values = ValueViews{};
-  auto outputs = std::unordered_set<const ir::Value *>{model.GetOutputs().begin(), model.GetOutputs().end()};
-  auto visitor = LoweringVisitor{plan, has_kv_cache, bindings, outputs, values};
+  auto inputs = InputViews{};
 
   for (size_t index = 0; index < model.GetInputs().size(); index++) {
     const auto *input = model.GetInputs()[index].get();
     const auto id = static_cast<buffer_id_t>(plan.buffers_.size());
-    const auto view = BufferView{.buffer_ = id, .element_offset_ = 0, .shape_ = input->GetType().shape_};
+    const auto view = BufferView{.buffer_ = id, .element_offset_ = 0, .shape_ = input->type_.shape_};
     plan.buffers_.push_back(BufferSpec{.id_ = id,
                                        .kind_ = BufferKind::INPUT,
-                                       .dtype_ = input->GetType().dtype_,
-                                       .capacity_ = ResolveShape(input->GetType().shape_, bindings)});
-    values.emplace(input, view);
+                                       .dtype_ = input->type_.dtype_,
+                                       .capacity_ = ResolveShape(input->type_.shape_, bindings)});
+    inputs.emplace(input, view);
     plan.inputs_.push_back(InputBinding{.input_index_ = index, .target_ = view});
   }
+
+  auto visitor = LoweringVisitor{plan, has_kv_cache, bindings, model.GetOutputs(), inputs};
 
   for (const auto &operation : model.GetOperations()) {
     operation->Accept(visitor);
   }
 
   for (size_t index = 0; index < model.GetOutputs().size(); index++) {
-    const auto *output = model.GetOutputs()[index];
-    if (const auto *parameter = dynamic_cast<const ir::Parameter *>(output); parameter != nullptr) {
-      static_cast<void>(visitor.GetParameter(parameter));
-    }
+    const auto &output = model.GetOutputs()[index];
     plan.outputs_.push_back(OutputBinding{.output_index_ = index, .source_ = visitor.GetValue(output)});
   }
   return plan;

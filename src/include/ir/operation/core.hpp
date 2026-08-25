@@ -16,16 +16,14 @@ class Linear final : public Operation {
  public:
   static constexpr std::string_view NAME = "core.linear";
 
-  Linear(const Value *input, const Parameter *weight, const Parameter *bias = nullptr);
+  Linear(Value input, const Parameter *weight, const Parameter *bias = nullptr);
 
   void Accept(OperationVisitor &visitor) const override { visitor.Visit(*this); }
 
-  [[nodiscard]] auto GetInput() const -> const Value * { return GetOperands()[0]; }
+  [[nodiscard]] auto GetInput() const -> const Value & { return GetOperands()[0]; }
   [[nodiscard]] auto GetWeight() const -> const Parameter * { return weight_; }
   [[nodiscard]] auto GetBias() const -> const Parameter * { return bias_; }
   [[nodiscard]] auto GetName() const -> std::string_view override { return NAME; }
-  [[nodiscard]] auto ToString(const OperationIndices &operation_indices) const -> std::string override;
-  void Verify() const override;
 
  private:
   const Parameter *weight_;
@@ -37,15 +35,13 @@ class Embedding final : public Operation {
  public:
   static constexpr std::string_view NAME = "core.embedding";
 
-  Embedding(const Value *indices, const Parameter *weight);
+  Embedding(Value indices, const Parameter *weight);
 
   void Accept(OperationVisitor &visitor) const override { visitor.Visit(*this); }
 
-  [[nodiscard]] auto GetIndices() const -> const Value * { return GetOperands()[0]; }
+  [[nodiscard]] auto GetIndices() const -> const Value & { return GetOperands()[0]; }
   [[nodiscard]] auto GetWeight() const -> const Parameter * { return weight_; }
   [[nodiscard]] auto GetName() const -> std::string_view override { return NAME; }
-  [[nodiscard]] auto ToString(const OperationIndices &operation_indices) const -> std::string override;
-  void Verify() const override;
 
  private:
   const Parameter *weight_;
@@ -56,16 +52,15 @@ class RmsNorm final : public Operation {
  public:
   static constexpr std::string_view NAME = "core.rms_norm";
 
-  RmsNorm(const Value *input, const Parameter *weight, float epsilon);
+  RmsNorm(Value input, const Parameter *weight, float epsilon);
 
   void Accept(OperationVisitor &visitor) const override { visitor.Visit(*this); }
 
-  [[nodiscard]] auto GetInput() const -> const Value * { return GetOperands()[0]; }
+  [[nodiscard]] auto GetInput() const -> const Value & { return GetOperands()[0]; }
   [[nodiscard]] auto GetWeight() const -> const Parameter * { return weight_; }
   [[nodiscard]] auto GetEpsilon() const -> float { return epsilon_; }
   [[nodiscard]] auto GetName() const -> std::string_view override { return NAME; }
   [[nodiscard]] auto ToString(const OperationIndices &operation_indices) const -> std::string override;
-  void Verify() const override;
 
  private:
   const Parameter *weight_;
@@ -77,8 +72,7 @@ class RotaryEmbedding final : public Operation {
  public:
   static constexpr std::string_view NAME = "core.rotary_embedding";
 
-  RotaryEmbedding(const Value *query, const Value *key, const Value *positions, float theta, int64_t rotary_dimension,
-                  RotaryLayout layout);
+  RotaryEmbedding(Value query, Value key, Value positions, float theta, int64_t rotary_dimension, RotaryLayout layout);
 
   void Accept(OperationVisitor &visitor) const override { visitor.Visit(*this); }
 
@@ -87,7 +81,6 @@ class RotaryEmbedding final : public Operation {
   [[nodiscard]] auto GetLayout() const -> RotaryLayout { return layout_; }
   [[nodiscard]] auto GetName() const -> std::string_view override { return NAME; }
   [[nodiscard]] auto ToString(const OperationIndices &operation_indices) const -> std::string override;
-  void Verify() const override;
 
  private:
   float theta_;
@@ -100,8 +93,8 @@ class SelfAttention final : public Operation {
  public:
   static constexpr std::string_view NAME = "core.self_attention";
 
-  SelfAttention(const Value *query, const Value *key, const Value *value, AttentionMaskKind mask_kind,
-                std::optional<AttentionWindow> window, float scale, std::optional<float> softcap);
+  SelfAttention(Value query, Value key, Value value, AttentionMaskKind mask_kind, std::optional<AttentionWindow> window,
+                float scale, std::optional<float> softcap);
 
   void Accept(OperationVisitor &visitor) const override { visitor.Visit(*this); }
 
@@ -111,7 +104,6 @@ class SelfAttention final : public Operation {
   [[nodiscard]] auto GetSoftcap() const -> const std::optional<float> & { return softcap_; }
   [[nodiscard]] auto GetName() const -> std::string_view override { return NAME; }
   [[nodiscard]] auto ToString(const OperationIndices &operation_indices) const -> std::string override;
-  void Verify() const override;
 
  private:
   AttentionMaskKind mask_kind_;
@@ -132,10 +124,9 @@ class Moe final : public Operation {
  public:
   static constexpr std::string_view NAME = "core.moe";
 
-  Moe(const Value *input, const Value *router_logits, const Parameter *selection_bias,
-      std::vector<MoeExpertParameters> experts, RoutingScoreFunction score_function, int64_t top_k,
-      RoutingWeightNormalization weight_normalization, float routing_scale,
-      std::optional<ExpertGroupRouting> group_routing, GatedActivation activation);
+  Moe(Value input, Value router_logits, const Parameter *selection_bias, std::vector<MoeExpertParameters> experts,
+      RoutingScoreFunction score_function, int64_t top_k, RoutingWeightNormalization weight_normalization,
+      float routing_scale, std::optional<ExpertGroupRouting> group_routing, GatedActivation activation);
 
   void Accept(OperationVisitor &visitor) const override { visitor.Visit(*this); }
 
@@ -149,7 +140,6 @@ class Moe final : public Operation {
   [[nodiscard]] auto GetActivation() const -> GatedActivation { return activation_; }
   [[nodiscard]] auto GetName() const -> std::string_view override { return NAME; }
   [[nodiscard]] auto ToString(const OperationIndices &operation_indices) const -> std::string override;
-  void Verify() const override;
 
  private:
   const Parameter *selection_bias_;
