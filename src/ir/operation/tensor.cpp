@@ -124,24 +124,11 @@ auto InferReshapeType(const Value &input, const Shape &shape) -> TensorType {
   return output_type;
 }
 
-auto NormalizeDimension(int64_t dimension, size_t rank) -> size_t {
-  if (rank == 0) {
-    throw InvalidArgumentException{"tensor.split does not accept a scalar"};
-  }
-  const auto signed_rank = static_cast<int64_t>(rank);
-  const auto normalized = dimension < 0 ? dimension + signed_rank : dimension;
-  if (normalized < 0 || normalized >= signed_rank) {
-    throw InvalidArgumentException{"tensor.split dimension is out of range"};
-  }
-  return static_cast<size_t>(normalized);
-}
-
-auto InferSplitTypes(const Value &input, int64_t dimension, const std::vector<int64_t> &sizes)
+auto InferSplitTypes(const Value &input, size_t dimension, const std::vector<int64_t> &sizes)
     -> std::vector<TensorType> {
   const auto &input_type = input.GetType();
   internal::VerifyTensorType(input_type);
-  const auto index = NormalizeDimension(dimension, input_type.shape_.size());
-  const auto *extent = std::get_if<int64_t>(&input_type.shape_[index]);
+  const auto *extent = std::get_if<int64_t>(&input_type.shape_[dimension]);
   if (extent == nullptr) {
     throw InvalidArgumentException{"tensor.split target dimension must be static"};
   }
@@ -164,7 +151,7 @@ auto InferSplitTypes(const Value &input, int64_t dimension, const std::vector<in
   results.reserve(sizes.size());
   for (const auto size : sizes) {
     auto shape = input_type.shape_;
-    shape[index] = size;
+    shape[dimension] = size;
     results.push_back(TensorType{.dtype_ = input_type.dtype_, .shape_ = std::move(shape)});
   }
   return results;
@@ -237,7 +224,7 @@ auto Reshape::ToString(const OperationIndices &operation_indices) const -> std::
          FormatOperands(*this, operation_indices) + FormatResultTypes(*this);
 }
 
-Split::Split(const Value *input, int64_t dimension, std::vector<int64_t> sizes)
+Split::Split(const Value *input, size_t dimension, std::vector<int64_t> sizes)
     : Operation({input}, InferSplitTypes(RequireValue(input, NAME), dimension, sizes)),
       dimension_(dimension),
       sizes_(std::move(sizes)) {}

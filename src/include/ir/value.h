@@ -11,12 +11,14 @@
 #include <vector>
 
 #include "common/tensor_type.h"
+#include "ir/operation/visitor.hpp"
 
 namespace zephyr::ir {
 
 class Model;
 class Operation;
 
+/** Identifies the concrete operation family for lowering dispatch. */
 /** Maps each operation to the first SSA number assigned to its results while printing a model. */
 using OperationIndices = std::unordered_map<const Operation *, size_t>;
 
@@ -81,6 +83,8 @@ class Parameter final : public Value {
  public:
   Parameter(std::string name, TensorType type);
 
+  [[nodiscard]] auto GetName() const noexcept -> std::string_view { return name_; }
+
   [[nodiscard]] auto ToString(const OperationIndices &operation_indices) const -> std::string override;
 
  private:
@@ -136,6 +140,9 @@ class Operation {
 
   /** Returns the stable dialect-qualified operation name. */
   [[nodiscard]] virtual auto GetName() const -> std::string_view = 0;
+
+  /** Dispatches this operation to a type-safe visitor. */
+  virtual void Accept(OperationVisitor &visitor) const = 0;
 
   /** Returns this operation in canonical textual form. */
   [[nodiscard]] virtual auto ToString(const OperationIndices &operation_indices) const -> std::string = 0;

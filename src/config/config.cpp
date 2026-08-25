@@ -37,59 +37,46 @@ void ValidateParallelConfig(const ParallelConfig &config, size_t device_count) {
   ValidatePositive(config.data_parallel_size_, "plan.parallel.data_parallel_size");
   const auto world_size =
       static_cast<int64_t>(config.tensor_parallel_size_) * static_cast<int64_t>(config.data_parallel_size_);
-  if (world_size != static_cast<int64_t>(device_count)) {
+  if (static_cast<size_t>(world_size) != device_count) {
     throw ConfigurationException{"runtime device count must equal tensor_parallel_size * data_parallel_size"};
   }
 }
 
-/** Validates capacities consumed by every runner mode. */
+/** Validates model and parallel configuration. */
 void ValidatePlanConfig(const PlanConfig &config, size_t device_count) {
   ValidateParallelConfig(config.parallel_, device_count);
-  ValidatePositive(config.limits_.max_tokens_per_worker_, "plan.limits.max_tokens_per_worker");
-  ValidatePositive(config.limits_.max_sequences_per_worker_, "plan.limits.max_sequences_per_worker");
-  ValidatePositive(config.limits_.max_sequence_length_, "plan.limits.max_sequence_length");
+  ValidatePositive(config.model_.max_model_len_, "plan.model.max_model_len");
+}
 
-  for (const auto &[name, capacity] : config.dynamic_dimension_capacities_) {
-    if (name.empty()) {
-      throw ConfigurationException{"plan.dynamic_dimension_capacities contains an empty name"};
-    }
-    if (capacity <= 0) {
-      throw ConfigurationException{"dynamic dimension capacity must be positive: " + name};
-    }
+/** Validates scheduler limits shared by all runner modes. */
+void ValidateSchedulerConfig(const SchedulerConfig &config) {
+  ValidatePositive(config.max_num_batched_tokens_, "scheduler.max_num_batched_tokens");
+  ValidatePositive(config.max_num_seqs_, "scheduler.max_num_seqs");
+  if (config.max_num_batched_tokens_ < config.max_num_seqs_) {
+    throw ConfigurationException{"scheduler.max_num_batched_tokens must be at least max_num_seqs"};
   }
 }
 
 /** Validates stateful decoder-only capacity and scheduling constraints. */
 void ValidateDecoderConfig(const Config &config) {
-  ValidatePositive(config.plan_.kv_cache_block_size_, "plan.kv_cache_block_size");
-  if (config.plan_.limits_.kv_cache_bytes_per_worker_ == 0) {
-    throw ConfigurationException{"plan.limits.kv_cache_bytes_per_worker must be positive in decoder mode"};
+  ValidatePositive(config.plan_.kv_cache_.block_size_, "plan.kv_cache.block_size");
+  if (config.plan_.kv_cache_.kv_cache_memory_bytes_ == 0) {
+    throw ConfigurationException{"plan.kv_cache.kv_cache_memory_bytes must be positive in decoder mode"};
   }
-  ValidatePositive(config.scheduler_.max_batch_tokens_, "scheduler.max_batch_tokens");
-  ValidatePositive(config.scheduler_.max_batch_sequences_, "scheduler.max_batch_sequences");
   ValidatePositive(config.scheduler_.prefill_chunk_size_, "scheduler.prefill_chunk_size");
 
-  const auto data_parallel_size = static_cast<int64_t>(config.plan_.parallel_.data_parallel_size_);
-  const auto max_batch_tokens = data_parallel_size * static_cast<int64_t>(config.plan_.limits_.max_tokens_per_worker_);
-  const auto max_batch_sequences =
-      data_parallel_size * static_cast<int64_t>(config.plan_.limits_.max_sequences_per_worker_);
-  if (config.scheduler_.max_batch_tokens_ > max_batch_tokens) {
-    throw ConfigurationException{"scheduler.max_batch_tokens exceeds worker capacity"};
-  }
-  if (config.scheduler_.max_batch_sequences_ > max_batch_sequences) {
-    throw ConfigurationException{"scheduler.max_batch_sequences exceeds worker capacity"};
-  }
-  if (config.scheduler_.prefill_chunk_size_ > config.scheduler_.max_batch_tokens_ ||
-      config.scheduler_.prefill_chunk_size_ > config.plan_.limits_.max_tokens_per_worker_) {
-    throw ConfigurationException{"scheduler.prefill_chunk_size exceeds token capacity"};
+  if (config.scheduler_.prefill_chunk_size_ > config.scheduler_.max_num_batched_tokens_) {
+    throw ConfigurationException{"scheduler.prefill_chunk_size exceeds max_num_batched_tokens"};
   }
 }
 
-/** Validates that embedding mode does not carry decoder scheduling state. */
+/** Validates that embedding mode does not carry decoder-only state. */
 void ValidateEmbeddingConfig(const Config &config) {
-  if (config.scheduler_.max_batch_tokens_ != 0 || config.scheduler_.max_batch_sequences_ != 0 ||
-      config.scheduler_.prefill_chunk_size_ != 0) {
-    throw ConfigurationException{"scheduler settings must be zero in embedding mode"};
+  if (config.plan_.kv_cache_.block_size_ != 0 || config.plan_.kv_cache_.kv_cache_memory_bytes_ != 0) {
+    throw ConfigurationException{"KV cache settings must be zero in embedding mode"};
+  }
+  if (config.scheduler_.prefill_chunk_size_ != 0) {
+    throw ConfigurationException{"scheduler.prefill_chunk_size must be zero in embedding mode"};
   }
 }
 
@@ -101,6 +88,7 @@ void Config::Validate() const {
   }
   ValidateRuntimeConfig(runtime_);
   ValidatePlanConfig(plan_, runtime_.devices_.size());
+  ValidateSchedulerConfig(scheduler_);
 
   switch (runner_mode_) {
     case RunnerMode::DECODER:

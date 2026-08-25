@@ -1,30 +1,24 @@
 #pragma once
 
-#include <memory>
+#include <span>
 #include <vector>
 
 #include <ttl/runtime/runtime.hpp>
 
+#include "common/tensor_type.h"
 #include "config/config.h"
 #include "ir/model.h"
 #include "planner/plan.h"
-#include "planner/transformer.h"
 
 namespace zephyr::planner {
 
 /**
- * Converts one logical Model into one static WorkerPlan per configured rank.
- *
- * Planning is deliberately split into single-Worker lowering, an ordered Transformer chain, and rank expansion. The
- * Planner only reads Runtime metadata; ownership of CUDA resources remains with Runtime and the later Executor.
+ * Converts one logical Model into one rank-neutral WorkerPlan.
  */
 class Planner final {
  public:
-  /** Constructs a Planner with Zephyr's built-in Transformer chain. */
+  /** Constructs a lower-only Planner. */
   Planner();
-
-  /** Constructs a Planner with an explicitly supplied Transformer chain. */
-  explicit Planner(std::vector<std::unique_ptr<Transformer>> transformers);
 
   Planner(const Planner &) = delete;
   auto operator=(const Planner &) -> Planner & = delete;
@@ -32,32 +26,22 @@ class Planner final {
   auto operator=(Planner &&) noexcept -> Planner & = default;
   ~Planner() = default;
 
-  /** Appends an extension pass after the currently registered passes. */
-  void AddTransformer(std::unique_ptr<Transformer> transformer);
-
   /**
-   * Builds one executable plan for every Runtime device.
+   * Lowers the model into one WorkerPlan. Parallel expansion is intentionally not part of this stage.
    *
    * @param model logical typed SSA model
-   * @param runtime Runtime whose device order defines global rank order
-   * @param config parallelism, capacities, and KV planning options
-   * @param runner_mode task contract selected by the Engine
-   * @return plans in global rank order
+   * @param runtime Runtime supplying the device for the rank-neutral plan
+   * @param config validated planner configuration
+   * @param bindings dynamic dimension capacities used to materialize buffers
+   * @return a vector containing the single lowered plan
    */
   [[nodiscard]] auto Plan(const ir::Model &model, const ttl::Runtime &runtime, const PlanConfig &config,
-                          RunnerMode runner_mode) const -> std::vector<WorkerPlan>;
+                          std::span<const DynamicDimensionBinding> bindings) const -> std::vector<WorkerPlan>;
 
  private:
-  /** Lowers the model into a single-Worker template plan. */
-  [[nodiscard]] auto Lower(const ir::Model &model, const PlanConfig &config, RunnerMode runner_mode) const
-      -> WorkerPlan;
-
-  /** Expands a transformed single-Worker template into one WorkerPlan per configured rank. */
-  [[nodiscard]] auto Expand(WorkerPlan plan, const PlanConfig &config, const ttl::Runtime &runtime) const
-      -> std::vector<WorkerPlan>;
-
-  /** Ordered lowering/optimization extension chain. */
-  std::vector<std::unique_ptr<Transformer>> transformers_;
+  /** Lowers the model into a logical single-Worker plan. */
+  [[nodiscard]] auto Lower(const ir::Model &model, ttl::Device device, const PlanConfig &config,
+                           std::span<const DynamicDimensionBinding> bindings) const -> WorkerPlan;
 };
 
 }  // namespace zephyr::planner

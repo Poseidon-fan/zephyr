@@ -55,7 +55,7 @@ class RmsNorm final : public CloneableInstruction<RmsNorm> {
 class RotaryEmbedding final : public CloneableInstruction<RotaryEmbedding> {
  public:
   RotaryEmbedding(BufferView query, BufferView key, BufferView positions, BufferView rotated_query,
-                  BufferView rotated_key, float theta, int32_t rotary_dimension, RotaryLayout layout)
+                  BufferView rotated_key, float theta, int64_t rotary_dimension, RotaryLayout layout)
       : query_(std::move(query)),
         key_(std::move(key)),
         positions_(std::move(positions)),
@@ -71,15 +71,15 @@ class RotaryEmbedding final : public CloneableInstruction<RotaryEmbedding> {
   BufferView rotated_query_;
   BufferView rotated_key_;
   float theta_;
-  int32_t rotary_dimension_;
+  int64_t rotary_dimension_;
   RotaryLayout layout_;
 };
 
 /** Computes scaled self-attention, optionally backed by a persistent KV entry. */
 class SelfAttention final : public CloneableInstruction<SelfAttention> {
  public:
-  SelfAttention(BufferView query, BufferView key, BufferView value, BufferView output, int32_t query_head_count,
-                int32_t kv_head_count, int32_t head_dimension, AttentionMaskKind mask_kind,
+  SelfAttention(BufferView query, BufferView key, BufferView value, BufferView output, int64_t query_head_count,
+                int64_t kv_head_count, int64_t head_dimension, AttentionMaskKind mask_kind,
                 std::optional<AttentionWindow> window, float scale, std::optional<float> softcap,
                 std::optional<kv_layer_id_t> kv_layer_id)
       : query_(std::move(query)),
@@ -99,9 +99,9 @@ class SelfAttention final : public CloneableInstruction<SelfAttention> {
   BufferView key_;
   BufferView value_;
   BufferView output_;
-  int32_t query_head_count_;
-  int32_t kv_head_count_;
-  int32_t head_dimension_;
+  int64_t query_head_count_;
+  int64_t kv_head_count_;
+  int64_t head_dimension_;
   AttentionMaskKind mask_kind_;
   std::optional<AttentionWindow> window_;
   float scale_;

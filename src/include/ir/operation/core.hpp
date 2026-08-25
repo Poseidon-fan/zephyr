@@ -18,6 +18,8 @@ class Linear final : public Operation {
 
   Linear(const Value *input, const Parameter *weight, const Parameter *bias = nullptr);
 
+  void Accept(OperationVisitor &visitor) const override { visitor.Visit(*this); }
+
   [[nodiscard]] auto GetInput() const -> const Value * { return GetOperands()[0]; }
   [[nodiscard]] auto GetWeight() const -> const Parameter * { return weight_; }
   [[nodiscard]] auto GetBias() const -> const Parameter * { return bias_; }
@@ -37,6 +39,8 @@ class Embedding final : public Operation {
 
   Embedding(const Value *indices, const Parameter *weight);
 
+  void Accept(OperationVisitor &visitor) const override { visitor.Visit(*this); }
+
   [[nodiscard]] auto GetIndices() const -> const Value * { return GetOperands()[0]; }
   [[nodiscard]] auto GetWeight() const -> const Parameter * { return weight_; }
   [[nodiscard]] auto GetName() const -> std::string_view override { return NAME; }
@@ -53,6 +57,8 @@ class RmsNorm final : public Operation {
   static constexpr std::string_view NAME = "core.rms_norm";
 
   RmsNorm(const Value *input, const Parameter *weight, float epsilon);
+
+  void Accept(OperationVisitor &visitor) const override { visitor.Visit(*this); }
 
   [[nodiscard]] auto GetInput() const -> const Value * { return GetOperands()[0]; }
   [[nodiscard]] auto GetWeight() const -> const Parameter * { return weight_; }
@@ -74,6 +80,8 @@ class RotaryEmbedding final : public Operation {
   RotaryEmbedding(const Value *query, const Value *key, const Value *positions, float theta, int64_t rotary_dimension,
                   RotaryLayout layout);
 
+  void Accept(OperationVisitor &visitor) const override { visitor.Visit(*this); }
+
   [[nodiscard]] auto GetTheta() const -> float { return theta_; }
   [[nodiscard]] auto GetRotaryDimension() const -> int64_t { return rotary_dimension_; }
   [[nodiscard]] auto GetLayout() const -> RotaryLayout { return layout_; }
@@ -94,6 +102,8 @@ class SelfAttention final : public Operation {
 
   SelfAttention(const Value *query, const Value *key, const Value *value, AttentionMaskKind mask_kind,
                 std::optional<AttentionWindow> window, float scale, std::optional<float> softcap);
+
+  void Accept(OperationVisitor &visitor) const override { visitor.Visit(*this); }
 
   [[nodiscard]] auto GetMaskKind() const -> AttentionMaskKind { return mask_kind_; }
   [[nodiscard]] auto GetWindow() const -> const std::optional<AttentionWindow> & { return window_; }
@@ -126,6 +136,8 @@ class Moe final : public Operation {
       std::vector<MoeExpertParameters> experts, RoutingScoreFunction score_function, int64_t top_k,
       RoutingWeightNormalization weight_normalization, float routing_scale,
       std::optional<ExpertGroupRouting> group_routing, GatedActivation activation);
+
+  void Accept(OperationVisitor &visitor) const override { visitor.Visit(*this); }
 
   [[nodiscard]] auto GetSelectionBias() const -> const Parameter * { return selection_bias_; }
   [[nodiscard]] auto GetExperts() const -> std::span<const MoeExpertParameters> { return experts_; }

@@ -2,8 +2,6 @@
 
 #include <cstdint>
 #include <filesystem>
-#include <string>
-#include <unordered_map>
 #include <vector>
 
 #include <ttl/common/device.hpp>
@@ -44,45 +42,42 @@ struct ParallelConfig final {
   bool enable_expert_parallel_{false};
 };
 
-/** Per-Worker capacities fixed into each executable plan. */
-struct ExecutionLimits final {
-  /** Maximum packed token rows processed by one Worker invocation. */
-  int32_t max_tokens_per_worker_{0};
-
-  /** Maximum sequences processed by one Worker invocation. */
-  int32_t max_sequences_per_worker_{0};
-
-  /** Maximum logical length of one sequence. */
-  int32_t max_sequence_length_{0};
-
-  /** Device-memory budget available to one Worker's KV cache. */
-  uint64_t kv_cache_bytes_per_worker_{0};
+/** Model-level limits loaded from model metadata. */
+struct ModelConfig final {
+  /** Maximum length of one sequence, including prompt and generated tokens. */
+  int32_t max_model_len_{0};
 };
 
-/** Parallelism and capacity inputs consumed by the Planner. */
+/** KV-cache storage policy. */
+struct KVCacheConfig final {
+  /** Number of tokens stored in one paged KV-cache block. */
+  int32_t block_size_{0};
+
+  /** Device memory budget available to the KV cache on each rank. */
+  uint64_t kv_cache_memory_bytes_{0};
+};
+
+/** Parallelism, model, and cache inputs consumed by the Planner. */
 struct PlanConfig final {
   /** TP, DP, and EP configuration. */
   ParallelConfig parallel_;
 
-  /** Per-Worker execution limits. */
-  ExecutionLimits limits_;
+  /** Model limits used by the scheduler and KV cache manager. */
+  ModelConfig model_;
 
-  /** Number of tokens stored in one paged KV-cache block. */
-  int32_t kv_cache_block_size_{0};
-
-  /** Maximum per-Worker extent for each named dynamic dimension. */
-  std::unordered_map<std::string, int64_t> dynamic_dimension_capacities_;
+  /** KV-cache memory and paging policy. */
+  KVCacheConfig kv_cache_;
 };
 
-/** Decoder scheduling limits applied when forming one engine step. */
+/** Scheduling limits applied when forming one engine step. */
 struct SchedulerConfig final {
-  /** Maximum packed tokens selected across all DP replicas. */
-  int32_t max_batch_tokens_{0};
+  /** Maximum packed tokens selected in one scheduler iteration. */
+  int32_t max_num_batched_tokens_{0};
 
-  /** Maximum sequences selected across all DP replicas. */
-  int32_t max_batch_sequences_{0};
+  /** Maximum sequences selected in one scheduler iteration. */
+  int32_t max_num_seqs_{0};
 
-  /** Maximum prompt tokens admitted from one sequence in one step. */
+  /** Decoder-only maximum prompt tokens admitted from one sequence in one step. */
   int32_t prefill_chunk_size_{0};
 };
 
@@ -100,7 +95,7 @@ struct Config final {
   /** Planner configuration. */
   PlanConfig plan_;
 
-  /** Decoder scheduler configuration; zero-initialized in embedding mode. */
+  /** Scheduler configuration; zero-initialized in embedding mode. */
   SchedulerConfig scheduler_;
 
   /** Validates configuration-local invariants before Engine construction. */

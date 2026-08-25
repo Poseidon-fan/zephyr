@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <utility>
 #include <vector>
@@ -52,11 +53,11 @@ class Sigmoid final : public CloneableInstruction<Sigmoid> {
 /** Materializes one contiguous slice for each result of a split. */
 class Split final : public CloneableInstruction<Split> {
  public:
-  Split(BufferView input, int32_t dimension, std::vector<BufferView> outputs)
+  Split(BufferView input, size_t dimension, std::vector<BufferView> outputs)
       : input_(std::move(input)), dimension_(dimension), outputs_(std::move(outputs)) {}
 
   BufferView input_;
-  int32_t dimension_;
+  size_t dimension_;
   std::vector<BufferView> outputs_;
 };
 

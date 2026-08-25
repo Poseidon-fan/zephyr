@@ -11,14 +11,11 @@ auto MakeDecoderConfig() -> Config {
   config.runtime_.devices_ = {ttl::Device{0}, ttl::Device{1}};
   config.plan_.parallel_.tensor_parallel_size_ = 2;
   config.plan_.parallel_.data_parallel_size_ = 1;
-  config.plan_.limits_.max_tokens_per_worker_ = 1024;
-  config.plan_.limits_.max_sequences_per_worker_ = 8;
-  config.plan_.limits_.max_sequence_length_ = 4096;
-  config.plan_.limits_.kv_cache_bytes_per_worker_ = 1U << 30U;
-  config.plan_.kv_cache_block_size_ = 16;
-  config.plan_.dynamic_dimension_capacities_.emplace("tokens", 1024);
-  config.scheduler_.max_batch_tokens_ = 1024;
-  config.scheduler_.max_batch_sequences_ = 8;
+  config.plan_.model_.max_model_len_ = 4096;
+  config.plan_.kv_cache_.kv_cache_memory_bytes_ = 1U << 30U;
+  config.plan_.kv_cache_.block_size_ = 16;
+  config.scheduler_.max_num_batched_tokens_ = 1024;
+  config.scheduler_.max_num_seqs_ = 8;
   config.scheduler_.prefill_chunk_size_ = 512;
   return config;
 }
@@ -49,56 +46,46 @@ TEST(ConfigTest, RejectsDuplicateDevices) {
   EXPECT_THROW(config.Validate(), ConfigurationException);
 }
 
-TEST(ConfigTest, RejectsInvalidWorkerLimits) {
+TEST(ConfigTest, RejectsInvalidSchedulerLimits) {
   auto config = MakeDecoderConfig();
-  config.plan_.limits_.max_tokens_per_worker_ = 0;
+  config.scheduler_.max_num_batched_tokens_ = 0;
   EXPECT_THROW(config.Validate(), ConfigurationException);
 }
 
-TEST(ConfigTest, RejectsInvalidDynamicDimensionCapacity) {
+TEST(ConfigTest, RejectsMoreSequencesThanTokens) {
   auto config = MakeDecoderConfig();
-  config.plan_.dynamic_dimension_capacities_.at("tokens") = 0;
+  config.scheduler_.max_num_batched_tokens_ = 7;
+  config.scheduler_.max_num_seqs_ = 8;
   EXPECT_THROW(config.Validate(), ConfigurationException);
 }
 
-TEST(ConfigTest, RejectsEmptyDynamicDimensionName) {
+TEST(ConfigTest, RejectsInvalidModelLength) {
   auto config = MakeDecoderConfig();
-  config.plan_.dynamic_dimension_capacities_.emplace("", 1);
+  config.plan_.model_.max_model_len_ = 0;
   EXPECT_THROW(config.Validate(), ConfigurationException);
 }
 
-TEST(ConfigTest, RejectsBatchLimitsAboveWorkerCapacity) {
-  auto config = MakeDecoderConfig();
-  config.scheduler_.max_batch_tokens_ = 2049;
-  EXPECT_THROW(config.Validate(), ConfigurationException);
-}
-
-TEST(ConfigTest, RejectsSequenceBatchLimitsAboveWorkerCapacity) {
-  auto config = MakeDecoderConfig();
-  config.scheduler_.max_batch_sequences_ = 9;
-  EXPECT_THROW(config.Validate(), ConfigurationException);
-}
-
-TEST(ConfigTest, RejectsPrefillChunkAboveWorkerCapacity) {
+TEST(ConfigTest, RejectsPrefillChunkAboveTokenBudget) {
   auto config = MakeDecoderConfig();
   config.scheduler_.prefill_chunk_size_ = 1025;
   EXPECT_THROW(config.Validate(), ConfigurationException);
 }
 
-TEST(ConfigTest, EmbeddingDoesNotUseSchedulerOrKvSettings) {
+TEST(ConfigTest, EmbeddingUsesSchedulerWithoutKvCache) {
   auto config = MakeDecoderConfig();
   config.runner_mode_ = RunnerMode::EMBEDDING;
-  config.plan_.limits_.kv_cache_bytes_per_worker_ = 0;
-  config.plan_.kv_cache_block_size_ = 0;
-  config.scheduler_ = {};
+  config.plan_.kv_cache_.kv_cache_memory_bytes_ = 0;
+  config.plan_.kv_cache_.block_size_ = 0;
+  config.scheduler_.prefill_chunk_size_ = 0;
 
   EXPECT_NO_THROW(config.Validate());
 }
 
-TEST(ConfigTest, RejectsSchedulerSettingsForEmbedding) {
+TEST(ConfigTest, RejectsPrefillChunkForEmbedding) {
   auto config = MakeDecoderConfig();
   config.runner_mode_ = RunnerMode::EMBEDDING;
-  config.scheduler_.max_batch_tokens_ = 1;
+  config.plan_.kv_cache_ = {};
+  config.scheduler_.prefill_chunk_size_ = 1;
   EXPECT_THROW(config.Validate(), ConfigurationException);
 }
 

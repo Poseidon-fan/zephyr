@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <span>
 #include <string_view>
@@ -16,6 +17,8 @@ class Add final : public Operation {
 
   Add(const Value *lhs, const Value *rhs);
 
+  void Accept(OperationVisitor &visitor) const override { visitor.Visit(*this); }
+
   [[nodiscard]] auto GetName() const -> std::string_view override { return NAME; }
   [[nodiscard]] auto ToString(const OperationIndices &operation_indices) const -> std::string override;
   void Verify() const override;
@@ -27,6 +30,8 @@ class Multiply final : public Operation {
   static constexpr std::string_view NAME = "tensor.multiply";
 
   Multiply(const Value *lhs, const Value *rhs);
+
+  void Accept(OperationVisitor &visitor) const override { visitor.Visit(*this); }
 
   [[nodiscard]] auto GetName() const -> std::string_view override { return NAME; }
   [[nodiscard]] auto ToString(const OperationIndices &operation_indices) const -> std::string override;
@@ -40,6 +45,8 @@ class Silu final : public Operation {
 
   explicit Silu(const Value *input);
 
+  void Accept(OperationVisitor &visitor) const override { visitor.Visit(*this); }
+
   [[nodiscard]] auto GetName() const -> std::string_view override { return NAME; }
   [[nodiscard]] auto ToString(const OperationIndices &operation_indices) const -> std::string override;
   void Verify() const override;
@@ -52,6 +59,8 @@ class Sigmoid final : public Operation {
 
   explicit Sigmoid(const Value *input);
 
+  void Accept(OperationVisitor &visitor) const override { visitor.Visit(*this); }
+
   [[nodiscard]] auto GetName() const -> std::string_view override { return NAME; }
   [[nodiscard]] auto ToString(const OperationIndices &operation_indices) const -> std::string override;
   void Verify() const override;
@@ -63,6 +72,8 @@ class Reshape final : public Operation {
   static constexpr std::string_view NAME = "tensor.reshape";
 
   Reshape(const Value *input, Shape shape);
+
+  void Accept(OperationVisitor &visitor) const override { visitor.Visit(*this); }
 
   [[nodiscard]] auto GetShape() const -> const Shape & { return shape_; }
   [[nodiscard]] auto GetName() const -> std::string_view override { return NAME; }
@@ -78,16 +89,18 @@ class Split final : public Operation {
  public:
   static constexpr std::string_view NAME = "tensor.split";
 
-  Split(const Value *input, int64_t dimension, std::vector<int64_t> sizes);
+  Split(const Value *input, size_t dimension, std::vector<int64_t> sizes);
 
-  [[nodiscard]] auto GetDimension() const -> int64_t { return dimension_; }
+  void Accept(OperationVisitor &visitor) const override { visitor.Visit(*this); }
+
+  [[nodiscard]] auto GetDimension() const -> size_t { return dimension_; }
   [[nodiscard]] auto GetSizes() const -> std::span<const int64_t> { return sizes_; }
   [[nodiscard]] auto GetName() const -> std::string_view override { return NAME; }
   [[nodiscard]] auto ToString(const OperationIndices &operation_indices) const -> std::string override;
   void Verify() const override;
 
  private:
-  int64_t dimension_;
+  size_t dimension_;
   std::vector<int64_t> sizes_;
 };
 

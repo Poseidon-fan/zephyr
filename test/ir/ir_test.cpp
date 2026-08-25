@@ -29,12 +29,12 @@ TEST(IrValueTest, FormatsValueReferences) {
 
 TEST(IrOperationTest, InfersLinearOutputType) {
   const auto input =
-      Input{"hidden", {.dtype_ = ttl::DType::BFLOAT16, .shape_ = {DynamicDimension{"tokens"}, int64_t{4}}}};
+      Input{"hidden", {.dtype_ = ttl::DType::BFLOAT16, .shape_ = {DynamicDimension{TOKEN_DIMENSION}, int64_t{4}}}};
   const auto weight = Parameter{"weight", {.dtype_ = ttl::DType::BFLOAT16, .shape_ = {int64_t{8}, int64_t{4}}}};
   const auto operation = Linear{&input, &weight};
   ASSERT_EQ(operation.GetResultTypes().size(), 1U);
   EXPECT_EQ(operation.GetResultTypes()[0],
-            (TensorType{.dtype_ = ttl::DType::BFLOAT16, .shape_ = {DynamicDimension{"tokens"}, int64_t{8}}}));
+            (TensorType{.dtype_ = ttl::DType::BFLOAT16, .shape_ = {DynamicDimension{TOKEN_DIMENSION}, int64_t{8}}}));
   EXPECT_NO_THROW(operation.Verify());
 }
 
@@ -53,7 +53,7 @@ TEST(IrOperationTest, RejectsInvalidReshape) {
 
 TEST(IrModelTest, PrintsCompleteModelThroughOperationDispatch) {
   auto input =
-      MakeInput("hidden", {.dtype_ = ttl::DType::BFLOAT16, .shape_ = {DynamicDimension{"tokens"}, int64_t{4}}});
+      MakeInput("hidden", {.dtype_ = ttl::DType::BFLOAT16, .shape_ = {DynamicDimension{TOKEN_DIMENSION}, int64_t{4}}});
   auto weight = MakeParameter("weight", {.dtype_ = ttl::DType::BFLOAT16, .shape_ = {int64_t{8}, int64_t{4}}});
   const auto *input_pointer = input.get();
   const auto *weight_pointer = weight.get();

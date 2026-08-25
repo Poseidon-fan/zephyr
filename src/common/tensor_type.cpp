@@ -1,5 +1,6 @@
 #include "common/tensor_type.h"
 
+#include <algorithm>
 #include <concepts>
 #include <cstddef>
 #include <string>
@@ -32,6 +33,46 @@ auto DTypeToString(ttl::DType dtype) -> std::string_view {
 }
 
 }  // namespace
+
+auto GetStaticExtent(const Dimension &dimension, std::string_view name) -> int64_t {
+  const auto *extent = std::get_if<int64_t>(&dimension);
+  if (extent == nullptr || *extent <= 0) {
+    throw InvalidArgumentException{std::string{name} + " must be a positive static dimension"};
+  }
+  return *extent;
+}
+
+auto ResolveShape(const Shape &shape, std::span<const DynamicDimensionBinding> bindings) -> std::vector<int64_t> {
+  auto resolved = std::vector<int64_t>{};
+  resolved.reserve(shape.size());
+  for (const auto &dimension : shape) {
+    if (const auto *extent = std::get_if<int64_t>(&dimension); extent != nullptr) {
+      resolved.push_back(*extent);
+      continue;
+    }
+
+    const auto &name = std::get<DynamicDimension>(dimension).name_;
+    const auto iterator = std::ranges::find_if(
+        bindings, [&name](const DynamicDimensionBinding &binding) { return binding.name_ == name; });
+    if (iterator == bindings.end()) {
+      throw InvalidArgumentException{"missing dynamic dimension binding: " + name};
+    }
+    if (iterator->extent_ < 0) {
+      throw InvalidArgumentException{"dynamic dimension extent must not be negative: " + name};
+    }
+    resolved.push_back(iterator->extent_);
+  }
+  return resolved;
+}
+
+auto MakeFullSlice(const Shape &shape, std::string_view name) -> TensorSlice {
+  auto slice = TensorSlice{};
+  slice.reserve(shape.size());
+  for (const auto &dimension : shape) {
+    slice.push_back(TensorRange{.begin_ = 0, .end_ = GetStaticExtent(dimension, name)});
+  }
+  return slice;
+}
 
 auto TensorType::ToString() const -> std::string {
   auto text = std::string{"tensor<["};

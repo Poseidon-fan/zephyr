@@ -10,7 +10,6 @@
 #include <ttl/tensor/dtype.hpp>
 
 #include "common/types.h"
-#include "config/config.h"
 #include "planner/buffer.h"
 #include "planner/instruction.h"
 
@@ -25,10 +24,10 @@ struct KVCacheEntry final {
   ttl::DType dtype_;
 
   /** Number of K/V heads resident on this rank. */
-  int32_t kv_head_count_;
+  int64_t kv_head_count_;
 
   /** Width of one attention head. */
-  int32_t head_dimension_;
+  int64_t head_dimension_;
 };
 
 /** Static paged-KV layout shared by all Workers in one executable plan. */
@@ -121,9 +120,6 @@ struct WorkerPlan final {
 
   /** This Worker's DP replica coordinate. */
   int32_t data_parallel_rank_;
-
-  /** Runtime limits enforced by the Executor and KV manager. */
-  ExecutionLimits limits_;
 
   /** All contiguous device buffers owned by this Worker. */
   std::vector<BufferSpec> buffers_;

@@ -23,7 +23,7 @@ struct ExpertWeightViews final {
 class Moe final : public CloneableInstruction<Moe> {
  public:
   Moe(BufferView input, BufferView router_logits, std::optional<BufferView> selection_bias,
-      std::vector<ExpertWeightViews> experts, BufferView output, RoutingScoreFunction score_function, int32_t top_k,
+      std::vector<ExpertWeightViews> experts, BufferView output, RoutingScoreFunction score_function, int64_t top_k,
       RoutingWeightNormalization weight_normalization, float routing_scale,
       std::optional<ExpertGroupRouting> group_routing, GatedActivation activation)
       : input_(std::move(input)),
@@ -44,7 +44,7 @@ class Moe final : public CloneableInstruction<Moe> {
   std::vector<ExpertWeightViews> experts_;
   BufferView output_;
   RoutingScoreFunction score_function_;
-  int32_t top_k_;
+  int64_t top_k_;
   RoutingWeightNormalization weight_normalization_;
   float routing_scale_;
   std::optional<ExpertGroupRouting> group_routing_;
@@ -55,7 +55,7 @@ class Moe final : public CloneableInstruction<Moe> {
 class MoeRouting final : public CloneableInstruction<MoeRouting> {
  public:
   MoeRouting(BufferView router_logits, std::optional<BufferView> selection_bias, BufferView expert_indices,
-             BufferView expert_weights, RoutingScoreFunction score_function, int32_t top_k,
+             BufferView expert_weights, RoutingScoreFunction score_function, int64_t top_k,
              RoutingWeightNormalization weight_normalization, float routing_scale,
              std::optional<ExpertGroupRouting> group_routing)
       : router_logits_(std::move(router_logits)),
@@ -73,7 +73,7 @@ class MoeRouting final : public CloneableInstruction<MoeRouting> {
   BufferView expert_indices_;
   BufferView expert_weights_;
   RoutingScoreFunction score_function_;
-  int32_t top_k_;
+  int64_t top_k_;
   RoutingWeightNormalization weight_normalization_;
   float routing_scale_;
   std::optional<ExpertGroupRouting> group_routing_;

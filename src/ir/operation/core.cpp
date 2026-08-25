@@ -76,14 +76,6 @@ auto RequireValue(const Value *value, std::string_view operation) -> const Value
   return *value;
 }
 
-auto StaticExtent(const Dimension &dimension, std::string_view name) -> int64_t {
-  const auto *extent = std::get_if<int64_t>(&dimension);
-  if (extent == nullptr || *extent <= 0) {
-    throw InvalidArgumentException{std::string{name} + " must be a positive static dimension"};
-  }
-  return *extent;
-}
-
 void VerifyResultTypes(const Operation &operation, std::span<const TensorType> expected) {
   const auto actual = operation.GetResultTypes();
   if (!std::ranges::equal(actual, expected)) {
@@ -104,16 +96,16 @@ auto InferLinearType(const Value &input, const Parameter *weight, const Paramete
   RequireFloating(input_type, Linear::NAME);
   internal::VerifySameDType(input_type, weight->GetType(), Linear::NAME);
 
-  const auto output_features = StaticExtent(weight->GetType().shape_[0], "linear output features");
-  const auto input_features = StaticExtent(weight->GetType().shape_[1], "linear input features");
-  if (StaticExtent(input_type.shape_.back(), "linear input features") != input_features) {
+  const auto output_features = GetStaticExtent(weight->GetType().shape_[0], "linear output features");
+  const auto input_features = GetStaticExtent(weight->GetType().shape_[1], "linear input features");
+  if (GetStaticExtent(input_type.shape_.back(), "linear input features") != input_features) {
     throw InvalidArgumentException{"core.linear input and weight feature dimensions do not match"};
   }
   if (bias != nullptr) {
     internal::VerifyParameterType(*bias);
     internal::VerifySameDType(input_type, bias->GetType(), Linear::NAME);
     if (bias->GetType().shape_.size() != 1 ||
-        StaticExtent(bias->GetType().shape_[0], "linear bias features") != output_features) {
+        GetStaticExtent(bias->GetType().shape_[0], "linear bias features") != output_features) {
       throw InvalidArgumentException{"core.linear bias shape does not match output features"};
     }
   }
@@ -146,8 +138,8 @@ auto InferEmbeddingType(const Value &indices, const Parameter *weight) -> Tensor
     throw InvalidArgumentException{"core.embedding weight must have rank 2"};
   }
   RequireFloating(weight->GetType(), Embedding::NAME);
-  static_cast<void>(StaticExtent(weight->GetType().shape_[0], "embedding vocabulary"));
-  const auto hidden = StaticExtent(weight->GetType().shape_[1], "embedding hidden size");
+  static_cast<void>(GetStaticExtent(weight->GetType().shape_[0], "embedding vocabulary"));
+  const auto hidden = GetStaticExtent(weight->GetType().shape_[1], "embedding hidden size");
 
   auto shape = index_type.shape_;
   shape.emplace_back(hidden);
@@ -164,8 +156,8 @@ auto InferRmsNormType(const Value &input, const Parameter *weight, float epsilon
   internal::VerifyParameterType(*weight);
   internal::VerifySameDType(input_type, weight->GetType(), RmsNorm::NAME);
   if (input_type.shape_.empty() || weight->GetType().shape_.size() != 1 ||
-      StaticExtent(input_type.shape_.back(), "rms norm features") !=
-          StaticExtent(weight->GetType().shape_[0], "rms norm weight features")) {
+      GetStaticExtent(input_type.shape_.back(), "rms norm features") !=
+          GetStaticExtent(weight->GetType().shape_[0], "rms norm weight features")) {
     throw InvalidArgumentException{"core.rms_norm feature dimensions do not match"};
   }
   if (!std::isfinite(epsilon) || epsilon <= 0.0F) {
@@ -193,10 +185,10 @@ auto InferRotaryTypes(const Value &query, const Value &key, const Value &positio
   if (query_type.shape_[0] != key_type.shape_[0] || query_type.shape_[0] != position_type.shape_[0]) {
     throw InvalidArgumentException{"core.rotary_embedding token dimensions do not match"};
   }
-  static_cast<void>(StaticExtent(query_type.shape_[1], "rotary query head count"));
-  static_cast<void>(StaticExtent(key_type.shape_[1], "rotary key head count"));
-  const auto head_dimension = StaticExtent(query_type.shape_[2], "rotary head dimension");
-  if (StaticExtent(key_type.shape_[2], "rotary key head dimension") != head_dimension) {
+  static_cast<void>(GetStaticExtent(query_type.shape_[1], "rotary query head count"));
+  static_cast<void>(GetStaticExtent(key_type.shape_[1], "rotary key head count"));
+  const auto head_dimension = GetStaticExtent(query_type.shape_[2], "rotary head dimension");
+  if (GetStaticExtent(key_type.shape_[2], "rotary key head dimension") != head_dimension) {
     throw InvalidArgumentException{"core.rotary_embedding head dimensions do not match"};
   }
   if (rotary_dimension <= 0 || rotary_dimension > head_dimension || rotary_dimension % 2 != 0) {
@@ -229,14 +221,14 @@ auto InferAttentionType(const Value &query, const Value &key, const Value &value
   if (query_type.shape_[0] != key_type.shape_[0] || query_type.shape_[0] != value_type.shape_[0]) {
     throw InvalidArgumentException{"core.self_attention token dimensions do not match"};
   }
-  const auto query_heads = StaticExtent(query_type.shape_[1], "attention query head count");
-  const auto key_value_heads = StaticExtent(key_type.shape_[1], "attention key/value head count");
+  const auto query_heads = GetStaticExtent(query_type.shape_[1], "attention query head count");
+  const auto key_value_heads = GetStaticExtent(key_type.shape_[1], "attention key/value head count");
   if (value_type.shape_[1] != key_type.shape_[1] || query_heads % key_value_heads != 0) {
     throw InvalidArgumentException{"core.self_attention head counts are incompatible"};
   }
-  const auto head_dimension = StaticExtent(query_type.shape_[2], "attention head dimension");
-  if (StaticExtent(key_type.shape_[2], "attention key head dimension") != head_dimension ||
-      StaticExtent(value_type.shape_[2], "attention value head dimension") != head_dimension) {
+  const auto head_dimension = GetStaticExtent(query_type.shape_[2], "attention head dimension");
+  if (GetStaticExtent(key_type.shape_[2], "attention key head dimension") != head_dimension ||
+      GetStaticExtent(value_type.shape_[2], "attention value head dimension") != head_dimension) {
     throw InvalidArgumentException{"core.self_attention head dimensions do not match"};
   }
   if (mask_kind != AttentionMaskKind::BIDIRECTIONAL && mask_kind != AttentionMaskKind::CAUSAL) {
@@ -284,8 +276,8 @@ auto InferMoeType(const Value &input, const Value &router_logits, const Paramete
                           router_type.shape_.end() - 1)) {
     throw InvalidArgumentException{"core.moe input and router prefix shapes do not match"};
   }
-  const auto hidden = StaticExtent(input_type.shape_.back(), "moe hidden size");
-  const auto expert_count = StaticExtent(router_type.shape_.back(), "moe expert count");
+  const auto hidden = GetStaticExtent(input_type.shape_.back(), "moe hidden size");
+  const auto expert_count = GetStaticExtent(router_type.shape_.back(), "moe expert count");
   if (experts.empty() || experts.size() != static_cast<size_t>(expert_count)) {
     throw InvalidArgumentException{"core.moe expert parameters do not match router expert count"};
   }
@@ -309,7 +301,7 @@ auto InferMoeType(const Value &input, const Value &router_logits, const Paramete
   if (selection_bias != nullptr) {
     internal::VerifyParameterType(*selection_bias);
     if (selection_bias->GetType().dtype_ != ttl::DType::FLOAT32 || selection_bias->GetType().shape_.size() != 1 ||
-        StaticExtent(selection_bias->GetType().shape_[0], "moe selection bias") != expert_count) {
+        GetStaticExtent(selection_bias->GetType().shape_[0], "moe selection bias") != expert_count) {
       throw InvalidArgumentException{"core.moe selection bias must be float32[expert_count]"};
     }
   }
@@ -329,7 +321,8 @@ auto InferMoeType(const Value &input, const Value &router_logits, const Paramete
         expert.down_weight_->GetType().shape_.size() != 2) {
       throw InvalidArgumentException{"core.moe expert weights must have rank 2"};
     }
-    const auto current_intermediate = StaticExtent(expert.gate_weight_->GetType().shape_[0], "moe intermediate size");
+    const auto current_intermediate =
+        GetStaticExtent(expert.gate_weight_->GetType().shape_[0], "moe intermediate size");
     if (intermediate == 0) {
       intermediate = current_intermediate;
     }
