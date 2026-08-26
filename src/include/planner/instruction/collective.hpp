@@ -6,7 +6,7 @@
 
 #include "common/types.hpp"
 #include "planner/buffer.hpp"
-#include "planner/instruction.hpp"
+#include "planner/plan.hpp"
 
 namespace zephyr::planner {
 
