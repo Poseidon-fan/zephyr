@@ -1,11 +1,11 @@
-#include "config/config.h"
+#include "config/config.hpp"
 
 #include <cstddef>
 #include <string>
 #include <string_view>
 #include <unordered_set>
 
-#include "common/exception.h"
+#include "common/exception.hpp"
 
 namespace zephyr {
 namespace {

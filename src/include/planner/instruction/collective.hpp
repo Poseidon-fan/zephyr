@@ -4,9 +4,9 @@
 #include <utility>
 #include <vector>
 
-#include "common/types.h"
-#include "planner/buffer.h"
-#include "planner/instruction.h"
+#include "common/types.hpp"
+#include "planner/buffer.hpp"
+#include "planner/instruction.hpp"
 
 namespace zephyr::planner {
 

@@ -1,4 +1,4 @@
-#include "common/tensor_type.h"
+#include "common/tensor_type.hpp"
 
 #include <algorithm>
 #include <concepts>
@@ -6,7 +6,7 @@
 #include <string>
 #include <string_view>
 
-#include "common/exception.h"
+#include "common/exception.hpp"
 
 namespace zephyr {
 

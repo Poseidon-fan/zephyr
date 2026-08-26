@@ -4,7 +4,7 @@
 #include <string_view>
 #include <utility>
 
-#include "common/exception.h"
+#include "common/exception.hpp"
 #include "gtest/gtest.h"
 
 namespace zephyr {

@@ -1,5 +1,5 @@
-#include "config/config.h"
-#include "common/exception.h"
+#include "config/config.hpp"
+#include "common/exception.hpp"
 #include "gtest/gtest.h"
 
 namespace zephyr {

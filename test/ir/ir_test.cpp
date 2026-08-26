@@ -2,9 +2,9 @@
 #include <utility>
 #include <vector>
 
-#include "common/tensor_type.h"
+#include "common/tensor_type.hpp"
 #include "gtest/gtest.h"
-#include "ir/model.h"
+#include "ir/model.hpp"
 #include "ir/operation/core.hpp"
 #include "ir/operation/tensor.hpp"
 

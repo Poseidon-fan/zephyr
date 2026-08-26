@@ -1,7 +1,7 @@
 #include <cstdint>
 
-#include "common/exception.h"
-#include "common/macros.h"
+#include "common/exception.hpp"
+#include "common/macros.hpp"
 #include "gtest/gtest.h"
 
 namespace zephyr {

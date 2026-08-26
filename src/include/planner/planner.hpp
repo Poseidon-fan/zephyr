@@ -5,10 +5,10 @@
 
 #include <ttl/runtime/runtime.hpp>
 
-#include "common/tensor_type.h"
-#include "config/config.h"
-#include "ir/model.h"
-#include "planner/plan.h"
+#include "common/tensor_type.hpp"
+#include "config/config.hpp"
+#include "ir/model.hpp"
+#include "planner/plan.hpp"
 
 namespace zephyr::planner {
 
@@ -42,8 +42,8 @@ class Planner final {
                            std::span<const DynamicDimensionBinding> bindings) const -> TemplatePlan;
 
   /** Expands a template into rank-local WorkerPlans. */
-  [[nodiscard]] auto Parallelize(const TemplatePlan &plan, const ttl::Runtime &runtime,
-                                 const PlanConfig &config) const -> std::vector<WorkerPlan>;
+  [[nodiscard]] auto Parallelize(const TemplatePlan &plan, const ttl::Runtime &runtime, const PlanConfig &config) const
+      -> std::vector<WorkerPlan>;
 };
 
 }  // namespace zephyr::planner

@@ -1,4 +1,4 @@
-#include "common/macros.h"
+#include "common/macros.hpp"
 
 #include <cstdio>
 #include <cstdlib>

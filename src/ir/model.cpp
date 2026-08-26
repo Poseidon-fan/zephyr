@@ -1,4 +1,4 @@
-#include "ir/model.h"
+#include "ir/model.hpp"
 
 #include <string>
 #include <utility>

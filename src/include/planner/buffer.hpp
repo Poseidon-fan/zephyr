@@ -5,7 +5,7 @@
 
 #include <ttl/tensor/dtype.hpp>
 
-#include "common/tensor_type.h"
+#include "common/tensor_type.hpp"
 
 namespace zephyr::planner {
 

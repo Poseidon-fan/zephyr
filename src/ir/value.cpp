@@ -1,4 +1,4 @@
-#include "ir/value.h"
+#include "ir/value.hpp"
 
 #include <algorithm>
 #include <concepts>
@@ -6,7 +6,7 @@
 #include <type_traits>
 #include <utility>
 
-#include "common/exception.h"
+#include "common/exception.hpp"
 
 namespace zephyr::ir {
 

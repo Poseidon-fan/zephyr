@@ -1,4 +1,4 @@
-#include "common/operator_attributes.h"
+#include "common/operator_attributes.hpp"
 #include "gtest/gtest.h"
 
 namespace zephyr {

@@ -1,6 +1,6 @@
-#include "planner/planner.h"
+#include "planner/planner.hpp"
 
-#include "common/exception.h"
+#include "common/exception.hpp"
 
 namespace zephyr::planner {
 

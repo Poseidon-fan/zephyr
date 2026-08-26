@@ -1,4 +1,4 @@
-#include "planner/planner.h"
+#include "planner/planner.hpp"
 
 #include <algorithm>
 #include <concepts>
@@ -12,12 +12,12 @@
 #include <utility>
 #include <vector>
 
-#include "common/exception.h"
+#include "common/exception.hpp"
 #include "ir/operation/core.hpp"
 #include "ir/operation/tensor.hpp"
-#include "planner/instruction/core.h"
-#include "planner/instruction/moe.h"
-#include "planner/instruction/tensor.h"
+#include "planner/instruction/core.hpp"
+#include "planner/instruction/moe.hpp"
+#include "planner/instruction/tensor.hpp"
 
 namespace zephyr::planner {
 namespace {

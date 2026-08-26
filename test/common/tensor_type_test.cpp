@@ -1,8 +1,8 @@
 #include <array>
 #include <cstdint>
 
-#include "common/exception.h"
-#include "common/tensor_type.h"
+#include "common/exception.hpp"
+#include "common/tensor_type.hpp"
 #include "gtest/gtest.h"
 
 namespace zephyr {

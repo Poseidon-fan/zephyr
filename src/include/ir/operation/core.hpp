@@ -6,8 +6,8 @@
 #include <string_view>
 #include <vector>
 
-#include "common/operator_attributes.h"
-#include "ir/value.h"
+#include "common/operator_attributes.hpp"
+#include "ir/value.hpp"
 
 namespace zephyr::ir {
 

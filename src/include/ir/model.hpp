@@ -6,7 +6,7 @@
 #include <string_view>
 #include <vector>
 
-#include "ir/value.h"
+#include "ir/value.hpp"
 
 namespace zephyr::ir {
 

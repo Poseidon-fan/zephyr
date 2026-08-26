@@ -10,7 +10,7 @@
 #include <variant>
 #include <vector>
 
-#include "common/tensor_type.h"
+#include "common/tensor_type.hpp"
 #include "ir/operation/visitor.hpp"
 
 namespace zephyr::ir {
@@ -41,9 +41,7 @@ struct Parameter final {
   TensorType type_;
 
   /** Returns the complete parameter declaration. */
-  [[nodiscard]] auto ToString() const -> std::string {
-    return "parameter @" + name_ + " : " + type_.ToString();
-  }
+  [[nodiscard]] auto ToString() const -> std::string { return "parameter @" + name_ + " : " + type_.ToString(); }
 };
 
 /** Identifies one result produced by an Operation. */
