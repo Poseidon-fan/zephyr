@@ -62,15 +62,13 @@ auto MakeMoeOperands(Value input, Value router_logits, const Parameter *selectio
 }  // namespace
 
 Linear::Linear(Value input, const Parameter *weight, const Parameter *bias)
-    : Operation(MakeLinearOperands(input, weight, bias), {InferLinearType(input, weight)}),
-      weight_(weight),
-      bias_(bias) {}
+    : Operation(MakeLinearOperands(input, weight, bias), {InferLinearType(input, weight)}) {}
 
 Embedding::Embedding(Value indices, const Parameter *weight)
-    : Operation({indices, weight}, {InferEmbeddingType(indices, weight)}), weight_(weight) {}
+    : Operation({indices, weight}, {InferEmbeddingType(indices, weight)}) {}
 
 RmsNorm::RmsNorm(Value input, const Parameter *weight, float epsilon)
-    : Operation({input, weight}, {GetType(input)}), weight_(weight), epsilon_(epsilon) {}
+    : Operation({input, weight}, {GetType(input)}), epsilon_(epsilon) {}
 
 auto RmsNorm::ToString(const OperationIndices &operation_indices) const -> std::string {
   return Format(operation_indices, " {epsilon = " + FloatToString(epsilon_) + "}");
@@ -116,14 +114,30 @@ Moe::Moe(Value input, Value router_logits, const Parameter *selection_bias, std:
          RoutingScoreFunction score_function, int64_t top_k, RoutingWeightNormalization weight_normalization,
          float routing_scale, std::optional<ExpertGroupRouting> group_routing, GatedActivation activation)
     : Operation(MakeMoeOperands(input, router_logits, selection_bias, experts), {GetType(input)}),
-      selection_bias_(selection_bias),
-      experts_(std::move(experts)),
       score_function_(score_function),
       top_k_(top_k),
       weight_normalization_(weight_normalization),
       routing_scale_(routing_scale),
       group_routing_(group_routing),
       activation_(activation) {}
+
+auto Moe::GetSelectionBias() const -> const Parameter * {
+  const auto operands = GetOperands();
+  return operands.size() % 3 == 0 ? std::get<const Parameter *>(operands[2]) : nullptr;
+}
+
+auto Moe::GetExpertCount() const -> size_t {
+  const auto operand_count = GetOperands().size();
+  return (operand_count - 2 - (GetSelectionBias() == nullptr ? 0 : 1)) / 3;
+}
+
+auto Moe::GetExpert(size_t index) const -> MoeExpertParameters {
+  const auto operands = GetOperands();
+  const auto offset = 2 + (GetSelectionBias() == nullptr ? 0 : 1) + index * 3;
+  return MoeExpertParameters{.gate_weight_ = std::get<const Parameter *>(operands[offset]),
+                             .up_weight_ = std::get<const Parameter *>(operands[offset + 1]),
+                             .down_weight_ = std::get<const Parameter *>(operands[offset + 2])};
+}
 
 auto Moe::ToString(const OperationIndices &operation_indices) const -> std::string {
   auto attributes =

@@ -1,8 +1,8 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
-#include <span>
 #include <string_view>
 #include <vector>
 
@@ -21,13 +21,11 @@ class Linear final : public Operation {
   void Accept(OperationVisitor &visitor) const override { visitor.Visit(*this); }
 
   [[nodiscard]] auto GetInput() const -> const Value & { return GetOperands()[0]; }
-  [[nodiscard]] auto GetWeight() const -> const Parameter * { return weight_; }
-  [[nodiscard]] auto GetBias() const -> const Parameter * { return bias_; }
+  [[nodiscard]] auto GetWeight() const -> const Parameter * { return std::get<const Parameter *>(GetOperands()[1]); }
+  [[nodiscard]] auto GetBias() const -> const Parameter * {
+    return GetOperands().size() == 3 ? std::get<const Parameter *>(GetOperands()[2]) : nullptr;
+  }
   [[nodiscard]] auto GetName() const -> std::string_view override { return NAME; }
-
- private:
-  const Parameter *weight_;
-  const Parameter *bias_;
 };
 
 /** Looks up rows from a vocabulary parameter. */
@@ -40,11 +38,8 @@ class Embedding final : public Operation {
   void Accept(OperationVisitor &visitor) const override { visitor.Visit(*this); }
 
   [[nodiscard]] auto GetIndices() const -> const Value & { return GetOperands()[0]; }
-  [[nodiscard]] auto GetWeight() const -> const Parameter * { return weight_; }
+  [[nodiscard]] auto GetWeight() const -> const Parameter * { return std::get<const Parameter *>(GetOperands()[1]); }
   [[nodiscard]] auto GetName() const -> std::string_view override { return NAME; }
-
- private:
-  const Parameter *weight_;
 };
 
 /** Root-mean-square normalization over the last dimension. */
@@ -57,13 +52,12 @@ class RmsNorm final : public Operation {
   void Accept(OperationVisitor &visitor) const override { visitor.Visit(*this); }
 
   [[nodiscard]] auto GetInput() const -> const Value & { return GetOperands()[0]; }
-  [[nodiscard]] auto GetWeight() const -> const Parameter * { return weight_; }
+  [[nodiscard]] auto GetWeight() const -> const Parameter * { return std::get<const Parameter *>(GetOperands()[1]); }
   [[nodiscard]] auto GetEpsilon() const -> float { return epsilon_; }
   [[nodiscard]] auto GetName() const -> std::string_view override { return NAME; }
   [[nodiscard]] auto ToString(const OperationIndices &operation_indices) const -> std::string override;
 
  private:
-  const Parameter *weight_;
   float epsilon_;
 };
 
@@ -130,8 +124,10 @@ class Moe final : public Operation {
 
   void Accept(OperationVisitor &visitor) const override { visitor.Visit(*this); }
 
-  [[nodiscard]] auto GetSelectionBias() const -> const Parameter * { return selection_bias_; }
-  [[nodiscard]] auto GetExperts() const -> std::span<const MoeExpertParameters> { return experts_; }
+  // Operands are laid out as input, router logits, optional selection bias, then gate/up/down per expert.
+  [[nodiscard]] auto GetSelectionBias() const -> const Parameter *;
+  [[nodiscard]] auto GetExpertCount() const -> size_t;
+  [[nodiscard]] auto GetExpert(size_t index) const -> MoeExpertParameters;
   [[nodiscard]] auto GetScoreFunction() const -> RoutingScoreFunction { return score_function_; }
   [[nodiscard]] auto GetTopK() const -> int64_t { return top_k_; }
   [[nodiscard]] auto GetWeightNormalization() const -> RoutingWeightNormalization { return weight_normalization_; }
@@ -142,8 +138,6 @@ class Moe final : public Operation {
   [[nodiscard]] auto ToString(const OperationIndices &operation_indices) const -> std::string override;
 
  private:
-  const Parameter *selection_bias_;
-  std::vector<MoeExpertParameters> experts_;
   RoutingScoreFunction score_function_;
   int64_t top_k_;
   RoutingWeightNormalization weight_normalization_;

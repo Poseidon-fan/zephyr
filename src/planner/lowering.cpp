@@ -95,8 +95,10 @@ class LoweringVisitor final : public ir::OperationVisitor {
   void Visit(const ir::Moe &operation) override {
     Lower(operation, [this, &operation](auto &results) {
       auto experts = std::vector<ExpertWeightViews>{};
-      experts.reserve(operation.GetExperts().size());
-      for (const auto &expert : operation.GetExperts()) {
+      const auto expert_count = operation.GetExpertCount();
+      experts.reserve(expert_count);
+      for (size_t index = 0; index < expert_count; index++) {
+        const auto expert = operation.GetExpert(index);
         experts.push_back(ExpertWeightViews{.gate_ = GetParameter(expert.gate_weight_),
                                             .up_ = GetParameter(expert.up_weight_),
                                             .down_ = GetParameter(expert.down_weight_)});
