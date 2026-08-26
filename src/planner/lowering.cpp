@@ -144,10 +144,8 @@ class LoweringVisitor final : public ir::OperationVisitor {
 
   void Visit(const ir::Reshape &operation) override {
     Lower(operation, [this, &operation](auto &results) {
-      const auto input = GetValue(operation.GetOperands()[0]);
-      results[0].buffer_ = input.buffer_;
-      results[0].element_offset_ = input.element_offset_;
-      plan_.buffers_.pop_back();
+      plan_.instructions_.push_back(
+          std::make_unique<planner::Reshape>(GetValue(operation.GetOperands()[0]), results[0]));
     });
   }
 

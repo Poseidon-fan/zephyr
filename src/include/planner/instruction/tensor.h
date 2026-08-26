@@ -50,6 +50,15 @@ class Sigmoid final : public CloneableInstruction<Sigmoid> {
   BufferView output_;
 };
 
+/** Reshapes a tensor without changing its element order. */
+class Reshape final : public CloneableInstruction<Reshape> {
+ public:
+  Reshape(BufferView input, BufferView output) : input_(std::move(input)), output_(std::move(output)) {}
+
+  BufferView input_;
+  BufferView output_;
+};
+
 /** Materializes one contiguous slice for each result of a split. */
 class Split final : public CloneableInstruction<Split> {
  public:
@@ -60,8 +69,5 @@ class Split final : public CloneableInstruction<Split> {
   size_t dimension_;
   std::vector<BufferView> outputs_;
 };
-
-/** Copies a metadata-only reshape into the instruction view without a runtime action. */
-// Reshape deliberately has no Instruction representation. Its BufferView is rewritten during lowering.
 
 }  // namespace zephyr::planner
