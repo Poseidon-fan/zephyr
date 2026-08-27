@@ -5,15 +5,12 @@
 
 namespace zephyr::internal {
 
-/** Reports a failed debug assertion and terminates the process. */
 [[noreturn]] void AssertionFailure(std::string_view expression, std::string_view message,
                                    std::source_location location) noexcept;
 
-/** Reports a failed invariant required in every build and terminates the process. */
 [[noreturn]] void EnsureFailure(std::string_view expression, std::string_view message,
                                 std::source_location location) noexcept;
 
-/** Reports an unreachable control-flow path and terminates the process. */
 [[noreturn]] void UnreachableFailure(std::string_view message, std::source_location location) noexcept;
 
 }  // namespace zephyr::internal

@@ -1,4 +1,4 @@
-#include "common/macros.hpp"
+#include "common/macros.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -9,14 +9,12 @@ namespace zephyr {
 
 namespace {
 
-/** Writes a string view without requiring a null terminator. */
 void PrintString(std::string_view value) noexcept {
   if (!value.empty()) {
     static_cast<void>(std::fwrite(value.data(), sizeof(char), value.size(), stderr));
   }
 }
 
-/** Writes an optional diagnostic suffix and flushes stderr before termination. */
 void PrintMessage(std::string_view message) noexcept {
   if (!message.empty()) {
     std::fputs(": ", stderr);

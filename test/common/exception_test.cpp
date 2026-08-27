@@ -4,7 +4,7 @@
 #include <string_view>
 #include <utility>
 
-#include "common/exception.hpp"
+#include "common/exception.h"
 #include "gtest/gtest.h"
 
 namespace zephyr {
@@ -22,7 +22,7 @@ TEST(ExceptionTest, BaseException) {
 }
 
 TEST(ExceptionTest, CapturesConstructionLocation) {
-  const auto expected_line = static_cast<uint_least32_t>(__LINE__ + 1);
+  const auto expected_line = __LINE__ + 1;
   const ConfigurationException exception{"invalid configuration"};
 
   EXPECT_STREQ(exception.GetLocation().file_name(), __FILE__);
@@ -40,14 +40,11 @@ TEST(ExceptionTest, SpecializedExceptionForwardsLocation) {
 }
 
 TEST(ExceptionTest, ExceptionTypeToString) {
-  constexpr std::array<std::pair<ExceptionType, std::string_view>, 8> cases{{
+  constexpr std::array<std::pair<ExceptionType, std::string_view>, 5> cases{{
       {ExceptionType::INVALID_ARGUMENT, "Invalid Argument"},
       {ExceptionType::NOT_IMPLEMENTED, "Not Implemented"},
       {ExceptionType::CONFIGURATION, "Configuration"},
       {ExceptionType::OUT_OF_MEMORY, "Out of Memory"},
-      {ExceptionType::IO, "IO"},
-      {ExceptionType::KV_CACHE_CAPACITY, "KV Cache Capacity"},
-      {ExceptionType::EXECUTION, "Execution"},
       {ExceptionType::INTERNAL, "Internal"},
   }};
 
@@ -65,18 +62,12 @@ TEST(ExceptionTest, SpecializedExceptions) {
   const NotImplementedException not_implemented{"not implemented"};
   const ConfigurationException configuration{"invalid configuration"};
   const OutOfMemoryException out_of_memory{"out of memory"};
-  const IOException io{"io failure"};
-  const KVCacheCapacityException capacity{"cache capacity"};
-  const ExecutionException execution{"execution failure"};
   const InternalException internal{"internal failure"};
 
   EXPECT_EQ(invalid_argument.GetType(), ExceptionType::INVALID_ARGUMENT);
   EXPECT_EQ(not_implemented.GetType(), ExceptionType::NOT_IMPLEMENTED);
   EXPECT_EQ(configuration.GetType(), ExceptionType::CONFIGURATION);
   EXPECT_EQ(out_of_memory.GetType(), ExceptionType::OUT_OF_MEMORY);
-  EXPECT_EQ(io.GetType(), ExceptionType::IO);
-  EXPECT_EQ(capacity.GetType(), ExceptionType::KV_CACHE_CAPACITY);
-  EXPECT_EQ(execution.GetType(), ExceptionType::EXECUTION);
   EXPECT_EQ(internal.GetType(), ExceptionType::INTERNAL);
 }
 

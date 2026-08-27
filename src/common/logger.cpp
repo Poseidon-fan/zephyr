@@ -1,4 +1,4 @@
-#include "common/logger.hpp"
+#include "common/logger.h"
 
 #include <cstdio>
 #include <exception>
@@ -12,7 +12,6 @@
 namespace zephyr {
 namespace {
 
-/** Converts the public Zephyr severity into the backing spdlog severity. */
 auto ToSpdlogLevel(LogLevel level) noexcept -> spdlog::level::level_enum {
   switch (level) {
     case LogLevel::TRACE:
@@ -31,7 +30,6 @@ auto ToSpdlogLevel(LogLevel level) noexcept -> spdlog::level::level_enum {
   return spdlog::level::off;
 }
 
-/** Converts a backing spdlog severity into the public Zephyr severity. */
 auto FromSpdlogLevel(spdlog::level::level_enum level) noexcept -> LogLevel {
   switch (level) {
     case spdlog::level::trace:
@@ -52,7 +50,6 @@ auto FromSpdlogLevel(spdlog::level::level_enum level) noexcept -> LogLevel {
   return LogLevel::OFF;
 }
 
-/** Returns the lazily constructed process-wide logger. */
 auto Logger() -> spdlog::logger & {
   static auto logger = [] {
     auto sink = std::make_shared<spdlog::sinks::stderr_sink_mt>();
@@ -69,7 +66,6 @@ auto Logger() -> spdlog::logger & {
   return logger;
 }
 
-/** Reports a logging-infrastructure failure without recursively using the logger. */
 void ReportLogFailure(std::source_location location, const char *message) noexcept {
   std::fprintf(stderr, "%s:%u in %s: logging failed: %s\n", location.file_name(),
                static_cast<unsigned int>(location.line()), location.function_name(), message);
