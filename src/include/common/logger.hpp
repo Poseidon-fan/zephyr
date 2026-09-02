@@ -2,7 +2,6 @@
 
 #include <cstdint>
 #include <source_location>
-#include <utility>
 
 #include <fmt/base.h>
 
