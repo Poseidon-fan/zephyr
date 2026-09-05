@@ -2,7 +2,7 @@
 #include <cstdint>
 #include <string>
 
-#include "common/logger.h"
+#include "common/logger.hpp"
 #include "gtest/gtest.h"
 
 namespace zephyr {

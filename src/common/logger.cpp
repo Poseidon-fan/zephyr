@@ -1,4 +1,4 @@
-#include "common/logger.h"
+#include "common/logger.hpp"
 
 #include <cstdio>
 #include <exception>

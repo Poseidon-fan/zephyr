@@ -22,4 +22,11 @@ set(SPDLOG_FMT_EXTERNAL ON)
 set(SPDLOG_USE_STD_FORMAT OFF)
 add_subdirectory(spdlog EXCLUDE_FROM_ALL)
 
+# nlohmann/json 3.11.3 is used while parsing checkpoint metadata. Keep the
+# dependency in this directory so builds do not depend on a host installation
+# or fetch sources during configuration.
+set(JSON_BuildTests OFF)
+set(JSON_Install OFF)
+add_subdirectory(json EXCLUDE_FROM_ALL)
+
 include("${CMAKE_CURRENT_LIST_DIR}/cmake/GoogleTestProvider.cmake")
