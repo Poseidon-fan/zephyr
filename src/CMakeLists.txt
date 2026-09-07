@@ -1,4 +1,5 @@
 add_subdirectory(common)
+add_subdirectory(parallel)
 add_subdirectory(weight)
 
 add_library(zephyr_core STATIC vector_adder.cpp ${ALL_OBJECT_FILES})
