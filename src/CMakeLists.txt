@@ -4,6 +4,7 @@ add_subdirectory(attention)
 add_subdirectory(parallel)
 add_subdirectory(weight)
 add_subdirectory(layer)
+add_subdirectory(model)
 
 add_library(zephyr_core STATIC vector_adder.cpp ${ALL_OBJECT_FILES})
 add_library(zephyr::core ALIAS zephyr_core)
