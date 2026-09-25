@@ -23,7 +23,7 @@ struct ComputedBlocks final {
  */
 class KVCacheManager final {
  public:
-  KVCacheManager(size_t num_gpu_blocks, size_t block_size, std::vector<cache_group_id_t> cache_group_ids = {0});
+  explicit KVCacheManager(CacheCapacity capacity, std::vector<cache_group_id_t> cache_group_ids = {0});
 
   KVCacheManager(const KVCacheManager &) = delete;
   auto operator=(const KVCacheManager &) -> KVCacheManager & = delete;
@@ -50,10 +50,15 @@ class KVCacheManager final {
   /** Release all physical blocks and reservations owned by a sequence. */
   void Free(sequence_id_t sequence_id);
 
-  /** Return the sequence's logical block table while the sequence remains unchanged. */
-  [[nodiscard]] auto GetBlockIds(sequence_id_t sequence_id) const -> std::optional<std::span<const block_id_t>>;
+  /** Return physical slots for a token range; null and unallocated blocks produce PADDING_SLOT_ID. */
+  [[nodiscard]] auto GetSlotMapping(sequence_id_t sequence_id, size_t start_token, size_t num_tokens) const
+      -> std::optional<std::vector<int64_t>>;
 
-  [[nodiscard]] auto GetBlockSize() const noexcept -> size_t { return block_size_; }
+  /** Return a sequence's physical page table padded to a fixed batch width. */
+  [[nodiscard]] auto GetBlockTable(sequence_id_t sequence_id, size_t max_blocks) const
+      -> std::optional<std::vector<int32_t>>;
+
+  [[nodiscard]] auto GetBlockSize() const noexcept -> size_t { return capacity_.block_size_; }
   [[nodiscard]] auto GetNumGpuBlocks() const noexcept -> size_t { return block_pool_.GetNumGpuBlocks(); }
   [[nodiscard]] auto GetNumFreeBlocks() const noexcept -> size_t { return block_pool_.GetNumFreeBlocks(); }
   [[nodiscard]] auto GetNumUnreservedBlocks() const -> size_t;
@@ -72,7 +77,7 @@ class KVCacheManager final {
   void DebugAssertReservationInvariant() const;
 
   BlockPool block_pool_;
-  size_t block_size_;
+  CacheCapacity capacity_;
   std::vector<cache_group_id_t> cache_group_ids_;
   std::unordered_map<sequence_id_t, SequenceBlocks> sequence_blocks_;
   size_t total_reserved_blocks_{0};

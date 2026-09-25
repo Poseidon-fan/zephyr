@@ -8,10 +8,10 @@
 
 #include <cuda_runtime.h>
 
+#include <ttl/runtime/cuda_dtype.hpp>
 #include "ttl/common/error.hpp"
 #include "ttl/internal/kernels/elementwise/elementwise_kernel.cuh"
 #include "ttl/internal/ops/elementwise_iterator.hpp"
-#include "ttl/internal/runtime/library/cuda_dtype.hpp"
 #include "ttl/tensor/dtype.hpp"
 #include "ttl/tensor/scalar.hpp"
 

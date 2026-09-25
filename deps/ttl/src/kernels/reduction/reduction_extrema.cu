@@ -6,10 +6,10 @@
 #include <cuda_runtime.h>
 #include <cuda/std/type_traits>
 
+#include <ttl/runtime/cuda_dtype.hpp>
 #include "ttl/common/error.hpp"
 #include "ttl/internal/kernels/reduction/reduction_kernel.cuh"
 #include "ttl/internal/kernels/reduction/reduction_operations.cuh"
-#include "ttl/internal/runtime/library/cuda_dtype.hpp"
 #include "ttl/tensor/dtype.hpp"
 
 namespace ttl::internal {

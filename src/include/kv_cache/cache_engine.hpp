@@ -1,7 +1,6 @@
 #pragma once
 
 #include <cstddef>
-#include <cstdint>
 #include <vector>
 
 #include <ttl/common/device.hpp>
@@ -10,35 +9,29 @@
 #include <ttl/tensor/dtype.hpp>
 #include <ttl/tensor/tensor.hpp>
 
-namespace zephyr::kv_cache {
+#include "kv_cache/types.hpp"
 
-/** Physical KV tensor layout used by the paged-attention backend. */
-enum class KvCacheLayout : uint8_t {
-  STANDARD = 0,
-};
+namespace zephyr::kv_cache {
 
 /** Layer-local model dimensions needed to allocate one paged KV cache. */
 struct LayerCacheSpec final {
   size_t num_kv_heads_;
   size_t key_head_dim_;
   size_t value_head_dim_;
-  KvCacheLayout layout_{KvCacheLayout::STANDARD};
 };
 
 /** Parameters shared by every layer in one rank-local cache engine. */
 struct CacheConfig final {
-  size_t block_size_;
-  size_t num_gpu_blocks_;
+  CacheCapacity capacity_;
   ttl::DType dtype_;
   std::vector<LayerCacheSpec> layer_specs_;
 };
 
-/** GPU tensors and layout metadata for one transformer layer. */
+/** GPU cache tensors and their device for one transformer layer. */
 struct LayerCache final {
   ttl::Tensor key_cache_;
   ttl::Tensor value_cache_;
   ttl::Device device_;
-  KvCacheLayout layout_;
 };
 
 /**

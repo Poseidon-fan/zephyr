@@ -12,9 +12,9 @@
 
 namespace zephyr::kv_cache {
 
-KVCacheManager::KVCacheManager(size_t num_gpu_blocks, size_t block_size, std::vector<cache_group_id_t> cache_group_ids)
-    : block_pool_(num_gpu_blocks), block_size_(block_size), cache_group_ids_(std::move(cache_group_ids)) {
-  if (block_size_ == 0) {
+KVCacheManager::KVCacheManager(CacheCapacity capacity, std::vector<cache_group_id_t> cache_group_ids)
+    : block_pool_(capacity.num_gpu_blocks_), capacity_(capacity), cache_group_ids_(std::move(cache_group_ids)) {
+  if (capacity_.block_size_ == 0) {
     throw InvalidArgumentException("KV cache block size must be positive");
   }
   if (cache_group_ids_.empty()) {
@@ -38,7 +38,7 @@ auto KVCacheManager::GetComputedBlocks(std::span<const block_hash_t> block_hashe
   }
 
   const auto max_cache_tokens = num_tokens - 1;
-  const auto max_cached_blocks = max_cache_tokens / block_size_;
+  const auto max_cached_blocks = max_cache_tokens / capacity_.block_size_;
   const auto num_blocks_to_check = std::min(max_cached_blocks, block_hashes.size());
   result.block_ids_.reserve(num_blocks_to_check);
 
@@ -49,7 +49,7 @@ auto KVCacheManager::GetComputedBlocks(std::span<const block_hash_t> block_hashe
     }
     result.block_ids_.push_back(*block_id);
   }
-  result.num_computed_tokens_ = result.block_ids_.size() * block_size_;
+  result.num_computed_tokens_ = result.block_ids_.size() * capacity_.block_size_;
   return result;
 }
 
@@ -182,7 +182,7 @@ void KVCacheManager::CacheBlocks(sequence_id_t sequence_id, std::span<const bloc
   }
 
   auto &state = sequence->second;
-  const auto num_full_blocks = std::min(num_computed_tokens / block_size_, state.block_ids_.size());
+  const auto num_full_blocks = std::min(num_computed_tokens / capacity_.block_size_, state.block_ids_.size());
   if (state.num_cached_blocks_ >= num_full_blocks) {
     return;
   }
@@ -217,12 +217,60 @@ void KVCacheManager::Free(sequence_id_t sequence_id) {
   DebugAssertReservationInvariant();
 }
 
-auto KVCacheManager::GetBlockIds(sequence_id_t sequence_id) const -> std::optional<std::span<const block_id_t>> {
+auto KVCacheManager::GetSlotMapping(sequence_id_t sequence_id, size_t start_token, size_t num_tokens) const
+    -> std::optional<std::vector<int64_t>> {
   const auto sequence = sequence_blocks_.find(sequence_id);
   if (sequence == sequence_blocks_.end()) {
     return std::nullopt;
   }
-  return std::span<const block_id_t>{sequence->second.block_ids_};
+  if (num_tokens > std::numeric_limits<size_t>::max() - start_token) {
+    throw InvalidArgumentException("KV cache slot mapping token range overflows");
+  }
+
+  const auto &block_ids = sequence->second.block_ids_;
+  std::vector<int64_t> slots;
+  slots.reserve(num_tokens);
+  for (size_t token = start_token; token < start_token + num_tokens; ++token) {
+    const auto block_index = token / capacity_.block_size_;
+    const auto offset = token % capacity_.block_size_;
+    if (block_index >= block_ids.size()) {
+      slots.push_back(PADDING_SLOT_ID);
+      continue;
+    }
+    const auto block_id = block_ids[block_index];
+    if (block_id == block_pool_.GetNullBlockId()) {
+      slots.push_back(PADDING_SLOT_ID);
+      continue;
+    }
+    const auto slot = (static_cast<uint64_t>(block_id) * capacity_.block_size_) + offset;
+    if (!std::in_range<int64_t>(slot)) {
+      throw InvalidArgumentException("KV cache slot does not fit in int64");
+    }
+    slots.push_back(static_cast<int64_t>(slot));
+  }
+  return slots;
+}
+
+auto KVCacheManager::GetBlockTable(sequence_id_t sequence_id, size_t max_blocks) const
+    -> std::optional<std::vector<int32_t>> {
+  const auto sequence = sequence_blocks_.find(sequence_id);
+  if (sequence == sequence_blocks_.end()) {
+    return std::nullopt;
+  }
+  if (sequence->second.block_ids_.size() > max_blocks) {
+    throw InvalidArgumentException("KV cache block table capacity is smaller than the sequence");
+  }
+
+  std::vector<int32_t> block_table;
+  block_table.reserve(max_blocks);
+  for (const auto block_id : sequence->second.block_ids_) {
+    if (!std::in_range<int32_t>(block_id)) {
+      throw InvalidArgumentException("KV cache block ID does not fit in the attention block table");
+    }
+    block_table.push_back(static_cast<int32_t>(block_id));
+  }
+  block_table.resize(max_blocks, static_cast<int32_t>(block_pool_.GetNullBlockId()));
+  return block_table;
 }
 
 auto KVCacheManager::GetNumUnreservedBlocks() const -> size_t {
@@ -234,8 +282,8 @@ auto KVCacheManager::GetNumUnreservedBlocks() const -> size_t {
 }
 
 auto KVCacheManager::GetRequiredBlockCount(size_t num_tokens) const noexcept -> size_t {
-  const auto quotient = num_tokens / block_size_;
-  return quotient + (num_tokens % block_size_ == 0 ? 0 : 1);
+  const auto quotient = num_tokens / capacity_.block_size_;
+  return quotient + (num_tokens % capacity_.block_size_ == 0 ? 0 : 1);
 }
 
 void KVCacheManager::ValidateBlockIds(std::span<const block_id_t> block_ids) const {

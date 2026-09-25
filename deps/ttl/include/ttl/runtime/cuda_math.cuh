@@ -6,10 +6,10 @@
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
 
-#include "ttl/internal/runtime/library/cuda_dtype.hpp"
-#include "ttl/tensor/scalar.hpp"
+#include <ttl/runtime/cuda_dtype.hpp>
+#include <ttl/tensor/scalar.hpp>
 
-namespace ttl::internal {
+namespace ttl {
 
 template <CudaStorageType T>
 [[nodiscard]] __host__ __device__ constexpr auto IsCudaFloatingType() noexcept -> bool {
@@ -53,4 +53,4 @@ template <CudaStorageType T>
   return std::bit_cast<T>(value.Cast<HostType>(location));
 }
 
-}  // namespace ttl::internal
+}  // namespace ttl

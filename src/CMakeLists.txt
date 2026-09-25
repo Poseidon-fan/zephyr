@@ -1,5 +1,6 @@
 add_subdirectory(common)
 add_subdirectory(kv_cache)
+add_subdirectory(attention)
 add_subdirectory(parallel)
 add_subdirectory(weight)
 

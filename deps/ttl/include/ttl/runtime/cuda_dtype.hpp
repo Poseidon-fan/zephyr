@@ -11,10 +11,10 @@
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
 
-#include "ttl/common/error.hpp"
-#include "ttl/tensor/dtype.hpp"
+#include <ttl/common/error.hpp>
+#include <ttl/tensor/dtype.hpp>
 
-namespace ttl::internal {
+namespace ttl {
 
 template <DType dtype>
 struct CudaTypeFor;
@@ -242,4 +242,4 @@ auto DispatchCudaFloatingDType(DType dtype, std::string_view operation, Function
   ThrowUnsupportedCudaDType(operation, dtype, "floating dtype", location);
 }
 
-}  // namespace ttl::internal
+}  // namespace ttl

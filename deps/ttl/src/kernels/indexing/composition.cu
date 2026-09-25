@@ -8,10 +8,10 @@
 
 #include <cuda_runtime.h>
 
+#include <ttl/runtime/cuda_dtype.hpp>
 #include "ttl/common/error.hpp"
 #include "ttl/internal/common/checked_math.hpp"
 #include "ttl/internal/common/index_width.hpp"
-#include "ttl/internal/runtime/library/cuda_dtype.hpp"
 #include "ttl/tensor/dtype.hpp"
 #include "ttl/tensor/shape.hpp"
 

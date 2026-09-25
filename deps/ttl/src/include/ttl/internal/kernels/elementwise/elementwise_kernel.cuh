@@ -23,7 +23,8 @@ __device__ auto GetElementwisePointer(const Parameters &parameters, uint8_t oper
     const auto index = static_cast<uint8_t>(axis - 1);
     const auto coordinate = static_cast<Index>(linear_index % parameters.shape_[index]);
     linear_index = static_cast<Index>(linear_index / parameters.shape_[index]);
-    byte_offset = static_cast<Index>(byte_offset + coordinate * parameters.strides_bytes_[operand][index]);
+    byte_offset =
+        static_cast<Index>(byte_offset + (coordinate * parameters.strides_bytes_[operand][index]));
   }
   return parameters.pointers_[operand] + byte_offset;
 }

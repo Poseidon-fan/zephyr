@@ -6,6 +6,15 @@
 
 namespace zephyr::kv_cache {
 
+/** Physical page capacity shared by the CPU block manager and GPU cache storage. */
+struct CacheCapacity final {
+  size_t block_size_;
+  size_t num_gpu_blocks_;
+};
+
+/** Slot value used for a token that has no physical cache destination. */
+inline constexpr int64_t PADDING_SLOT_ID = -1;
+
 /** Identifies one physical KV cache block. */
 using block_id_t = uint32_t;
 

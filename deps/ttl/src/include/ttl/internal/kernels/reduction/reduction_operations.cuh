@@ -6,9 +6,9 @@
 #include <cuda_runtime.h>
 #include <cuda/std/type_traits>
 
-#include "ttl/internal/kernels/elementwise/elementwise_math.cuh"
+#include <ttl/runtime/cuda_math.cuh>
 #include "ttl/internal/ops/reduction.hpp"
-#include "ttl/internal/runtime/library/cuda_dtype.hpp"
+#include <ttl/runtime/cuda_dtype.hpp>
 
 namespace ttl::internal {
 

@@ -14,11 +14,11 @@
 #include <thrust/iterator/transform_iterator.h>
 #include <cub/device/device_segmented_radix_sort.cuh>
 
+#include <ttl/runtime/cuda_dtype.hpp>
+#include <ttl/runtime/cuda_math.cuh>
 #include "ttl/common/error.hpp"
 #include "ttl/internal/common/checked_math.hpp"
-#include "ttl/internal/kernels/elementwise/elementwise_math.cuh"
 #include "ttl/internal/runtime/cuda_check.hpp"
-#include "ttl/internal/runtime/library/cuda_dtype.hpp"
 #include "ttl/tensor/dtype.hpp"
 #include "ttl/tensor/shape.hpp"
 

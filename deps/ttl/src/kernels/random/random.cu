@@ -8,11 +8,11 @@
 
 #include <cuda_runtime.h>
 
+#include <ttl/runtime/cuda_dtype.hpp>
+#include <ttl/runtime/cuda_math.cuh>
 #include "ttl/common/error.hpp"
-#include "ttl/internal/kernels/elementwise/elementwise_math.cuh"
 #include "ttl/internal/runtime/execution/device_error.cuh"
 #include "ttl/internal/runtime/execution/device_error.hpp"
-#include "ttl/internal/runtime/library/cuda_dtype.hpp"
 #include "ttl/runtime/philox.cuh"
 #include "ttl/tensor/dtype.hpp"
 #include "ttl/tensor/shape.hpp"
