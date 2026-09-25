@@ -13,10 +13,13 @@ struct AttentionParams final {
   float softmax_scale_;
 };
 
+/** Query compiled head/page combinations only; dtype, layout, and alignment remain PagedDecode's input contract. */
+[[nodiscard]] auto SupportsPagedDecode(int64_t head_dim, int64_t block_size) noexcept -> bool;
+
 /**
  * Computes one-token-per-sequence decode directly from the paged KV cache.
  * Query and output are [batch, query_heads, head_dim], with the same head dimension in K and V.
- * Supported head dimensions are 32, 64, 80, 96, 112, 120, 128, 192, and 256; page sizes are 8, 16, and 32.
+ * SupportsPagedDecode describes the compiled head-dimension and page-size combinations.
  * Query heads are contiguous; batches may be strided or broadcast. For FP16/FP32, Q/K addresses and
  * query batch strides must align to page_size / 2 bytes, and V addresses to 16 bytes. BF16 requires
  * 4-byte alignment for all three tensors. Kernel row offsets and strides must fit signed 32-bit indexing.

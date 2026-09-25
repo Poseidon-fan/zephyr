@@ -171,10 +171,8 @@ __global__ void SdpaKernel(SdpaParameters parameters) {
 
 template <CudaStorageType T, uint32_t block_size>
 void LaunchTyped(cudaStream_t stream, const SdpaParameters &parameters, std::source_location location) {
-  const auto value_tiles =
-      internal::CeilDivide(internal::CheckedAdd(parameters.value_dimension_, static_cast<uint64_t>(block_size - 1),
-                                                "SDPA value tile extent", location),
-                           static_cast<uint64_t>(block_size), "SDPA value tile count", location);
+  const auto value_tiles = internal::CeilDivide(parameters.value_dimension_, static_cast<uint64_t>(block_size),
+                                                "SDPA value tile count", location);
   const auto row_count = internal::CheckedMultiply(
       internal::CheckedMultiply(parameters.batch_size_, parameters.query_head_count_, "SDPA row count", location),
       parameters.query_length_, "SDPA row count", location);

@@ -73,7 +73,8 @@ void ReshapeAndCache(ttl::ExecutionContext &context, const ttl::Tensor &key, con
     const auto num_heads = shape.GetDimension(rank - 2);
     const auto strides = input.GetStrides();
     if (head_dim <= 0 || num_heads <= 0 || strides.GetStride(rank - 1) != 1 ||
-        strides.GetStride(rank - 2) != head_dim || num_heads > std::numeric_limits<int64_t>::max() / head_dim) {
+        (num_heads > 1 && strides.GetStride(rank - 2) != head_dim) ||
+        num_heads > std::numeric_limits<int64_t>::max() / head_dim) {
       throw InvalidArgumentException(std::string{name} + " must have dense head dimensions");
     }
 

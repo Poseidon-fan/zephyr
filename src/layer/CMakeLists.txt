@@ -1,29 +1,33 @@
 add_library(
-    zephyr_attention
+    zephyr_layer
     OBJECT
-    cache.cpp
-    cache.cu
-    paged_decode.cpp
-    paged_decode.cu
-    sdpa.cpp
+    activation.cpp
+    activation.cu
+    embedding.cpp
+    linear.cpp
+    mlp.cpp
+    normalization.cpp
+    paged_attention.cpp
+    rotary_embedding.cpp
+    rotary_embedding.cu
 )
 
 target_include_directories(
-    zephyr_attention
+    zephyr_layer
     PUBLIC
         $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/src/include>
 )
 
-target_compile_features(zephyr_attention PUBLIC cxx_std_20 cuda_std_20)
+target_compile_features(zephyr_layer PUBLIC cxx_std_20 cuda_std_20)
 target_link_libraries(
-    zephyr_attention
+    zephyr_layer
     PRIVATE
         ttl::ttl
         zephyr::project_warnings
 )
 
 set_target_properties(
-    zephyr_attention
+    zephyr_layer
     PROPERTIES
         POSITION_INDEPENDENT_CODE ON
         CXX_EXTENSIONS OFF
@@ -35,6 +39,6 @@ set_target_properties(
 
 set(
     ALL_OBJECT_FILES
-    ${ALL_OBJECT_FILES} $<TARGET_OBJECTS:zephyr_attention>
+    ${ALL_OBJECT_FILES} $<TARGET_OBJECTS:zephyr_layer>
     PARENT_SCOPE
 )

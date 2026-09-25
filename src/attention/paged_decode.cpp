@@ -23,9 +23,7 @@ void PagedDecode(ttl::ExecutionContext &context, ttl::Tensor &output, const ttl:
   const auto cache_shape = GetCacheShape(key_cache, value_cache);
   const auto head_dim = cache_shape.key_head_dim_;
   const auto block_size = cache_shape.block_size_;
-  constexpr std::array head_sizes{32, 64, 80, 96, 112, 120, 128, 192, 256};
-  if (std::ranges::find(head_sizes, head_dim) == head_sizes.end() || head_dim != cache_shape.value_head_dim_ ||
-      (block_size != 8 && block_size != 16 && block_size != 32)) {
+  if (!SupportsPagedDecode(head_dim, block_size) || head_dim != cache_shape.value_head_dim_) {
     throw InvalidArgumentException("paged decode does not support the cache head dimension or page size");
   }
   if (block_tables.GetRank() != 2 || context_lens.GetRank() != 1 || query.GetRank() != 3 || output.GetRank() != 3) {

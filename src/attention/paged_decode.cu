@@ -6,6 +6,7 @@
 // See LICENSE for attribution and the Apache-2.0 license terms.
 
 #include "attention/kernels.cuh"
+#include "attention/paged_decode.hpp"
 
 #include <algorithm>
 #include <cfloat>
@@ -420,6 +421,62 @@ __global__ void ReducePartitionsKernel(const T *__restrict__ partial_output, con
   }
 }
 
+/** Keep capability queries and CUDA instantiation on the same specialization list. */
+template <typename Callback>
+auto DispatchPagedDecode(int64_t head_dim, int64_t page_size, const Callback &callback) -> bool {
+  const auto dispatch_head = [&]<int block_size>() {
+    switch (head_dim) {
+      case 32:
+        callback.template operator()<32, block_size>();
+        break;
+      case 64:
+        callback.template operator()<64, block_size>();
+        break;
+      case 80:
+        callback.template operator()<80, block_size>();
+        break;
+      case 96:
+        callback.template operator()<96, block_size>();
+        break;
+      case 112:
+        callback.template operator()<112, block_size>();
+        break;
+      case 120:
+        callback.template operator()<120, block_size>();
+        break;
+      case 128:
+        callback.template operator()<128, block_size>();
+        break;
+      case 192:
+        callback.template operator()<192, block_size>();
+        break;
+      case 256:
+        callback.template operator()<256, block_size>();
+        break;
+      case 512:
+        callback.template operator()<512, block_size>();
+        break;
+      default:
+        return false;
+    }
+    return true;
+  };
+  switch (page_size) {
+    case 8:
+      return dispatch_head.template operator()<8>();
+    case 16:
+      return dispatch_head.template operator()<16>();
+    case 32:
+      return dispatch_head.template operator()<32>();
+    default:
+      return false;
+  }
+}
+
+auto SupportsPagedDecode(int64_t head_dim, int64_t block_size) noexcept -> bool {
+  return DispatchPagedDecode(head_dim, block_size, [&]<int, int>() {});
+}
+
 void LaunchPagedDecode(cudaStream_t stream, ttl::DType dtype, const void *query, const void *key_cache,
                        const void *value_cache, const int32_t *block_tables, const int32_t *context_lengths,
                        void *output, int64_t batch_size, int64_t query_heads, int64_t max_blocks, int64_t query_stride,
@@ -455,51 +512,8 @@ void LaunchPagedDecode(cudaStream_t stream, ttl::DType dtype, const void *query,
           reinterpret_cast<const T *>(partial_output), exp_sums, max_logits, checked_lengths, static_cast<T *>(output),
           static_cast<int>(num_partitions));
     };
-    const auto launch_head = [&]<int block_size>() {
-      switch (cache_shape.key_head_dim_) {
-        case 32:
-          launch.template operator()<32, block_size>();
-          break;
-        case 64:
-          launch.template operator()<64, block_size>();
-          break;
-        case 80:
-          launch.template operator()<80, block_size>();
-          break;
-        case 96:
-          launch.template operator()<96, block_size>();
-          break;
-        case 112:
-          launch.template operator()<112, block_size>();
-          break;
-        case 120:
-          launch.template operator()<120, block_size>();
-          break;
-        case 128:
-          launch.template operator()<128, block_size>();
-          break;
-        case 192:
-          launch.template operator()<192, block_size>();
-          break;
-        case 256:
-          launch.template operator()<256, block_size>();
-          break;
-        default:
-          throw InvalidArgumentException("unsupported paged decode head size");
-      }
-    };
-    switch (cache_shape.block_size_) {
-      case 8:
-        launch_head.template operator()<8>();
-        break;
-      case 16:
-        launch_head.template operator()<16>();
-        break;
-      case 32:
-        launch_head.template operator()<32>();
-        break;
-      default:
-        throw InvalidArgumentException("unsupported paged decode page size");
+    if (!DispatchPagedDecode(cache_shape.key_head_dim_, cache_shape.block_size_, launch)) {
+      throw InvalidArgumentException("unsupported paged decode head dimension or page size");
     }
   });
 }
