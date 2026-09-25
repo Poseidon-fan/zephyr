@@ -1,3 +1,5 @@
+find_package(Threads REQUIRED)
+
 add_subdirectory(common)
 add_subdirectory(kv_cache)
 add_subdirectory(attention)
@@ -5,6 +7,7 @@ add_subdirectory(parallel)
 add_subdirectory(weight)
 add_subdirectory(layer)
 add_subdirectory(model)
+add_subdirectory(executor)
 
 add_library(zephyr_core STATIC vector_adder.cpp ${ALL_OBJECT_FILES})
 add_library(zephyr::core ALIAS zephyr_core)
@@ -19,7 +22,7 @@ target_compile_features(zephyr_core PUBLIC cxx_std_20 cuda_std_20)
 target_link_libraries(
     zephyr_core
     PUBLIC fmt::fmt ttl::ttl
-    PRIVATE spdlog::spdlog zephyr::project_warnings
+    PRIVATE spdlog::spdlog Threads::Threads zephyr::project_warnings
 )
 
 set_target_properties(

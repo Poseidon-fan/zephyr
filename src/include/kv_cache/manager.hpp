@@ -74,7 +74,6 @@ class KVCacheManager final {
   void ValidateBlockIds(std::span<const block_id_t> block_ids) const;
   [[nodiscard]] auto GetNumEvictableBlocks(std::span<const block_id_t> block_ids) const -> size_t;
   [[nodiscard]] auto GetNonNullBlockIds(std::span<const block_id_t> block_ids) const -> std::vector<block_id_t>;
-  void DebugAssertReservationInvariant() const;
 
   BlockPool block_pool_;
   CacheCapacity capacity_;

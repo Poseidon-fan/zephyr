@@ -26,6 +26,7 @@ struct ModelSpec final {
   ttl::Device device_;
   ttl::DType dtype_;
   std::vector<kv_cache::LayerCacheSpec> layer_specs_;
+  bool supports_packed_prefill_{false};
 };
 
 /**
@@ -43,7 +44,7 @@ struct ModelForwardContext final {
   std::span<const LogitsRange> logits_ranges_;
   const kv_cache::CacheEngine *cache_{nullptr};
 
-  /** Select [logical_batch, output_length, hidden_size] before applying the vocabulary projection. */
+  /** Select [logical_batch, output_length, hidden_size]; zero length validates ranges without gathering rows. */
   [[nodiscard]] auto SelectLogits(ttl::ExecutionContext &context, const ttl::Tensor &hidden_states) const
       -> ttl::Tensor;
 };
@@ -53,7 +54,10 @@ class CausalLM {
  public:
   virtual ~CausalLM() = default;
 
-  /** Input IDs are [physical_batch, sequence]; returns [logical_batch, output_length, vocabulary_size]. */
+  /**
+   * Input IDs are [physical_batch, sequence]; returns [logical_batch, output_length, vocabulary_size].
+   * Zero output length advances KV without projecting vocabulary logits.
+   */
   [[nodiscard]] virtual auto Forward(ttl::ExecutionContext &context, const ttl::Tensor &input_ids,
                                      const ModelForwardContext &forward_context) const -> ttl::Tensor = 0;
   [[nodiscard]] virtual auto GetSpec() const noexcept -> const ModelSpec & = 0;

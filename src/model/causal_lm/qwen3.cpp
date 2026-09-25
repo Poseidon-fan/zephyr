@@ -6,6 +6,7 @@
 #include <optional>
 #include <utility>
 
+#include <ttl/ops/creation.hpp>
 #include <ttl/ops/elementwise.hpp>
 #include <ttl/tensor/layout.hpp>
 
@@ -142,7 +143,8 @@ auto Qwen3Model::Load(ttl::ExecutionContext &context, const Qwen3Config &config,
                  .layer_specs_ = std::vector<kv_cache::LayerCacheSpec>(
                      layers.size(), {.num_kv_heads_ = static_cast<size_t>(local_kv_heads),
                                      .key_head_dim_ = static_cast<size_t>(config.head_dim_),
-                                     .value_head_dim_ = static_cast<size_t>(config.head_dim_)})};
+                                     .value_head_dim_ = static_cast<size_t>(config.head_dim_)}),
+                 .supports_packed_prefill_ = true};
   return Qwen3Model{std::move(spec),   std::move(embedding), std::move(rotary),
                     std::move(layers), std::move(norm),      std::move(lm_head)};
 }
@@ -169,7 +171,13 @@ auto Qwen3Model::Forward(ttl::ExecutionContext &context, const ttl::Tensor &inpu
     hidden = layers_[index].Forward(context, hidden, mask, rotary_, forward_context, index);
   }
   hidden = norm_.Forward(context, hidden);
-  return lm_head_.Forward(context, forward_context.SelectLogits(context, hidden));
+  auto selected = forward_context.SelectLogits(context, hidden);
+  if (selected.GetShape().GetDimension(1) == 0) {
+    // Intermediate prompt chunks still compute every layer and write KV, but need no vocabulary projection.
+    return ttl::Empty(context, ttl::Shape{selected.GetShape().GetDimension(0), 0, spec_.vocab_size_},
+                      selected.GetDType());
+  }
+  return lm_head_.Forward(context, selected);
 }
 
 }  // namespace zephyr::model::causal_lm

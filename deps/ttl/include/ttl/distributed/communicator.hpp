@@ -79,7 +79,9 @@ class NcclCommunicator final {
  * @brief Owner of every rank-local NCCL communicator for one explicit process-local rank order.
  *
  * Construction and close are all-or-nothing. The group has no background progress thread; callers may use Poll, and
- * Runtime::Poll also advances registered groups when they are idle. Runtime::Shutdown rejects an open group.
+ * Runtime::Poll also advances registered groups when they are idle. Poll may run concurrently with rank submissions:
+ * it skips active submissions, and new submissions wait for an in-progress poll.
+ * Runtime::Shutdown rejects an open group.
  */
 class LocalCommunicatorGroup final {
  public:

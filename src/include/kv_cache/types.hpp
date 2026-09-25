@@ -10,6 +10,8 @@ namespace zephyr::kv_cache {
 struct CacheCapacity final {
   size_t block_size_;
   size_t num_gpu_blocks_;
+
+  [[nodiscard]] auto operator==(const CacheCapacity &) const noexcept -> bool = default;
 };
 
 /** Slot value used for a token that has no physical cache destination. */

@@ -1,29 +1,30 @@
 add_library(
-    zephyr_model
+    zephyr_executor
     OBJECT
-    causal_lm/model.cpp
-    causal_lm/qwen3.cpp
-    causal_lm/qwen3_config.cpp
-    loader.cpp
+    causal_lm.cpp
+    embedding.cpp
+    executor.cpp
+    worker.cpp
 )
 
 target_include_directories(
-    zephyr_model
+    zephyr_executor
     PUBLIC
         $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/src/include>
 )
 
-target_compile_features(zephyr_model PUBLIC cxx_std_20)
+target_compile_features(zephyr_executor PUBLIC cxx_std_20)
 target_link_libraries(
-    zephyr_model
+    zephyr_executor
     PRIVATE
-        nlohmann_json::nlohmann_json
+        fmt::fmt
         ttl::ttl
+        Threads::Threads
         zephyr::project_warnings
 )
 
 set_target_properties(
-    zephyr_model
+    zephyr_executor
     PROPERTIES
         POSITION_INDEPENDENT_CODE ON
         CXX_EXTENSIONS OFF
@@ -33,6 +34,6 @@ set_target_properties(
 
 set(
     ALL_OBJECT_FILES
-    ${ALL_OBJECT_FILES} $<TARGET_OBJECTS:zephyr_model>
+    ${ALL_OBJECT_FILES} $<TARGET_OBJECTS:zephyr_executor>
     PARENT_SCOPE
 )

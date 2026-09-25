@@ -25,7 +25,6 @@ struct PagedAttentionInputMetadata final {
   bool is_first_prompt_chunk_{false};
   std::optional<std::vector<int64_t>> num_cached_tokens_;
   std::optional<std::vector<int64_t>> query_lens_;
-  std::optional<ttl::Tensor> cu_seqlens_q_;
   std::optional<ttl::Tensor> cu_seqlens_kv_;
 };
 

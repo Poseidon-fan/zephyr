@@ -45,6 +45,10 @@ auto ModelForwardContext::SelectLogits(ttl::ExecutionContext &context, const ttl
   if (total != tokens) {
     throw InvalidArgumentException("packed query lengths must cover the physical input tokens");
   }
+  if (output_length == 0) {
+    return ttl::Empty(context, ttl::Shape{static_cast<int64_t>(logits_ranges_.size()), 0, hidden},
+                      hidden_states.GetDType());
+  }
 
   // A common rectangular span, including all tokens and single-token decode, needs only a view.
   const auto start = logits_ranges_.front().start_;

@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -120,8 +121,10 @@ class CommunicatorGroupState final : public std::enable_shared_from_this<Communi
 
   mutable std::mutex native_lifecycle_latch_;
   mutable std::mutex lifecycle_latch_;
+  std::condition_variable poll_finished_;
   std::vector<uint8_t> rank_in_use_;
   size_t active_rank_count_{0};
+  bool polling_{false};
   bool abort_in_progress_{false};
   bool abort_requested_{false};
   bool public_owner_alive_{true};

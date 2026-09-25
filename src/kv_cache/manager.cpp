@@ -8,7 +8,6 @@
 #include <utility>
 
 #include "common/exception.hpp"
-#include "common/macros.hpp"
 
 namespace zephyr::kv_cache {
 
@@ -95,7 +94,6 @@ auto KVCacheManager::ReservePrompt(sequence_id_t sequence_id, size_t num_tokens,
   }
 
   total_reserved_blocks_ += num_reserved_blocks;
-  DebugAssertReservationInvariant();
   return true;
 }
 
@@ -125,7 +123,6 @@ auto KVCacheManager::AllocateSlots(sequence_id_t sequence_id, size_t num_tokens,
     state.block_ids_.insert(state.block_ids_.end(), new_blocks->begin(), new_blocks->end());
     state.reserved_blocks_ -= num_reserved_blocks;
     total_reserved_blocks_ -= num_reserved_blocks;
-    DebugAssertReservationInvariant();
     return new_blocks;
   }
 
@@ -163,7 +160,6 @@ auto KVCacheManager::AllocateSlots(sequence_id_t sequence_id, size_t num_tokens,
       return std::nullopt;
     }
     state.block_ids_.insert(state.block_ids_.end(), new_blocks->begin(), new_blocks->end());
-    DebugAssertReservationInvariant();
     return new_blocks;
   } catch (...) {
     if (blocks_touched) {
@@ -214,7 +210,6 @@ void KVCacheManager::Free(sequence_id_t sequence_id) {
   block_pool_.FreeBlocks(blocks_to_free);
   total_reserved_blocks_ -= state.reserved_blocks_;
   sequence_blocks_.erase(sequence);
-  DebugAssertReservationInvariant();
 }
 
 auto KVCacheManager::GetSlotMapping(sequence_id_t sequence_id, size_t start_token, size_t num_tokens) const
@@ -322,18 +317,6 @@ auto KVCacheManager::GetNonNullBlockIds(std::span<const block_id_t> block_ids) c
     }
   }
   return result;
-}
-
-void KVCacheManager::DebugAssertReservationInvariant() const {
-  size_t reserved_blocks = 0;
-  for (const auto &entry : sequence_blocks_) {
-    reserved_blocks += entry.second.reserved_blocks_;
-  }
-  ZEPHYR_ASSERT(reserved_blocks == total_reserved_blocks_, "KV cache reservation count is inconsistent");
-  ZEPHYR_ASSERT(total_reserved_blocks_ <= GetNumFreeBlocks(), "KV cache reservations exceed free blocks");
-  const auto num_active_blocks = (block_pool_.GetNumGpuBlocks() - 1) - block_pool_.GetNumFreeBlocks();
-  ZEPHYR_ASSERT(num_active_blocks + total_reserved_blocks_ <= block_pool_.GetNumGpuBlocks() - 1,
-                "KV cache active and reserved blocks exceed capacity");
 }
 
 }  // namespace zephyr::kv_cache

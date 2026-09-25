@@ -286,7 +286,9 @@ auto CommunicatorGroupState::AcquireAll(std::source_location location) -> Commun
 
 auto CommunicatorGroupState::Acquire(std::vector<size_t> ranks, std::source_location location)
     -> CommunicatorOperationLease {
-  const std::scoped_lock lock{lifecycle_latch_};
+  std::unique_lock lock{lifecycle_latch_};
+  // Polling briefly owns every native handle; it is not a competing rank submission.
+  poll_finished_.wait(lock, [this] { return !polling_; });
   if (GetStatus() != CommunicatorStatus::READY) {
     throw InvalidArgumentError("communicator group is not ready for submission", location);
   }
@@ -489,13 +491,24 @@ auto CommunicatorGroupState::TryAcquireAllForPoll() noexcept -> bool {
   }
   std::ranges::fill(rank_in_use_, uint8_t{1});
   active_rank_count_ = rank_in_use_.size();
+  polling_ = true;
   return true;
 }
 
 void CommunicatorGroupState::ReleaseAllFromPoll() noexcept {
-  const std::scoped_lock lock{lifecycle_latch_};
-  std::ranges::fill(rank_in_use_, uint8_t{0});
-  active_rank_count_ = 0;
+  bool should_abort = false;
+  {
+    const std::scoped_lock lock{lifecycle_latch_};
+    std::ranges::fill(rank_in_use_, uint8_t{0});
+    active_rank_count_ = 0;
+    polling_ = false;
+    // Abort may have been requested while polling kept the native handles alive.
+    should_abort = GetStatus() == CommunicatorStatus::FAILED;
+  }
+  poll_finished_.notify_all();
+  if (should_abort) {
+    AbortHandlesNoexcept();
+  }
 }
 
 void CommunicatorGroupState::Poll(std::source_location location) {
@@ -513,7 +526,6 @@ void CommunicatorGroupState::Poll(std::source_location location) {
   } catch (...) {
     MarkFailed();
     ReleaseAllFromPoll();
-    AbortHandlesNoexcept();
     throw;
   }
   ReleaseAllFromPoll();
@@ -542,9 +554,6 @@ void CommunicatorGroupState::PollNoexcept() noexcept {
     MarkFailed();
   }
   ReleaseAllFromPoll();
-  if (failed) {
-    AbortHandlesNoexcept();
-  }
 }
 
 void CommunicatorGroupState::Close(std::source_location location) {
