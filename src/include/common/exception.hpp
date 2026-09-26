@@ -15,6 +15,7 @@ enum class ExceptionType : uint8_t {
   CONFIGURATION,
   OUT_OF_MEMORY,
   INTERNAL,
+  OVERLOADED,
 };
 
 /** Base class for all exceptions reported by Zephyr. */
@@ -67,6 +68,14 @@ class OutOfMemoryException final : public Exception {
   explicit OutOfMemoryException(const std::string &message,
                                 std::source_location location = std::source_location::current())
       : Exception(ExceptionType::OUT_OF_MEMORY, message, location) {}
+};
+
+/** Admission capacity is exhausted; requests may be retried after outstanding results are consumed. */
+class OverloadedException final : public Exception {
+ public:
+  explicit OverloadedException(const std::string &message,
+                               std::source_location location = std::source_location::current())
+      : Exception(ExceptionType::OVERLOADED, message, location) {}
 };
 
 /** Zephyr detected a broken internal invariant. */

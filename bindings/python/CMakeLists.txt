@@ -1,5 +1,5 @@
 find_package(Python REQUIRED COMPONENTS Interpreter Development.Module)
-find_package(pybind11 CONFIG QUIET)
+find_package(pybind11 3.0 CONFIG QUIET)
 if(NOT pybind11_FOUND)
     # scikit-build-core injects pybind11_DIR from its build env; fall back to
     # asking the active interpreter for pip-installed pybind11.
@@ -9,7 +9,7 @@ if(NOT pybind11_FOUND)
         OUTPUT_STRIP_TRAILING_WHITESPACE
         COMMAND_ERROR_IS_FATAL ANY
     )
-    find_package(pybind11 CONFIG REQUIRED)
+    find_package(pybind11 3.0 CONFIG REQUIRED)
 endif()
 
 file(

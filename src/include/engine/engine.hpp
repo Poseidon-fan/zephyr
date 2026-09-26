@@ -23,6 +23,7 @@
 #include "executor/embedding.hpp"
 #include "executor/executor.hpp"
 #include "kv_cache/manager.hpp"
+#include "model/loader.hpp"
 #include "scheduler/scheduler.hpp"
 
 namespace zephyr::engine {
@@ -51,8 +52,11 @@ struct EngineOptions final {
  */
 class Engine final {
  public:
-  [[nodiscard]] static auto Create(EngineOptions options,
-                                   executor::ExecutionFactory factory = executor::CreateCausalLMFactory())
+  /** Resolve the model and task before starting workers. Causal options apply only to generation models. */
+  [[nodiscard]] static auto Create(EngineOptions options, std::optional<model::ModelTask> task = std::nullopt,
+                                   executor::CausalLMOptions causal_lm = {}) -> std::unique_ptr<Engine>;
+  /** Native integration point: the supplied factory owns model selection and task-specific configuration. */
+  [[nodiscard]] static auto Create(EngineOptions options, executor::ExecutionFactory factory)
       -> std::unique_ptr<Engine>;
 
   Engine(const Engine &) = delete;

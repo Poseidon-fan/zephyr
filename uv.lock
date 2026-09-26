@@ -234,7 +234,7 @@ dev = [
 [package.metadata.requires-dev]
 dev = [
     { name = "pre-commit", specifier = ">=4.0" },
-    { name = "pybind11", specifier = ">=2.12" },
+    { name = "pybind11", specifier = ">=3.0" },
     { name = "pybind11-stubgen", specifier = ">=2.5" },
     { name = "ruff", specifier = "==0.15.20" },
 ]

@@ -12,6 +12,7 @@
 
 #include "common/exception.hpp"
 #include "common/logger.hpp"
+#include "executor/factory.hpp"
 
 namespace zephyr::engine {
 
@@ -62,6 +63,12 @@ Engine::Engine(EngineOptions options) : options_(std::move(options)) {
   if (options_.max_outstanding_sequences_ == 0 || options_.max_buffered_output_bytes_ == 0) {
     throw ConfigurationException("Engine admission and output limits must be positive");
   }
+}
+
+auto Engine::Create(EngineOptions options, std::optional<model::ModelTask> task, executor::CausalLMOptions causal_lm)
+    -> std::unique_ptr<Engine> {
+  auto loader = model::ResolveModelLoader(options.executor_.model_dir_, task);
+  return Create(std::move(options), executor::CreateExecutionFactory(std::move(loader), causal_lm));
 }
 
 auto Engine::Create(EngineOptions options, executor::ExecutionFactory factory) -> std::unique_ptr<Engine> {
@@ -162,7 +169,7 @@ auto Engine::Submit(Request request) -> request_id_t {
     throw InvalidArgumentException("Cannot submit to a closed or failed engine");
   }
   if (num_sequences > options_.max_outstanding_sequences_ - outstanding_sequences_) {
-    throw OutOfMemoryException("Engine admission limit reached; consume outstanding outputs before submitting more");
+    throw OverloadedException("Engine admission limit reached; consume outstanding outputs before submitting more");
   }
   if (next_request_id_ == std::numeric_limits<request_id_t>::max()) {
     throw InternalException("Engine request identifiers exhausted");

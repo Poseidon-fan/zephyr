@@ -25,6 +25,8 @@ auto Exception::ExceptionTypeToString(ExceptionType type) noexcept -> std::strin
       return "Out of Memory";
     case ExceptionType::INTERNAL:
       return "Internal";
+    case ExceptionType::OVERLOADED:
+      return "Overloaded";
   }
   return "Unknown";
 }

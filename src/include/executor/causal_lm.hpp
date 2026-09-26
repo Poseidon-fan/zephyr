@@ -53,8 +53,7 @@ struct CausalLMBatch final : ExecutionBatch {
 };
 
 /** Bind causal-model loading and cache policy before starting the rank workers. */
-[[nodiscard]] auto CreateCausalLMFactory(CausalLMOptions options = {},
-                                         model::ModelLoader<model::causal_lm::CausalLM> loader = model::LoadCausalLM)
-    -> ExecutionFactory;
+[[nodiscard]] auto CreateCausalLMFactory(model::ModelLoader<model::causal_lm::CausalLM> loader,
+                                         CausalLMOptions options = {}) -> ExecutionFactory;
 
 }  // namespace zephyr::executor

@@ -586,7 +586,7 @@ auto CausalLMExecution::Execute(ttl::ExecutionContext &context, const ExecutionP
 
 }  // namespace
 
-auto CreateCausalLMFactory(CausalLMOptions options, model::ModelLoader<model::causal_lm::CausalLM> loader)
+auto CreateCausalLMFactory(model::ModelLoader<model::causal_lm::CausalLM> loader, CausalLMOptions options)
     -> ExecutionFactory {
   if (!loader) {
     throw ConfigurationException("causal execution requires a model loader");

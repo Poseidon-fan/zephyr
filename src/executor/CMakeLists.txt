@@ -4,6 +4,7 @@ add_library(
     causal_lm.cpp
     embedding.cpp
     executor.cpp
+    factory.cpp
     worker.cpp
 )
 
