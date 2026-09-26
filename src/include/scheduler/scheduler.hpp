@@ -54,6 +54,12 @@ struct SchedulePlan final {
   std::vector<ScheduledBatch> batches_;
 };
 
+/** Queue occupancy; sequence execution states do not imply queue membership. */
+struct SchedulerStatistics final {
+  size_t num_running_sequences_{0};
+  size_t num_waiting_sequences_{0};
+};
+
 /**
  * Control-thread interface over engine-owned sequences and optional paged KV storage.
  * Borrowed objects outlive the scheduler. Finish every returned batch before scheduling again or
@@ -91,6 +97,8 @@ class Scheduler {
   [[nodiscard]] virtual auto Schedule() -> SchedulePlan = 0;
   /** Release registration and resources; active removal is cancellation. Safe to repeat. */
   virtual void Remove(sequence_id_t sequence_id) = 0;
+  /** Read the scheduler's queues on the owning control thread. */
+  [[nodiscard]] virtual auto GetStatistics() const noexcept -> SchedulerStatistics = 0;
 
  protected:
   Scheduler() = default;

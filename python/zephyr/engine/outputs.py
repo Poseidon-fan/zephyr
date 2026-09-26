@@ -134,3 +134,105 @@ class OutputBuffer:
         self._error_message = ""
         self._has_output = False
         self._size_bytes = 0
+
+
+@dataclass(slots=True, frozen=True)
+class TextChoice:
+    index: int
+    text: str
+    tokens: tuple[_C.SamplingResult, ...]
+    finish_reason: _C.FinishReason | None = None
+    stop_reason: str | int | None = None
+    # Character positions in the decoded completion, including any hidden stop.
+    # Tokens forming one UTF-8 character can share its starting position.
+    token_offsets: tuple[int, ...] = ()
+
+    @property
+    def token_ids(self) -> tuple[int, ...]:
+        return tuple(token.token_id for token in self.tokens)
+
+
+@dataclass(slots=True, frozen=True)
+class GenerationOutput:
+    request_id: int
+    prompt_token_ids: tuple[int, ...]
+    choices: tuple[TextChoice, ...]
+    status: _C.RequestStatus | None = None
+    usage: Usage = Usage()
+    error_message: str = ""
+
+
+class GenerationBuffer:
+    """Merge unread text deltas without discarding token-level probabilities."""
+
+    def __init__(self) -> None:
+        self._choices: dict[int, list[TextChoice]] = {}
+        self._last: GenerationOutput | None = None
+        self._size_bytes = 0
+        self._finished = False
+
+    @property
+    def empty(self) -> bool:
+        return self._last is None
+
+    @property
+    def size_bytes(self) -> int:
+        return self._size_bytes
+
+    @property
+    def finished(self) -> bool:
+        return self._finished
+
+    def add(self, output: GenerationOutput) -> None:
+        if self._finished:
+            raise RuntimeError("Request has already finished")
+        if self._last is None:
+            self._size_bytes = 8 + 4 * len(output.prompt_token_ids)
+        for choice in output.choices:
+            if choice.index not in self._choices:
+                self._choices[choice.index] = []
+                self._size_bytes += 8
+            self._choices[choice.index].append(choice)
+            self._size_bytes += len(choice.text.encode("utf-8"))
+            self._size_bytes += 8 * len(choice.token_offsets)
+            for token in choice.tokens:
+                self._size_bytes += 4
+                if token.logprobs is not None:
+                    self._size_bytes += 4 + 8 * len(token.logprobs.top_logprobs)
+            if choice.finish_reason is not None:
+                self._size_bytes += 1
+        if output.status is not None:
+            self._finished = True
+            self._size_bytes += 17 + len(output.error_message.encode("utf-8"))
+        self._last = output
+
+    def take(self) -> GenerationOutput:
+        last = self._last
+        if last is None:
+            raise RuntimeError("No unread output")
+        choices = tuple(
+            TextChoice(
+                index,
+                "".join(chunk.text for chunk in chunks),
+                tuple(token for chunk in chunks for token in chunk.tokens),
+                chunks[-1].finish_reason,
+                chunks[-1].stop_reason,
+                tuple(offset for chunk in chunks for offset in chunk.token_offsets),
+            )
+            for index, chunks in sorted(self._choices.items())
+        )
+        output = GenerationOutput(
+            last.request_id,
+            last.prompt_token_ids,
+            choices,
+            last.status,
+            last.usage,
+            last.error_message,
+        )
+        self.clear()
+        return output
+
+    def clear(self) -> None:
+        self._choices.clear()
+        self._last = None
+        self._size_bytes = 0

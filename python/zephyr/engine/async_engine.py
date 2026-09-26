@@ -4,17 +4,24 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import aclosing
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import partial
 from types import TracebackType
+from typing import Any, TypeVar, cast
 
 from .. import _C  # pyright: ignore[reportMissingModuleSource]
-from .outputs import OutputBuffer, RequestOutput
+from ..tokenizer import Tokenizer
+from .config import ResolvedConfig
+from .engine import Model, _load_engine
+from .generation import GenerationProcessor, update_output
+from .inputs import GenerationParams, Prompt, encode_prompt
+from .outputs import GenerationBuffer, GenerationOutput, OutputBuffer, RequestOutput
 
 _LOGGER = logging.getLogger(__name__)
+_T = TypeVar("_T")
 
 
 class OutputBufferError(RuntimeError):
@@ -23,8 +30,9 @@ class OutputBufferError(RuntimeError):
 
 @dataclass(slots=True)
 class _RequestState:
-    output: OutputBuffer
+    output: OutputBuffer | GenerationBuffer
     num_choices: int
+    processor: GenerationProcessor | None = None
     ready: asyncio.Event = field(default_factory=asyncio.Event)
     error: Exception | None = None
     abandoned: bool = False
@@ -41,11 +49,12 @@ async def _finish_cleanup(task: asyncio.Task[None]) -> None:
 
 
 class AsyncEngine:
-    """Token-based inference bound to one asyncio event loop.
+    """Concurrent text and token inference bound to one asyncio event loop.
 
     Construct with ``await AsyncEngine.create(...)`` and close with ``aclose``
     or an async context manager. Requests and sampling settings are native value
-    snapshots; tokenizer and protocol processing belong to their callers.
+    snapshots. Text encoding runs in a bounded CPU lane; native waiting and
+    shutdown use independent threads so neither can starve the other.
 
     A single receiver owns native output consumption. The native admission and
     payload limits also bound frontend unread requests and output independently;
@@ -56,17 +65,22 @@ class AsyncEngine:
     def __init__(
         self,
         native: _C.Engine,
-        options: _C.EngineOptions,
+        config: ResolvedConfig,
         executor: ThreadPoolExecutor,
     ) -> None:
         self._native = native
+        self._config = config
         self._loop = asyncio.get_running_loop()
         self._executor = executor
+        self._tokenizer_executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="zephyr-text"
+        )
+        self._preparing = 0
         self._requests: dict[int, _RequestState] = {}
         self._num_choices = 0
         self._buffered_bytes = 0
-        self._max_choices = options.max_outstanding_sequences
-        self._max_bytes = options.max_buffered_output_bytes
+        self._max_choices = config.options.max_outstanding_sequences
+        self._max_bytes = config.options.max_buffered_output_bytes
         self._closing = False
         self._failure: Exception | None = None
         self._close_task: asyncio.Task[None] | None = None
@@ -75,25 +89,21 @@ class AsyncEngine:
     @classmethod
     async def create(
         cls,
-        options: _C.EngineOptions,
-        *,
-        task: _C.ModelTask | None = None,
-        kv_cache: _C.KvCacheOptions | None = _C.KvCacheOptions(),
+        model: Model,
+        **kwargs: Any,
     ) -> AsyncEngine:
         loop = asyncio.get_running_loop()
         # Closing must be able to run while the receiver blocks in native code.
         executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="zephyr")
-        loading = loop.run_in_executor(
-            executor, partial(_C.Engine, options, task=task, kv_cache=kv_cache)
-        )
+        loading = loop.run_in_executor(executor, partial(_load_engine, model, kwargs))
         try:
-            native = await asyncio.shield(loading)
-            return cls(native, options, executor)
+            native, config = await asyncio.shield(loading)
+            return cls(native, config, executor)
         except BaseException:
 
             async def cleanup() -> None:
                 try:
-                    loaded = await loading
+                    loaded, _ = await loading
                 except Exception:
                     return  # Native construction cleans up a failed initialization.
                 try:
@@ -118,26 +128,44 @@ class AsyncEngine:
         work. Use ``contextlib.aclosing`` when breaking out of iteration early.
         Request ERROR/REJECTED statuses remain results; engine failures raise.
         """
+        async with aclosing(self._stream(request)) as stream:
+            async for output in stream:
+                yield cast(RequestOutput, output)
+
+    def _check_open(self) -> None:
         self._check_loop()
         if self._failure is not None:
             raise self._failure
         if self._closing:
             raise RuntimeError("Engine is closing")
-        generation = isinstance(request, _C.GenerationRequest)
-        choices = (
-            request.num_choices if isinstance(request, _C.GenerationRequest) else 1
-        )
-        # Invalid choice counts still go through native argument validation.
+
+    def _admit(self, choices: int) -> None:
         if (
             0 < choices <= self._max_choices
-            and choices > self._max_choices - self._num_choices
+            and choices > self._max_choices - self._num_choices - self._preparing
         ):
             raise _C.OverloadedError(
                 "Consume outstanding outputs before submitting more"
             )
 
+    async def _stream(
+        self,
+        request: _C.GenerationRequest | _C.EmbeddingRequest,
+        processor: GenerationProcessor | None = None,
+    ) -> AsyncGenerator[RequestOutput | GenerationOutput, None]:
+        self._check_open()
+        generation = isinstance(request, _C.GenerationRequest)
+        choices = (
+            request.num_choices if isinstance(request, _C.GenerationRequest) else 1
+        )
+        # Invalid choice counts still go through native argument validation.
+        self._admit(choices)
+
         request_id = self._native.submit(request)
-        state = _RequestState(OutputBuffer(request_id, generation), choices)
+        buffer = (
+            GenerationBuffer() if processor else OutputBuffer(request_id, generation)
+        )
+        state = _RequestState(buffer, choices, processor)
         # No await between submit and registration: the receiver cannot race it.
         self._requests[request_id] = state
         self._num_choices += choices
@@ -174,6 +202,154 @@ class AsyncEngine:
             raise RuntimeError("Engine ended a request without an output")
         return result.take()
 
+    @property
+    def info(self) -> _C.EngineInfo:
+        return self._native.info
+
+    @property
+    def model_name(self) -> str:
+        return self._config.model_name
+
+    @property
+    def tokenizer(self) -> Tokenizer:
+        if self._config.tokenizer is None:
+            raise ValueError("Text APIs require a model path or EngineConfig")
+        return self._config.tokenizer
+
+    @property
+    def is_running(self) -> bool:
+        return not self._closing and self._failure is None and not self._receiver.done()
+
+    async def _prepare(self, choices: int, function: Callable[[], _T]) -> _T:
+        self._check_open()
+        self._admit(choices)
+        if choices > self._max_choices:
+            raise ValueError("n exceeds max_outstanding_sequences")
+        future = self._loop.run_in_executor(self._tokenizer_executor, function)
+        self._preparing += choices
+
+        def finished(completed: asyncio.Future[_T]) -> None:
+            self._preparing -= choices
+            if not completed.cancelled():
+                completed.exception()  # Also retrieve failures after a caller disconnects.
+
+        future.add_done_callback(finished)
+        # A running tokenizer job cannot be canceled. Keep its admission credit
+        # until it really finishes, even when the request no longer awaits it.
+        return await asyncio.shield(future)
+
+    def _generation_input(
+        self,
+        prompt: Prompt | Sequence[Mapping[str, Any]],
+        params: GenerationParams,
+        template_options: dict[str, Any] | None = None,
+    ) -> tuple[_C.GenerationRequest, GenerationProcessor]:
+        if template_options is not None:
+            prompt = self.tokenizer.encode_chat(
+                cast(Sequence[Mapping[str, Any]], prompt), **template_options
+            )
+        tokens = encode_prompt(self.tokenizer, cast(Prompt, prompt), self.info)
+        request = params.request(tokens, self._config.generation_defaults, self.info)
+        return request, GenerationProcessor(
+            self.tokenizer,
+            tokens,
+            params,
+            stop=params.stop_strings(self._config.generation_defaults),
+        )
+
+    async def stream_generate(
+        self,
+        prompt: Prompt,
+        params: GenerationParams | None = None,
+        **kwargs: Any,
+    ) -> AsyncGenerator[GenerationOutput, None]:
+        params = (
+            replace(params, **kwargs)
+            if params is not None
+            else GenerationParams(**kwargs)
+        )
+        request, processor = await self._prepare(
+            params.n, partial(self._generation_input, prompt, params)
+        )
+        async with aclosing(self._stream(request, processor)) as stream:
+            async for output in stream:
+                yield cast(GenerationOutput, output)
+
+    async def stream_chat(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        params: GenerationParams | None = None,
+        *,
+        chat_template_kwargs: dict[str, Any] | None = None,
+        add_generation_prompt: bool = True,
+        continue_final_message: bool = False,
+        **kwargs: Any,
+    ) -> AsyncGenerator[GenerationOutput, None]:
+        params = (
+            replace(params, **kwargs)
+            if params is not None
+            else GenerationParams(**kwargs)
+        )
+        template_options = dict(chat_template_kwargs or {})
+        template_options.update(
+            add_generation_prompt=add_generation_prompt,
+            continue_final_message=continue_final_message,
+        )
+        request, processor = await self._prepare(
+            params.n,
+            partial(self._generation_input, messages, params, template_options),
+        )
+        async with aclosing(self._stream(request, processor)) as stream:
+            async for output in stream:
+                yield cast(GenerationOutput, output)
+
+    @staticmethod
+    async def _collect(
+        stream: AsyncGenerator[GenerationOutput, None],
+    ) -> GenerationOutput:
+        result = GenerationBuffer()
+        async with aclosing(stream):
+            async for output in stream:
+                result.add(output)
+        return result.take()
+
+    async def generate(
+        self,
+        prompt: Prompt,
+        params: GenerationParams | None = None,
+        **kwargs: Any,
+    ) -> GenerationOutput:
+        return await self._collect(self.stream_generate(prompt, params, **kwargs))
+
+    async def chat(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        params: GenerationParams | None = None,
+        *,
+        chat_template_kwargs: dict[str, Any] | None = None,
+        add_generation_prompt: bool = True,
+        continue_final_message: bool = False,
+        **kwargs: Any,
+    ) -> GenerationOutput:
+        return await self._collect(
+            self.stream_chat(
+                messages,
+                params,
+                chat_template_kwargs=chat_template_kwargs,
+                add_generation_prompt=add_generation_prompt,
+                continue_final_message=continue_final_message,
+                **kwargs,
+            )
+        )
+
+    async def embed(self, prompt: Prompt) -> RequestOutput:
+        if self.info.task != _C.ModelTask.EMBEDDING:
+            raise ValueError("The loaded model does not support embeddings")
+        tokens = await self._prepare(
+            1, partial(encode_prompt, self.tokenizer, prompt, self.info)
+        )
+        return await self.execute(_C.EmbeddingRequest(tokens))
+
     def _check_loop(self) -> None:
         if asyncio.get_running_loop() is not self._loop:
             raise RuntimeError("AsyncEngine must be used on its creating event loop")
@@ -197,6 +373,14 @@ class AsyncEngine:
         while self._buffered_bytes > self._max_bytes:
             request_id, state = max(
                 self._requests.items(), key=lambda entry: entry[1].output.size_bytes
+            )
+            _LOGGER.warning(
+                "Canceling request %d: unread output exceeded the payload budget "
+                "(buffered_bytes=%d request_bytes=%d budget_bytes=%d)",
+                request_id,
+                self._buffered_bytes,
+                state.output.size_bytes,
+                self._max_bytes,
             )
             state.error = OutputBufferError(
                 f"Unread output exceeded the {self._max_bytes}-byte payload budget"
@@ -223,7 +407,7 @@ class AsyncEngine:
                             self._retire(output.request_id)
                         continue
                     size = state.output.size_bytes
-                    state.output.add(output)
+                    update_output(self._native, output, state.output, state.processor)
                     self._buffered_bytes += state.output.size_bytes - size
                     state.ready.set()
                 self._limit_outputs()
@@ -249,7 +433,19 @@ class AsyncEngine:
             try:
                 await self._receiver
             finally:
-                self._executor.shutdown(wait=False)
+                try:
+                    # Encoding already running cannot be canceled; wait off the
+                    # event loop so close returns with no background text jobs.
+                    await self._loop.run_in_executor(
+                        self._executor,
+                        partial(
+                            self._tokenizer_executor.shutdown,
+                            wait=True,
+                            cancel_futures=True,
+                        ),
+                    )
+                finally:
+                    self._executor.shutdown(wait=False)
         if self._failure is not None:
             raise self._failure
 

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -89,7 +90,7 @@ class CausalLMExecution final : public Execution {
 
  private:
   /** Execute representative maximum-shape paths using a small, initialized scratch cache. */
-  void Profile(ttl::ExecutionContext &context, const ExecutionLimits &limits);
+  void Profile(ttl::ExecutionContext &context, const ExecutionLimits &limits, size_t rank);
 
   ttl::Runtime &runtime_;
   std::unique_ptr<model::causal_lm::CausalLM> model_;
@@ -297,7 +298,7 @@ CausalLMExecution::CausalLMExecution(ttl::Runtime &runtime, std::unique_ptr<mode
                                      const CausalLMOptions &options)
     : runtime_(runtime), model_(std::move(model)), options_(options) {}
 
-void CausalLMExecution::Profile(ttl::ExecutionContext &context, const ExecutionLimits &limits) {
+void CausalLMExecution::Profile(ttl::ExecutionContext &context, const ExecutionLimits &limits, size_t rank) {
   const auto &spec = model_->GetSpec();
   auto profile_limits = limits;
   profile_limits.max_num_seqs_ = std::min(limits.max_num_seqs_, limits.max_num_batched_tokens_);
@@ -329,6 +330,7 @@ void CausalLMExecution::Profile(ttl::ExecutionContext &context, const ExecutionL
       context, ttl::Shape{static_cast<int64_t>(limits.max_num_output_tokens_), spec.vocab_size_}, spec.dtype_);
   const auto max_length = static_cast<size_t>(limits.max_seq_len_);
   enum class ProfileKind : uint8_t { PROMPT, PACKED_PROMPT, PREFIX, DECODE, LOGITS };
+  constexpr std::array profile_names{"prompt", "packed prompt", "prefix", "decode", "logits"};
   const auto native_decode = capacity.has_value() && std::ranges::all_of(spec.layer_specs_, [&](const auto &layer) {
                                return layer.key_head_dim_ == layer.value_head_dim_ &&
                                       attention::SupportsPagedDecode(static_cast<int64_t>(layer.key_head_dim_),
@@ -360,6 +362,9 @@ void CausalLMExecution::Profile(ttl::ExecutionContext &context, const ExecutionL
       batch.phase_ = decode ? CausalLMPhase::DECODE : CausalLMPhase::PREFILL;
       batch.is_final_prompt_chunk_ = true;
       size_t remaining_outputs = limits.max_num_output_tokens_;
+      size_t new_tokens = 0;
+      size_t max_query = 0;
+      size_t max_context = 0;
       kv_cache::block_id_t next_page = 2;
       for (size_t row = 0; row < rows; ++row) {
         auto length = prefix ? std::min(query, max_length - 1) : query;
@@ -375,6 +380,9 @@ void CausalLMExecution::Profile(ttl::ExecutionContext &context, const ExecutionL
           --context_length;
         }
         const auto cached = context_length - length;
+        new_tokens += length;
+        max_query = std::max(max_query, length);
+        max_context = std::max(max_context, context_length);
         const auto output_length = kind == ProfileKind::LOGITS
                                        ? std::min(length, (remaining_outputs + rows - row - 1) / (rows - row))
                                        : size_t{1};
@@ -400,11 +408,18 @@ void CausalLMExecution::Profile(ttl::ExecutionContext &context, const ExecutionL
         }
         batch.inputs_.push_back(std::move(input));
       }
+      const auto probe_start = std::chrono::steady_clock::now();
+      ZEPHYR_LOG_DEBUG("rank {} on cuda:{}: profile {} started (rows={}, new_tokens={}, max_query={}, max_context={})",
+                       rank, spec.device_.GetOrdinal(), profile_names[static_cast<size_t>(kind)], rows, new_tokens,
+                       max_query, max_context);
       {
         const auto plan = processor.Prepare(batch);
         static_cast<void>(Execute(context, *plan));
       }
       context.Synchronize();
+      ZEPHYR_LOG_DEBUG("rank {} on cuda:{}: profile {} completed in {:.3f}s", rank, spec.device_.GetOrdinal(),
+                       profile_names[static_cast<size_t>(kind)],
+                       std::chrono::duration<double>(std::chrono::steady_clock::now() - probe_start).count());
     }
   }
 }
@@ -435,9 +450,16 @@ auto CausalLMExecution::Initialize(ttl::ExecutionContext &context, const Executo
     }
     throw InternalException("execution device is missing from runtime statistics");
   };
+  const auto profile_start = std::chrono::steady_clock::now();
+  ZEPHYR_LOG_INFO(
+      "rank {} on cuda:{}: profiling generation memory (dtype={}, max_seq_len={}, max_num_seqs={}, "
+      "max_batch_tokens={}, output_tokens={}, kv_cache={})",
+      rank.Rank(), spec.device_.GetOrdinal(), ttl::GetDTypeInfo(spec.dtype_).name_, limits.max_seq_len_,
+      limits.max_num_seqs_, limits.max_num_batched_tokens_, limits.max_num_output_tokens_,
+      options_.kv_cache_.has_value());
   runtime_.SynchronizeMemory(spec.device_);
   runtime_.TrimMemory(spec.device_, 0);
-  Profile(context, limits);
+  Profile(context, limits, rank.Rank());
   const auto peak_bytes = statistics().peak_physical_in_use_bytes_;
   const auto temporary_cache_bytes =
       cache_ != nullptr ? cache_->GetConfig().capacity_.num_gpu_blocks_ * block_bytes : 0;
@@ -448,9 +470,20 @@ auto CausalLMExecution::Initialize(ttl::ExecutionContext &context, const Executo
   const auto persistent_bytes = statistics().logical_live_bytes_;
   const auto model_peak = peak_bytes - temporary_cache_bytes;
   size_t transient_bytes = model_peak > persistent_bytes ? model_peak - persistent_bytes : 0;
+  ZEPHYR_LOG_INFO("rank {} on cuda:{}: model memory profiled in {:.3f}s (persistent={} MiB, transient={} MiB)",
+                  rank.Rank(), spec.device_.GetOrdinal(),
+                  std::chrono::duration<double>(std::chrono::steady_clock::now() - profile_start).count(),
+                  persistent_bytes / (1024 * 1024), transient_bytes / (1024 * 1024));
   if (rank.Rank() == 0) {
+    const auto sampling_start = std::chrono::steady_clock::now();
+    ZEPHYR_LOG_INFO("rank {} on cuda:{}: profiling sampling memory (rows={}, vocab_size={})", rank.Rank(),
+                    spec.device_.GetOrdinal(), limits.max_num_output_tokens_, spec.vocab_size_);
     const auto sampling_bytes = sampler::ProfileSamplingMemory(runtime_, spec.device_, limits.max_num_output_tokens_,
                                                                spec.vocab_size_, spec.dtype_);
+    ZEPHYR_LOG_INFO("rank {} on cuda:{}: sampling memory profiled in {:.3f}s (reserve={} MiB)", rank.Rank(),
+                    spec.device_.GetOrdinal(),
+                    std::chrono::duration<double>(std::chrono::steady_clock::now() - sampling_start).count(),
+                    sampling_bytes / (1024 * 1024));
     if (sampling_bytes > std::numeric_limits<size_t>::max() - transient_bytes) {
       throw ConfigurationException("execution memory requirement exceeds the addressable range");
     }
@@ -475,6 +508,9 @@ auto CausalLMExecution::Initialize(ttl::ExecutionContext &context, const Executo
     const auto charged = statistics().peak_physical_in_use_bytes_;
     available = std::min(available, memory.max_live_bytes_ > charged ? memory.max_live_bytes_ - charged : 0);
   }
+  ZEPHYR_LOG_INFO("rank {} on cuda:{}: memory budget (free={} MiB, usable={} MiB, execution_reserve={} MiB)",
+                  rank.Rank(), spec.device_.GetOrdinal(), memory.free_bytes_ / (1024 * 1024), available / (1024 * 1024),
+                  transient_bytes / (1024 * 1024));
   if (transient_bytes > available) {
     throw OutOfMemoryException("execution and sampling peaks exceed the GPU budget; reduce batch or context limits");
   }
@@ -500,12 +536,15 @@ auto CausalLMExecution::Initialize(ttl::ExecutionContext &context, const Executo
     throw OutOfMemoryException("KV cache cannot hold the configured context plus its reserved null page");
   }
   const kv_cache::CacheCapacity capacity{.block_size_ = block_size, .num_gpu_blocks_ = static_cast<size_t>(num_blocks)};
+  const auto cache_start = std::chrono::steady_clock::now();
+  ZEPHYR_LOG_INFO("rank {} on cuda:{}: allocating KV cache ({} pages x {} tokens, {} MiB)", rank.Rank(),
+                  spec.device_.GetOrdinal(), capacity.num_gpu_blocks_, capacity.block_size_,
+                  (capacity.num_gpu_blocks_ * block_bytes) / (1024 * 1024));
   cache_ = std::make_unique<kv_cache::CacheEngine>(
       runtime_, kv_cache::CacheConfig{.capacity_ = capacity, .dtype_ = spec.dtype_, .layer_specs_ = spec.layer_specs_},
       spec.device_);
-  ZEPHYR_LOG_INFO("rank {}: KV cache {} pages x {} tokens, {} MiB; execution reserve {} MiB", rank.Rank(),
-                  capacity.num_gpu_blocks_, capacity.block_size_,
-                  (capacity.num_gpu_blocks_ * block_bytes) / (1024 * 1024), transient_bytes / (1024 * 1024));
+  ZEPHYR_LOG_INFO("rank {} on cuda:{}: KV cache allocated in {:.3f}s", rank.Rank(), spec.device_.GetOrdinal(),
+                  std::chrono::duration<double>(std::chrono::steady_clock::now() - cache_start).count());
   return std::make_unique<CausalLMInputProcessor>(CausalLMExecutionSpec{spec, capacity, limits});
 }
 

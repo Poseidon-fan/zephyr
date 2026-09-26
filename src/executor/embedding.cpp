@@ -1,6 +1,7 @@
 #include "executor/embedding.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -17,6 +18,7 @@
 #include <ttl/tensor/shape.hpp>
 
 #include "common/exception.hpp"
+#include "common/logger.hpp"
 #include "executor/executor.hpp"
 
 namespace zephyr::executor {
@@ -111,18 +113,30 @@ class EmbeddingExecution final : public Execution {
     // Embedding batches consume full sequences; length-bucket scheduling never chunks an input.
     requested_limits.max_num_batched_tokens_ = 0;
     const auto limits = requested_limits.Resolve(spec.max_seq_len_);
+    const auto profile_start = std::chrono::steady_clock::now();
+    ZEPHYR_LOG_INFO(
+        "rank {} on cuda:{}: profiling embedding memory (dtype={}, max_seq_len={}, max_num_seqs={}, "
+        "max_batch_tokens={}, embedding_size={})",
+        rank.Rank(), spec.device_.GetOrdinal(), ttl::GetDTypeInfo(spec.dtype_).name_, limits.max_seq_len_,
+        limits.max_num_seqs_, limits.max_num_batched_tokens_, spec.embedding_size_);
     auto processor = std::make_unique<EmbeddingInputProcessor>(spec, limits);
     context.Synchronize();
     runtime_.SynchronizeMemory(spec.device_);
     runtime_.TrimMemory(spec.device_, 0);
     runtime_.ResetPeakMemoryStatistics(spec.device_);
     const auto warmup = [&](size_t rows) {
+      const auto probe_start = std::chrono::steady_clock::now();
+      ZEPHYR_LOG_DEBUG("rank {} on cuda:{}: embedding profile started (rows={}, sequence_length={})", rank.Rank(),
+                       spec.device_.GetOrdinal(), rows, limits.max_seq_len_);
       EmbeddingBatch batch;
       batch.token_ids_.assign(rows, std::vector<token_id_t>(static_cast<size_t>(limits.max_seq_len_), 0));
       const auto plan = processor->Prepare(batch);
       static_cast<void>(Execute(context, *plan));
       // Release returned tensors before synchronization so their retirements are also observed.
       context.Synchronize();
+      ZEPHYR_LOG_DEBUG("rank {} on cuda:{}: embedding profile completed in {:.3f}s", rank.Rank(),
+                       spec.device_.GetOrdinal(),
+                       std::chrono::duration<double>(std::chrono::steady_clock::now() - probe_start).count());
     };
     warmup(1);
     if (limits.max_num_seqs_ > 1) {
@@ -162,6 +176,12 @@ class EmbeddingExecution final : public Execution {
           std::min(available,
                    memory.max_live_bytes_ > persistent_bytes ? memory.max_live_bytes_ - persistent_bytes : uint64_t{0});
     }
+    ZEPHYR_LOG_INFO(
+        "rank {} on cuda:{}: embedding memory profiled in {:.3f}s (persistent={} MiB, "
+        "execution_reserve={} MiB, usable={} MiB)",
+        rank.Rank(), spec.device_.GetOrdinal(),
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - profile_start).count(),
+        persistent_bytes / (1024 * 1024), transient_bytes / (1024 * 1024), available / (1024 * 1024));
     if (used > target || transient_bytes > available) {
       throw OutOfMemoryException("embedding execution exceeds the GPU budget; reduce batch or context limits");
     }

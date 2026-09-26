@@ -28,6 +28,9 @@ class PagedScheduler final : public Scheduler {
   [[nodiscard]] auto Schedule() -> SchedulePlan override;
   /** Release a registered sequence; removing an active sequence cancels it. Safe to repeat. */
   void Remove(sequence_id_t sequence_id) override;
+  [[nodiscard]] auto GetStatistics() const noexcept -> SchedulerStatistics override {
+    return {.num_running_sequences_ = running_.size(), .num_waiting_sequences_ = waiting_.size()};
+  }
 
  private:
   struct SequenceEntry final {

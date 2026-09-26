@@ -11,11 +11,13 @@ __all__: list[str] = [
     "ChoiceOutput",
     "EmbeddingRequest",
     "Engine",
+    "EngineInfo",
     "EngineOptions",
     "FinishReason",
     "GenerationRequest",
     "KvCacheOptions",
     "LengthBucketSchedulerConfig",
+    "LogLevel",
     "ModelTask",
     "OverloadedError",
     "PagedSchedulerConfig",
@@ -27,6 +29,7 @@ __all__: list[str] = [
     "TokenLogprob",
     "Usage",
     "VectorAdder",
+    "set_log_level",
 ]
 
 class ChoiceOutput:
@@ -74,6 +77,14 @@ class Engine:
         """
         Stop admission, finish in-flight work, cancel remaining requests, and release GPU resources. Safe to repeat.
         """
+    def stop_choice(
+        self,
+        request_id: typing.SupportsInt | typing.SupportsIndex,
+        choice_index: typing.SupportsInt | typing.SupportsIndex,
+    ) -> None:
+        """
+        Normally finish one choice after a text stop, leaving other choices running. Unknown or finished choices are harmless; already published outputs remain unchanged.
+        """
     def submit(self, request: GenerationRequest | EmbeddingRequest) -> int:
         """
         Validate and enqueue a request, returning its ID. Admission overload raises OverloadedError.
@@ -82,6 +93,19 @@ class Engine:
         """
         Block for CPU-owned increments or final results. Single consumer only; an empty list means shutdown. Engine failures raise after queued outputs have been drained.
         """
+    @property
+    def info(self) -> EngineInfo: ...
+
+class EngineInfo:
+    """
+    Effective capabilities of the loaded model.
+    """
+    @property
+    def max_seq_len(self) -> int: ...
+    @property
+    def task(self) -> ModelTask: ...
+    @property
+    def vocab_size(self) -> int: ...
 
 class EngineOptions:
     """
@@ -132,6 +156,8 @@ class FinishReason:
 
       STOP_TOKEN
 
+      STOP_STRING
+
       LENGTH
 
       MODEL_LENGTH
@@ -141,17 +167,18 @@ class FinishReason:
       ERROR
     """
 
-    CANCELED: typing.ClassVar[FinishReason]  # value = <FinishReason.CANCELED: 4>
+    CANCELED: typing.ClassVar[FinishReason]  # value = <FinishReason.CANCELED: 5>
     EOS: typing.ClassVar[FinishReason]  # value = <FinishReason.EOS: 0>
-    ERROR: typing.ClassVar[FinishReason]  # value = <FinishReason.ERROR: 5>
-    LENGTH: typing.ClassVar[FinishReason]  # value = <FinishReason.LENGTH: 2>
+    ERROR: typing.ClassVar[FinishReason]  # value = <FinishReason.ERROR: 6>
+    LENGTH: typing.ClassVar[FinishReason]  # value = <FinishReason.LENGTH: 3>
     MODEL_LENGTH: typing.ClassVar[
         FinishReason
-    ]  # value = <FinishReason.MODEL_LENGTH: 3>
+    ]  # value = <FinishReason.MODEL_LENGTH: 4>
+    STOP_STRING: typing.ClassVar[FinishReason]  # value = <FinishReason.STOP_STRING: 2>
     STOP_TOKEN: typing.ClassVar[FinishReason]  # value = <FinishReason.STOP_TOKEN: 1>
     __members__: typing.ClassVar[
         dict[str, FinishReason]
-    ]  # value = {'EOS': <FinishReason.EOS: 0>, 'STOP_TOKEN': <FinishReason.STOP_TOKEN: 1>, 'LENGTH': <FinishReason.LENGTH: 2>, 'MODEL_LENGTH': <FinishReason.MODEL_LENGTH: 3>, 'CANCELED': <FinishReason.CANCELED: 4>, 'ERROR': <FinishReason.ERROR: 5>}
+    ]  # value = {'EOS': <FinishReason.EOS: 0>, 'STOP_TOKEN': <FinishReason.STOP_TOKEN: 1>, 'STOP_STRING': <FinishReason.STOP_STRING: 2>, 'LENGTH': <FinishReason.LENGTH: 3>, 'MODEL_LENGTH': <FinishReason.MODEL_LENGTH: 4>, 'CANCELED': <FinishReason.CANCELED: 5>, 'ERROR': <FinishReason.ERROR: 6>}
     def __eq__(self, other: typing.Any) -> bool: ...
     def __getstate__(self) -> int: ...
     def __hash__(self) -> int: ...
@@ -222,6 +249,49 @@ class LengthBucketSchedulerConfig:
     ) -> None: ...
     @property
     def max_num_seqs(self) -> int: ...
+
+class LogLevel:
+    """
+    Members:
+
+      TRACE
+
+      DEBUG
+
+      INFO
+
+      WARN
+
+      ERROR
+
+      OFF
+    """
+
+    DEBUG: typing.ClassVar[LogLevel]  # value = <LogLevel.DEBUG: 1>
+    ERROR: typing.ClassVar[LogLevel]  # value = <LogLevel.ERROR: 4>
+    INFO: typing.ClassVar[LogLevel]  # value = <LogLevel.INFO: 2>
+    OFF: typing.ClassVar[LogLevel]  # value = <LogLevel.OFF: 5>
+    TRACE: typing.ClassVar[LogLevel]  # value = <LogLevel.TRACE: 0>
+    WARN: typing.ClassVar[LogLevel]  # value = <LogLevel.WARN: 3>
+    __members__: typing.ClassVar[
+        dict[str, LogLevel]
+    ]  # value = {'TRACE': <LogLevel.TRACE: 0>, 'DEBUG': <LogLevel.DEBUG: 1>, 'INFO': <LogLevel.INFO: 2>, 'WARN': <LogLevel.WARN: 3>, 'ERROR': <LogLevel.ERROR: 4>, 'OFF': <LogLevel.OFF: 5>}
+    def __eq__(self, other: typing.Any) -> bool: ...
+    def __getstate__(self) -> int: ...
+    def __hash__(self) -> int: ...
+    def __index__(self) -> int: ...
+    def __init__(self, value: typing.SupportsInt | typing.SupportsIndex) -> None: ...
+    def __int__(self) -> int: ...
+    def __ne__(self, other: typing.Any) -> bool: ...
+    def __repr__(self) -> str: ...
+    def __setstate__(
+        self, state: typing.SupportsInt | typing.SupportsIndex
+    ) -> None: ...
+    def __str__(self) -> str: ...
+    @property
+    def name(self) -> str: ...
+    @property
+    def value(self) -> int: ...
 
 class ModelTask:
     """
@@ -397,3 +467,8 @@ class VectorAdder:
         left: collections.abc.Sequence[typing.SupportsFloat | typing.SupportsIndex],
         right: collections.abc.Sequence[typing.SupportsFloat | typing.SupportsIndex],
     ) -> list[float]: ...
+
+def set_log_level(level: LogLevel) -> None:
+    """
+    Set the process-wide logging threshold for the native engine.
+    """

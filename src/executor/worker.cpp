@@ -1,5 +1,6 @@
 #include "executor/worker.hpp"
 
+#include <chrono>
 #include <exception>
 #include <memory>
 #include <mutex>
@@ -36,7 +37,12 @@ void RunWorker(WorkerState &state, size_t rank) noexcept {
   // Keep device resources alive through the failure handler, so Abort precedes synchronization and destruction.
   std::optional<ttl::ExecutionContext> context;
   std::unique_ptr<Execution> execution;
+  const auto device = state.options_.devices_[rank].GetOrdinal();
+  const char *phase = "loading model weights";
   try {
+    const auto load_start = std::chrono::steady_clock::now();
+    ZEPHYR_LOG_INFO("rank {} on cuda:{}: loading model weights (dtype={})", rank, device,
+                    ttl::GetDTypeInfo(state.options_.dtype_).name_);
     const auto rank_context = state.parallel_->GetRank(rank);
     context.emplace(state.runtime_.CreateExecutionContext(rank_context.Device()));
     {
@@ -49,6 +55,8 @@ void RunWorker(WorkerState &state, size_t rank) noexcept {
     }
     // All model uploads must finish before any rank profiles or allocates its runtime resources.
     context->Synchronize();
+    ZEPHYR_LOG_INFO("rank {} on cuda:{}: model weights loaded in {:.3f}s", rank, device,
+                    std::chrono::duration<double>(std::chrono::steady_clock::now() - load_start).count());
     {
       const std::scoped_lock lock{state.latch_};
       ++state.completed_;
@@ -58,14 +66,19 @@ void RunWorker(WorkerState &state, size_t rank) noexcept {
       std::unique_lock lock{state.latch_};
       state.changed_.wait(lock, [&] { return state.stopping_ || state.initialization_started_; });
       if (state.stopping_) {
+        ZEPHYR_LOG_INFO("rank {} on cuda:{}: initialization canceled", rank, device);
         return;
       }
     }
+    phase = "initializing execution";
+    const auto initialize_start = std::chrono::steady_clock::now();
     auto processor = execution->Initialize(*context, state.options_, rank_context);
     if (processor == nullptr) {
       throw ConfigurationException("execution returned no input processor");
     }
     context->Synchronize();
+    ZEPHYR_LOG_INFO("rank {} on cuda:{}: execution ready in {:.3f}s", rank, device,
+                    std::chrono::duration<double>(std::chrono::steady_clock::now() - initialize_start).count());
     {
       const std::scoped_lock lock{state.latch_};
       state.processors_[rank] = std::move(processor);
@@ -73,6 +86,7 @@ void RunWorker(WorkerState &state, size_t rank) noexcept {
     }
     state.changed_.notify_all();
 
+    phase = "executing a batch";
     uint64_t seen_round = 0;
     while (true) {
       const ExecutionPlan *plan = nullptr;
@@ -80,7 +94,7 @@ void RunWorker(WorkerState &state, size_t rank) noexcept {
         std::unique_lock lock{state.latch_};
         state.changed_.wait(lock, [&] { return state.stopping_ || state.round_ != seen_round; });
         if (state.stopping_) {
-          return;
+          break;
         }
         seen_round = state.round_;
         plan = state.plan_.get();
@@ -97,8 +111,17 @@ void RunWorker(WorkerState &state, size_t rank) noexcept {
       }
       state.changed_.notify_all();
     }
+    ZEPHYR_LOG_INFO("rank {} on cuda:{}: worker exiting", rank, device);
   } catch (...) {
-    state.Fail(std::current_exception());
+    const auto error = std::current_exception();
+    state.Fail(error);
+    try {
+      std::rethrow_exception(error);
+    } catch (const std::exception &failure) {
+      ZEPHYR_LOG_ERROR("rank {} on cuda:{} failed while {}: {}", rank, device, phase, failure.what());
+    } catch (...) {
+      ZEPHYR_LOG_ERROR("rank {} on cuda:{} failed while {} with an unknown error", rank, device, phase);
+    }
     if (context.has_value()) {
       try {
         context->Synchronize();

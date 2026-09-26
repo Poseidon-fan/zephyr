@@ -12,7 +12,7 @@
 
 namespace zephyr::engine {
 
-enum class FinishReason : uint8_t { EOS, STOP_TOKEN, LENGTH, MODEL_LENGTH, CANCELED, ERROR };
+enum class FinishReason : uint8_t { EOS, STOP_TOKEN, STOP_STRING, LENGTH, MODEL_LENGTH, CANCELED, ERROR };
 enum class RequestStatus : uint8_t { COMPLETED, CANCELED, REJECTED, ERROR };
 
 struct Usage final {

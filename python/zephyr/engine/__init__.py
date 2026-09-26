@@ -1,4 +1,4 @@
-"""Token-based synchronous and asynchronous access to the native inference engine."""
+"""Text and token access to the native inference engine."""
 
 from .._C import (  # pyright: ignore[reportMissingModuleSource]
     EmbeddingRequest,
@@ -17,17 +17,22 @@ from .._C import (  # pyright: ignore[reportMissingModuleSource]
     TokenLogprob,
 )
 from .async_engine import AsyncEngine, OutputBufferError
+from .config import EngineConfig
 from .engine import Engine
-from .outputs import ChoiceOutput, RequestOutput, Usage
+from .inputs import GenerationParams
+from .outputs import ChoiceOutput, GenerationOutput, RequestOutput, TextChoice, Usage
 
 __all__ = [
     "AsyncEngine",
     "ChoiceOutput",
     "EmbeddingRequest",
     "Engine",
+    "EngineConfig",
     "EngineOptions",
     "FinishReason",
     "GenerationRequest",
+    "GenerationParams",
+    "GenerationOutput",
     "KvCacheOptions",
     "LengthBucketSchedulerConfig",
     "ModelTask",
@@ -40,5 +45,6 @@ __all__ = [
     "SamplingParams",
     "SamplingResult",
     "TokenLogprob",
+    "TextChoice",
     "Usage",
 ]

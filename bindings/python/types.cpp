@@ -94,6 +94,7 @@ void BindTypes(py::module_ &module) {
   py::enum_<engine::FinishReason>(module, "FinishReason")
       .value("EOS", engine::FinishReason::EOS)
       .value("STOP_TOKEN", engine::FinishReason::STOP_TOKEN)
+      .value("STOP_STRING", engine::FinishReason::STOP_STRING)
       .value("LENGTH", engine::FinishReason::LENGTH)
       .value("MODEL_LENGTH", engine::FinishReason::MODEL_LENGTH)
       .value("CANCELED", engine::FinishReason::CANCELED)

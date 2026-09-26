@@ -4,8 +4,25 @@ description = "An LLM inference engine"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
-dependencies = []
+dependencies = [
+    "transformers>=4.57,<5",
+    "tokenizers>=0.22",
+    "huggingface-hub>=0.34",
+    "jinja2>=3.1.6",
+]
 dynamic = ["version"]
+
+[project.optional-dependencies]
+server = [
+    "anyio>=4,<5",
+    "fastapi>=0.115,<1",
+    "pydantic>=2.10,<3",
+    "uvicorn>=0.30,<1",
+    "sse-starlette>=3,<4",
+]
+
+[project.scripts]
+zephyr = "zephyr.cli:main"
 
 [build-system]
 requires = [

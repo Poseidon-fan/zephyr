@@ -54,7 +54,7 @@ auto Logger() -> spdlog::logger & {
   static auto logger = [] {
     auto sink = std::make_shared<spdlog::sinks::stderr_sink_mt>();
     auto result = spdlog::logger{"zephyr", std::move(sink)};
-    result.set_pattern("%Y-%m-%d %H:%M:%S.%e [%n] [%l] [%t] [%s:%# %!] %v");
+    result.set_pattern("%Y-%m-%d %H:%M:%S.%e [%n] [%l] [%t] [%s:%#] %v");
 #ifdef NDEBUG
     result.set_level(spdlog::level::info);
 #else
@@ -67,8 +67,8 @@ auto Logger() -> spdlog::logger & {
 }
 
 void ReportLogFailure(std::source_location location, const char *message) noexcept {
-  std::fprintf(stderr, "%s:%u in %s: logging failed: %s\n", location.file_name(),
-               static_cast<unsigned int>(location.line()), location.function_name(), message);
+  std::fprintf(stderr, "%s:%u: logging failed: %s\n", location.file_name(), static_cast<unsigned int>(location.line()),
+               message);
   std::fflush(stderr);
 }
 

@@ -47,11 +47,8 @@ void Log(LogLevel level, std::source_location location, fmt::format_string<Args.
 #define ZEPHYR_LOG_LEVEL_OFF 5
 
 #ifndef ZEPHYR_ACTIVE_LOG_LEVEL
-#ifdef NDEBUG
-#define ZEPHYR_ACTIVE_LOG_LEVEL ZEPHYR_LOG_LEVEL_INFO
-#else
-#define ZEPHYR_ACTIVE_LOG_LEVEL ZEPHYR_LOG_LEVEL_DEBUG
-#endif
+// Retain every level so runtime configuration works in Release builds too.
+#define ZEPHYR_ACTIVE_LOG_LEVEL ZEPHYR_LOG_LEVEL_TRACE
 #endif
 
 #define ZEPHYR_LOG_INTERNAL(level, ...)                                               \

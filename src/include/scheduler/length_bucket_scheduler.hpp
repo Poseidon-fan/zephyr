@@ -24,6 +24,9 @@ class LengthBucketScheduler final : public Scheduler {
   [[nodiscard]] auto Schedule() -> SchedulePlan override;
   /** Remove registration; an active sequence becomes FINISHED, while terminal states are preserved. */
   void Remove(sequence_id_t sequence_id) override;
+  [[nodiscard]] auto GetStatistics() const noexcept -> SchedulerStatistics override {
+    return {.num_running_sequences_ = running_.size(), .num_waiting_sequences_ = waiting_.size()};
+  }
 
  private:
   /** Choose the shortest bucket in discrete mode, otherwise the greatest summed scheduling priority. */

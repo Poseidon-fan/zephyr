@@ -40,6 +40,9 @@ void Engine::ExecuteGeneration(const scheduler::ScheduledBatch &batch) {
   ZEPHYR_ENSURE(logits.size() == batch.sequences_.size(), "Execution must preserve the scheduled row count");
   for (const auto &scheduled : batch.sequences_) {
     auto &sequence = sequences_.at(scheduled.sequence_id_);
+    if (batch.phase_ == scheduler::BatchPhase::PREFILL) {
+      log_statistics_.input_tokens_ += scheduled.num_tokens_;
+    }
     if (has_cache) {
       // Commit a completed range, not a token increment: a replay may evaluate an already cached token.
       sequence.num_computed_tokens_ =
@@ -67,6 +70,7 @@ void Engine::ExecuteGeneration(const scheduler::ScheduledBatch &batch) {
                                .rng_ = *state.rng_});
   }
   auto samples = sampler::Sample(*runtime_, *context_, sampling_inputs);
+  log_statistics_.generated_tokens_ += samples.size();
   for (size_t index = 0; index < samples.size(); ++index) {
     const auto id = batch.sequences_[index].sequence_id_;
     auto &sequence = sequences_.at(id);

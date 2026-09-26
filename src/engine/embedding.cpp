@@ -37,6 +37,7 @@ void Engine::ExecuteEmbedding(const scheduler::ScheduledBatch &batch) {
     ttl::CopyToHostBlocking(*context_, std::as_writable_bytes(std::span{values}), contiguous);
     request.output_.result_ = std::move(values);
     sequence.state_ = scheduler::SequenceState::FINISHED;
+    log_statistics_.input_tokens_ += input.token_ids_[index].size();
   }
 }
 

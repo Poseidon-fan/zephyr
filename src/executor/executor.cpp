@@ -57,6 +57,9 @@ auto Executor::Create(ttl::Runtime &runtime, const ExecutorOptions &options, Exe
       options.gpu_memory_utilization_ > 1.0) {
     throw ConfigurationException("GPU memory utilization must be finite and in (0, 1]");
   }
+  const auto initialize_start = std::chrono::steady_clock::now();
+  ZEPHYR_LOG_INFO("Initializing tensor-parallel executor with {} rank(s), dtype={}", options.devices_.size(),
+                  ttl::GetDTypeInfo(options.dtype_).name_);
   auto executor = std::unique_ptr<Executor>{new Executor{runtime, options, std::move(factory)}};
   auto &state = *executor->state_;
   try {
@@ -86,6 +89,9 @@ auto Executor::Create(ttl::Runtime &runtime, const ExecutorOptions &options, Exe
     state.processors_.clear();
     state.factory_ = {};
     state.checkpoint_.reset();
+    ZEPHYR_LOG_INFO("Executor ready in {:.3f}s: max_seq_len={}, max_num_seqs={}, max_batch_tokens={}",
+                    std::chrono::duration<double>(std::chrono::steady_clock::now() - initialize_start).count(),
+                    spec.limits_.max_seq_len_, spec.limits_.max_num_seqs_, spec.limits_.max_num_batched_tokens_);
     return executor;
   } catch (...) {
     state.Fail(std::current_exception());
@@ -177,6 +183,11 @@ auto Executor::Execute(const ExecutionBatch &batch) -> ExecutionResult {
 }
 
 void Executor::StopWorkers() {
+  const auto worker_count = workers_.size();
+  const auto stop_start = std::chrono::steady_clock::now();
+  if (worker_count != 0) {
+    ZEPHYR_LOG_INFO("Stopping {} executor worker(s)", worker_count);
+  }
   {
     const std::scoped_lock lock{state_->latch_};
     state_->stopping_ = true;
@@ -188,6 +199,10 @@ void Executor::StopWorkers() {
   state_->checkpoint_.reset();
   state_->factory_ = {};
   state_->processors_.clear();
+  if (worker_count != 0) {
+    ZEPHYR_LOG_INFO("Executor workers stopped in {:.3f}s",
+                    std::chrono::duration<double>(std::chrono::steady_clock::now() - stop_start).count());
+  }
 }
 
 void Executor::Close() {
@@ -195,7 +210,11 @@ void Executor::Close() {
   try {
     const auto status = state_->parallel_->GetStatus();
     if (status == ttl::CommunicatorStatus::READY) {
+      const auto close_start = std::chrono::steady_clock::now();
+      ZEPHYR_LOG_DEBUG("Closing tensor-parallel communication");
       state_->parallel_->Close();
+      ZEPHYR_LOG_DEBUG("Tensor-parallel communication closed in {:.3f}s",
+                       std::chrono::duration<double>(std::chrono::steady_clock::now() - close_start).count());
     } else if (status != ttl::CommunicatorStatus::CLOSED && status != ttl::CommunicatorStatus::ABORTED) {
       state_->parallel_->Abort();
       const auto aborted_status = state_->parallel_->GetStatus();

@@ -9,6 +9,7 @@
 #include <ttl/common/error.hpp>
 
 #include "common/exception.hpp"
+#include "common/logger.hpp"
 
 #include <zephyr/vector_adder.hpp>
 
@@ -17,6 +18,16 @@ namespace py = pybind11;
 // NOLINTNEXTLINE(modernize-use-trailing-return-type)
 PYBIND11_MODULE(_C, module) {
   module.doc() = "Zephyr native bindings";
+
+  py::enum_<zephyr::LogLevel>(module, "LogLevel")
+      .value("TRACE", zephyr::LogLevel::TRACE)
+      .value("DEBUG", zephyr::LogLevel::DEBUG)
+      .value("INFO", zephyr::LogLevel::INFO)
+      .value("WARN", zephyr::LogLevel::WARN)
+      .value("ERROR", zephyr::LogLevel::ERROR)
+      .value("OFF", zephyr::LogLevel::OFF);
+  module.def("set_log_level", &zephyr::SetLogLevel, py::arg("level"),
+             "Set the process-wide logging threshold for the native engine.");
 
   py::register_local_exception<zephyr::OverloadedException>(module, "OverloadedError", PyExc_RuntimeError);
   // Keep translation local to this extension so other TTL users retain their own exception policies.

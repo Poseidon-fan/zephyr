@@ -15,6 +15,11 @@ namespace py = pybind11;
 namespace zephyr::bindings {
 
 void BindEngine(py::module_ &module) {
+  py::class_<engine::EngineInfo>(module, "EngineInfo", "Effective capabilities of the loaded model.")
+      .def_readonly("task", &engine::EngineInfo::task_)
+      .def_readonly("max_seq_len", &engine::EngineInfo::max_seq_len_)
+      .def_readonly("vocab_size", &engine::EngineInfo::vocab_size_);
+
   py::class_<engine::Engine>(
       module, "Engine", py::release_gil_before_calling_cpp_dtor(),
       "Native engine owning its runtime and worker threads. Exactly one caller consumes outputs.")
@@ -39,6 +44,11 @@ void BindEngine(py::module_ &module) {
           "Validate and enqueue a request, returning its ID. Admission overload raises OverloadedError.")
       .def("cancel", &engine::Engine::Cancel, py::arg("request_id"), py::call_guard<py::gil_scoped_release>(),
            "Cancel at the next safe execution boundary. Unknown or finished IDs are harmless.")
+      .def("stop_choice", &engine::Engine::StopChoice, py::arg("request_id"), py::arg("choice_index"),
+           py::call_guard<py::gil_scoped_release>(),
+           "Normally finish one choice after a text stop, leaving other choices running. "
+           "Unknown or finished choices are harmless; already published outputs remain unchanged.")
+      .def_property_readonly("info", &engine::Engine::GetInfo)
       .def("wait_for_outputs", &engine::Engine::WaitForOutputs, py::call_guard<py::gil_scoped_release>(),
            "Block for CPU-owned increments or final results. Single consumer only; an empty list means shutdown. "
            "Engine failures raise after queued outputs have been drained.")
