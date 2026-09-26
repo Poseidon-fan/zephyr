@@ -59,13 +59,13 @@ class Shard {
 };
 
 /**
- * Resolve checkpoint names and asynchronously materialize their weights on a
- * TTL execution context.
+ * Resolve checkpoint names and materialize weights on a TTL execution context.
+ * Uploads use bounded synchronized chunks; dtype conversions remain asynchronous.
  *
  * A builder is a cheap immutable view: PushPrefix and WithDType return copies
  * that share the checkpoint mapping and runtime references. The runtime and
- * checkpoint must outlive every builder copy and every in-flight transfer;
- * contexts passed to Get must be created by that runtime.
+ * checkpoint must outlive every builder copy; contexts passed to Get must be
+ * created by that runtime.
  */
 class WeightBuilder {
  public:
@@ -87,9 +87,9 @@ class WeightBuilder {
   [[nodiscard]] auto GetParameterInfo(std::string_view parameter_name) const -> std::optional<ParameterInfo>;
 
   /**
-   * Load one parameter, optionally selecting a row-major shard, and enqueue its
-   * host-to-device transfer on context. expected_shape is checked before any
-   * device allocation so model wiring errors fail early.
+   * Load one parameter, optionally selecting a row-major shard, through bounded
+   * host-to-device chunks on context. expected_shape is checked before any device
+   * allocation so model wiring errors fail early.
    */
   [[nodiscard]] auto Get(ttl::ExecutionContext &context, const ttl::Shape &expected_shape,
                          std::string_view parameter_name, std::optional<Shard> shard = std::nullopt) const

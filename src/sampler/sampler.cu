@@ -98,14 +98,15 @@ __global__ void FilterCandidatesKernel(float *weights, const float *cumulative, 
     const auto rank = index % width;
     const auto &row = rows[row_index];
     bool keep = rank < row.top_k_;
-    if (keep && row.top_p_ > 0.0F) {
+    if (keep && row.top_p_ > 0.0) {
       // Test the preceding prefix so the candidate that reaches the threshold is retained.
       const auto prefix = rank == 0 ? 0.0F : cumulative[index - 1];
       const auto total = cumulative[(row_index * width) + (row.top_k_ - 1)];
-      keep = prefix < (row.top_p_ * total);
+      // Even the smallest positive double must retain the leading candidate if the product underflows.
+      keep = rank == 0 || static_cast<double>(prefix) < (row.top_p_ * static_cast<double>(total));
     }
-    if (keep && row.min_p_ > 0.0F) {
-      keep = weights[index] > (row.min_p_ * maxima[row_index]);
+    if (keep && row.min_p_ > 0.0) {
+      keep = static_cast<double>(weights[index]) > (row.min_p_ * static_cast<double>(maxima[row_index]));
     }
     if (!keep) {
       weights[index] = 0.0F;

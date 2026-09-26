@@ -78,8 +78,6 @@ auto EnqueueGroup(ttl::Runtime &runtime, ttl::ExecutionContext &context, std::sp
   for (const auto index : indices) {
     const auto &input = inputs[index];
     const auto &params = input.params_;
-    const auto top_p = static_cast<float>(params.top_p_);
-    const auto min_p = static_cast<float>(params.min_p_);
     const auto row_index = static_cast<int64_t>(rows.size());
     const auto top_k = params.top_k_ > 0 ? std::min(params.top_k_, vocabulary) : vocabulary;
     const auto num_logprobs =
@@ -97,15 +95,15 @@ auto EnqueueGroup(ttl::Runtime &runtime, ttl::ExecutionContext &context, std::sp
                     .frequency_penalty_ = params.frequency_penalty_,
                     .presence_penalty_ = params.presence_penalty_,
                     .repetition_penalty_ = params.repetition_penalty_,
-                    .top_p_ = !greedy && top_p > 0.0F && top_p < 1.0F ? top_p : 0.0F,
-                    .min_p_ = !greedy && min_p > 0.0F && min_p < 1.0F ? min_p : 0.0F,
+                    .top_p_ = !greedy && params.top_p_ > 0.0 && params.top_p_ < 1.0 ? params.top_p_ : 0.0,
+                    .min_p_ = !greedy && params.min_p_ > 0.0 && params.min_p_ < 1.0 ? params.min_p_ : 0.0,
                     .uniform_ = uniforms[index]});
     result_count += row_result_count;
     reporting = reporting || num_logprobs >= 0;
     report_width = std::max(report_width, num_logprobs);
     candidate_width = std::max(candidate_width, top_k);
-    has_top_p = has_top_p || rows.back().top_p_ > 0.0F;
-    has_min_p = has_min_p || rows.back().min_p_ > 0.0F;
+    has_top_p = has_top_p || rows.back().top_p_ > 0.0;
+    has_min_p = has_min_p || rows.back().min_p_ > 0.0;
     input_rows.push_back(input.logits_);
 
     // Merge history and bias before upload: one device thread updates each affected token exactly once.
@@ -270,6 +268,24 @@ auto EnqueueGroup(ttl::Runtime &runtime, ttl::ExecutionContext &context, std::sp
 
 }  // namespace
 
+void ValidateSamplingParams(const SamplingParams &params, int64_t vocab_size) {
+  if (vocab_size <= 0 || vocab_size > std::numeric_limits<token_id_t>::max()) {
+    throw InvalidArgumentException("sampling requires a nonempty vocabulary representable by token_id_t");
+  }
+  if (!std::isfinite(params.temperature_) || params.temperature_ < 0.0 || !std::isfinite(params.top_p_) ||
+      !std::isfinite(params.min_p_) || !std::isfinite(params.frequency_penalty_) ||
+      !std::isfinite(params.presence_penalty_) || !std::isfinite(params.repetition_penalty_) ||
+      params.repetition_penalty_ <= 0.0F) {
+    throw InvalidArgumentException(
+        "sampling parameters must be finite, with nonnegative temperature and positive repetition penalty");
+  }
+  for (const auto &[token, bias] : params.logits_bias_) {
+    if (token < 0 || token >= vocab_size || std::isnan(bias) || bias == std::numeric_limits<float>::infinity()) {
+      throw InvalidArgumentException("logits bias requires a valid token and a finite or negative-infinite bias");
+    }
+  }
+}
+
 auto Sample(ttl::Runtime &runtime, ttl::ExecutionContext &context, std::span<const SamplingInput> inputs)
     -> std::vector<SamplingResult> {
   if (inputs.empty()) {
@@ -278,9 +294,6 @@ auto Sample(ttl::Runtime &runtime, ttl::ExecutionContext &context, std::span<con
   const auto vocabulary = inputs.front().logits_.GetNumElements();
   const auto dtype = inputs.front().logits_.GetDType();
   const auto device = context.GetDevice();
-  if (vocabulary <= 0 || vocabulary > std::numeric_limits<token_id_t>::max()) {
-    throw InvalidArgumentException("sampling requires a nonempty vocabulary representable by token_id_t");
-  }
   std::array<std::vector<size_t>, 4> groups;
   for (size_t index = 0; index < inputs.size(); ++index) {
     const auto &input = inputs[index];
@@ -292,24 +305,13 @@ auto Sample(ttl::Runtime &runtime, ttl::ExecutionContext &context, std::span<con
     if (input.prompt_length_ > input.history_.size() || !std::in_range<int64_t>(input.history_.size())) {
       throw InvalidArgumentException("sampling history must include the complete prompt");
     }
-    if (!std::isfinite(params.temperature_) || params.temperature_ < 0.0 || !std::isfinite(params.top_p_) ||
-        !std::isfinite(params.min_p_) || !std::isfinite(params.frequency_penalty_) ||
-        !std::isfinite(params.presence_penalty_) || !std::isfinite(params.repetition_penalty_) ||
-        params.repetition_penalty_ <= 0.0F) {
-      throw InvalidArgumentException(
-          "sampling parameters must be finite, with nonnegative temperature and positive repetition penalty");
-    }
-    for (const auto &[token, bias] : params.logits_bias_) {
-      if (token < 0 || token >= vocabulary || std::isnan(bias) || bias == std::numeric_limits<float>::infinity()) {
-        throw InvalidArgumentException("logits bias requires a valid token and a finite or negative-infinite bias");
-      }
-    }
+    ValidateSamplingParams(params, vocabulary);
     auto mode = SamplingMode::UNSORTED;
     if (params.temperature_ < GREEDY_TEMPERATURE) {
       mode = SamplingMode::GREEDY;
     } else if (params.top_k_ > 0) {
       mode = SamplingMode::TOP_K;
-    } else if (static_cast<float>(params.top_p_) > 0.0F && static_cast<float>(params.top_p_) < 1.0F) {
+    } else if (params.top_p_ > 0.0 && params.top_p_ < 1.0) {
       mode = SamplingMode::TOP_P;
     }
     groups[static_cast<size_t>(mode)].push_back(index);

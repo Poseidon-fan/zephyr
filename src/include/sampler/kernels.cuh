@@ -20,8 +20,8 @@ struct SamplingRow final {
   float frequency_penalty_;
   float presence_penalty_;
   float repetition_penalty_;
-  float top_p_;
-  float min_p_;
+  double top_p_;
+  double min_p_;
   float uniform_;
 };
 

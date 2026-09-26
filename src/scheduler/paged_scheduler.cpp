@@ -110,6 +110,10 @@ void PagedScheduler::AdmitWaiting() {
       if (entry.waiting_count_ <= waiting_timeout) {
         break;
       }
+      // Let reserved prompts finish: repeated eviction can discard their progress indefinitely.
+      if (num_prompts != 0) {
+        break;
+      }
 
       bool allocated = false;
       while (!running_.empty()) {

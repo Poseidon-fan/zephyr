@@ -10,6 +10,7 @@ add_subdirectory(model)
 add_subdirectory(executor)
 add_subdirectory(sampler)
 add_subdirectory(scheduler)
+add_subdirectory(engine)
 
 add_library(zephyr_core STATIC vector_adder.cpp ${ALL_OBJECT_FILES})
 add_library(zephyr::core ALIAS zephyr_core)

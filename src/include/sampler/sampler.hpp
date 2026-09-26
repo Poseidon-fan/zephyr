@@ -33,6 +33,9 @@ struct SamplingParams final {
   std::optional<size_t> top_logprobs_;
 };
 
+/** Validate effective settings and bias token IDs before admitting a request or drawing random samples. */
+void ValidateSamplingParams(const SamplingParams &params, int64_t vocab_size);
+
 struct TokenLogprob final {
   token_id_t token_id_;
   float logprob_;

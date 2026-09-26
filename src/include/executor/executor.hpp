@@ -39,6 +39,8 @@ class Executor final {
   ~Executor() noexcept;
 
   [[nodiscard]] auto GetSpec() const noexcept -> const ExecutionSpec & { return processor_->GetSpec(); }
+  /** Query terminal worker or communication failure; rejected inputs and successful Close are not failures. */
+  [[nodiscard]] auto IsFailed() const -> bool;
   /** Input errors reject only this batch; a running worker failure terminates the complete group. */
   [[nodiscard]] auto Execute(const ExecutionBatch &batch) -> ExecutionResult;
   /** Release workers and communication resources. Successfully closing twice is harmless. */

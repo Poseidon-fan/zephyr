@@ -1,5 +1,6 @@
 #include "weight/weight_builder.hpp"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstring>
 #include <limits>
@@ -11,6 +12,7 @@
 
 #include <ttl/ops/cast.hpp>
 #include <ttl/ops/copy.hpp>
+#include <ttl/tensor/layout.hpp>
 
 #include "common/exception.hpp"
 
@@ -151,13 +153,10 @@ auto WeightBuilder::Get(ttl::ExecutionContext &context, const ttl::Shape &expect
     }
   }
 
-  auto staging = runtime_.AllocatePinned(output_bytes);
-  auto destination = staging.AsBytes();
-  if (!resolved_shard.has_value()) {
-    if (output_bytes != 0) {
-      std::memcpy(destination.data(), source_bytes.data(), output_bytes);
-    }
-  } else if (output_bytes != 0) {
+  auto row_bytes = output_bytes;
+  auto source_row_bytes = output_bytes;
+  size_t source_start = 0;
+  if (resolved_shard.has_value() && output_bytes != 0) {
     // Safetensors stores tensors in row-major order. A shard along an arbitrary
     // axis is therefore a sequence of contiguous inner rows for each outer row;
     // gathering those rows avoids materializing the full tensor on the device.
@@ -177,26 +176,42 @@ auto WeightBuilder::Get(ttl::ExecutionContext &context, const ttl::Shape &expect
     for (const auto dimension : dimensions.subspan(axis + 1)) {
       inner_elements *= static_cast<size_t>(dimension);
     }
-    const auto row_bytes = outer_elements == 0 ? size_t{0} : resolved_shard->length_ * inner_elements * element_bytes;
+    row_bytes = resolved_shard->length_ * inner_elements * element_bytes;
+    source_row_bytes = source_dimension * inner_elements * element_bytes;
+    source_start = resolved_shard->start_ * inner_elements * element_bytes;
     if (outer_elements * row_bytes != output_bytes) {
       throw InternalException("shard shape disagrees with its byte extent");
-    }
-
-    for (size_t outer = 0; outer < outer_elements; ++outer) {
-      const auto source_row = (outer * source_dimension) + resolved_shard->start_;
-      const auto source_offset = source_row * inner_elements * element_bytes;
-      const auto destination_offset = outer * row_bytes;
-      if (source_offset > source_bytes.size() || row_bytes > source_bytes.size() - source_offset) {
-        throw InternalException("shard row extends beyond the checkpoint parameter");
-      }
-      if (row_bytes != 0) {
-        std::memcpy(destination.data() + destination_offset, source_bytes.data() + source_offset, row_bytes);
-      }
     }
   }
 
   auto tensor = ttl::Empty(context, output_shape, record->info_.dtype_);
-  ttl::CopyFromPinnedAsync(context, tensor, staging);
+  const auto flat = ttl::View(tensor, ttl::Shape{element_count});
+  constexpr size_t transfer_bytes = 8U * 1024U * 1024U;
+  const auto chunk_bytes = (transfer_bytes / element_bytes) * element_bytes;
+  for (size_t offset = 0; offset < output_bytes;) {
+    const auto bytes = std::min(chunk_bytes, output_bytes - offset);
+    {
+      auto staging = runtime_.AllocatePinned(bytes);
+      auto destination = staging.AsBytes();
+      for (size_t copied = 0; copied < bytes;) {
+        const auto position = offset + copied;
+        const auto row_offset = position % row_bytes;
+        const auto source_offset = ((position / row_bytes) * source_row_bytes) + source_start + row_offset;
+        const auto count = std::min(row_bytes - row_offset, bytes - copied);
+        if (source_offset > source_bytes.size() || count > source_bytes.size() - source_offset) {
+          throw InternalException("shard row extends beyond the checkpoint parameter");
+        }
+        std::memcpy(destination.data() + copied, source_bytes.data() + source_offset, count);
+        copied += count;
+      }
+      auto chunk = ttl::Narrow(flat, 0, static_cast<int64_t>(offset / element_bytes),
+                               static_cast<int64_t>(bytes / element_bytes));
+      ttl::CopyFromPinnedAsync(context, chunk, staging);
+    }
+    // Retire staging before synchronizing so each rank holds at most one upload chunk.
+    context.Synchronize();
+    offset += bytes;
+  }
   if (record->info_.dtype_ == target_dtype_) {
     return tensor;
   }

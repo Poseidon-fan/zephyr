@@ -62,6 +62,17 @@ Executor::~Executor() noexcept {
   }
 }
 
+auto Executor::IsFailed() const -> bool {
+  {
+    const std::scoped_lock lock{state_->latch_};
+    if (state_->error_ != nullptr) {
+      return true;
+    }
+  }
+  const auto status = state_->parallel_->GetStatus();
+  return status == ttl::CommunicatorStatus::FAILED || status == ttl::CommunicatorStatus::ABORTED;
+}
+
 void Executor::WaitForWorkers() {
   std::unique_lock lock{state_->latch_};
   const auto finished = [&] { return state_->error_ != nullptr || state_->completed_ == workers_.size(); };
