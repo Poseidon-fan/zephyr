@@ -12,6 +12,7 @@
 #include <cuda_runtime.h>
 #include <thrust/iterator/counting_iterator.h>
 #include <thrust/iterator/transform_iterator.h>
+#include <cub/device/device_radix_sort.cuh>
 #include <cub/device/device_segmented_radix_sort.cuh>
 
 #include <ttl/runtime/cuda_dtype.hpp>
@@ -165,7 +166,14 @@ __global__ void InitializeSortInputKernel(TopKParameters parameters, uint64_t *k
     const auto axis_index = linear_index % parameters.axis_size_;
     const auto input_offset = GetSliceOffset(parameters, slice, parameters.input_strides_bytes_) +
                               (axis_index * parameters.input_strides_bytes_[parameters.axis_]);
-    keys[linear_index] = GetOrderedKey(*reinterpret_cast<const T *>(parameters.input_ + input_offset));
+    const auto key = GetOrderedKey(*reinterpret_cast<const T *>(parameters.input_ + input_offset));
+    if constexpr (CUDA_DTYPE_OF<T> == DType::INT64) {
+      keys[linear_index] = key;
+    } else {
+      const auto ordered_key = static_cast<uint32_t>(key);
+      const auto directed_key = parameters.largest_ ? ~ordered_key : ordered_key;
+      keys[linear_index] = (slice << 32U) | static_cast<uint64_t>(directed_key);
+    }
     indices[linear_index] = static_cast<int64_t>(axis_index);
     linear_index += step;
   }
@@ -245,24 +253,32 @@ void LaunchSortTyped(cudaStream_t stream, const TopKParameters &parameters, uint
       CheckedMultiply(parameters.slice_count_, parameters.k_, "TopK output item count", location);
   const auto num_items = launch_parameters.sort_item_count_;
   const auto narrowed_num_items = CheckedNarrow<int32_t>(num_items, "TopK item count", location);
-  const auto narrowed_segments = CheckedNarrow<int32_t>(parameters.slice_count_, "TopK segment count", location);
-  const auto narrowed_axis_size = CheckedNarrow<int32_t>(parameters.axis_size_, "TopK axis size", location);
   InitializeSortInputKernel<T><<<GetBlockCount(num_items, location), TOPK_THREADS_PER_BLOCK, 0, stream>>>(
       launch_parameters, keys_input, indices_input);
-  const auto begin_offsets = MakeSegmentOffsetIterator(0, narrowed_axis_size);
-  const auto end_offsets = MakeSegmentOffsetIterator(1, narrowed_axis_size);
   auto required_bytes = workspace_bytes;
-  // Each logical slice is one CUB segment. Sorting (key, source-index) pairs preserves the lowest source index for
-  // equal keys because CUB's radix sort is stable and indices enter in ascending order.
-  const auto status =
-      parameters.largest_
-          ? cub::DeviceSegmentedRadixSort::SortPairsDescending(
-                workspace, required_bytes, keys_input, keys_output, indices_input, indices_output, narrowed_num_items,
-                narrowed_segments, begin_offsets, end_offsets, 0, sizeof(uint64_t) * 8, stream)
-          : cub::DeviceSegmentedRadixSort::SortPairs(workspace, required_bytes, keys_input, keys_output, indices_input,
-                                                     indices_output, narrowed_num_items, narrowed_segments,
-                                                     begin_offsets, end_offsets, 0, sizeof(uint64_t) * 8, stream);
-  CheckCuda(status, "cub::DeviceSegmentedRadixSort::SortPairs", location);
+  if constexpr (CUDA_DTYPE_OF<T> == DType::INT64) {
+    const auto narrowed_segments = CheckedNarrow<int32_t>(parameters.slice_count_, "TopK segment count", location);
+    const auto narrowed_axis_size = CheckedNarrow<int32_t>(parameters.axis_size_, "TopK axis size", location);
+    const auto begin_offsets = MakeSegmentOffsetIterator(0, narrowed_axis_size);
+    const auto end_offsets = MakeSegmentOffsetIterator(1, narrowed_axis_size);
+    const auto status =
+        parameters.largest_
+            ? cub::DeviceSegmentedRadixSort::SortPairsDescending(
+                  workspace, required_bytes, keys_input, keys_output, indices_input, indices_output, narrowed_num_items,
+                  narrowed_segments, begin_offsets, end_offsets, 0, sizeof(uint64_t) * 8, stream)
+            : cub::DeviceSegmentedRadixSort::SortPairs(
+                  workspace, required_bytes, keys_input, keys_output, indices_input, indices_output, narrowed_num_items,
+                  narrowed_segments, begin_offsets, end_offsets, 0, sizeof(uint64_t) * 8, stream);
+    CheckCuda(status, "cub::DeviceSegmentedRadixSort::SortPairs", location);
+  } else {
+    // Packed row keys keep each slice contiguous while a global sort distributes long slices across the GPU.
+    // Stable sorting preserves lower source indices for equal values, including signed zeros and NaNs.
+    const auto end_bit = 32 + std::bit_width(parameters.slice_count_ - 1);
+    const auto status =
+        cub::DeviceRadixSort::SortPairs(workspace, required_bytes, keys_input, keys_output, indices_input,
+                                        indices_output, narrowed_num_items, 0, end_bit, stream);
+    CheckCuda(status, "cub::DeviceRadixSort::SortPairs", location);
+  }
   const auto output_items = launch_parameters.output_item_count_;
   GatherSortedTopKKernel<T>
       <<<GetBlockCount(output_items, location), TOPK_THREADS_PER_BLOCK, 0, stream>>>(launch_parameters, indices_output);
@@ -278,14 +294,22 @@ void LaunchSerialTyped(cudaStream_t stream, const TopKParameters &parameters, st
 
 }  // namespace
 
-auto GetTopKSortWorkspaceBytes(int32_t num_items, int32_t num_segments, int32_t axis_size, bool largest,
+auto GetTopKSortWorkspaceBytes(DType dtype, int32_t num_items, int32_t num_segments, int32_t axis_size, bool largest,
                                std::source_location location) -> size_t {
   if (num_items <= 0 || num_segments <= 0 || axis_size <= 0) {
     throw InternalError("invalid TopK workspace query parameters", location);
   }
+  auto workspace_bytes = size_t{0};
+  if (dtype != DType::INT64) {
+    const auto end_bit = 32 + std::bit_width(static_cast<uint32_t>(num_segments - 1));
+    const auto status = cub::DeviceRadixSort::SortPairs(
+        nullptr, workspace_bytes, static_cast<const uint64_t *>(nullptr), static_cast<uint64_t *>(nullptr),
+        static_cast<const int64_t *>(nullptr), static_cast<int64_t *>(nullptr), num_items, 0, end_bit);
+    CheckCuda(status, "cub::DeviceRadixSort::SortPairs workspace query", location);
+    return workspace_bytes;
+  }
   const auto begin_offsets = MakeSegmentOffsetIterator(0, axis_size);
   const auto end_offsets = MakeSegmentOffsetIterator(1, axis_size);
-  auto workspace_bytes = size_t{0};
   const auto status = largest
                           ? cub::DeviceSegmentedRadixSort::SortPairsDescending(
                                 nullptr, workspace_bytes, static_cast<const uint64_t *>(nullptr),

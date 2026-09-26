@@ -20,6 +20,8 @@
 namespace ttl {
 namespace {
 
+constexpr uint64_t DEVICE_SCAN_MINIMUM_AXIS_SIZE = 4096;
+
 [[nodiscard]] auto AddOffset(uint64_t current, uint64_t extent, uint64_t stride, uint64_t maximum) noexcept
     -> uint64_t {
   if (extent == 0 || stride == 0) {
@@ -103,11 +105,22 @@ void CumulativeSumOut(ExecutionContext &context, Tensor &output, const Tensor &i
   }
 
   const auto parameters = BuildParameters(output, input, axis, location);
-  const auto index_width =
-      CanUse32BitIndexing(parameters) ? internal::IndexWidth::UINT32 : internal::IndexWidth::UINT64;
   guard.RecordTensor(output);
   guard.RecordTensor(input);
-  internal::LaunchCumulativeSum(guard.GetNativeStream(), input.GetDType(), index_width, parameters, location);
+  // Long contiguous rows need multiple blocks to use the device. Other layouts retain the bounded-scratch block scan.
+  if (input.GetDType() == DType::FLOAT32 && axis + 1 == input.GetRank() && input.IsContiguous() &&
+      output.IsContiguous() && parameters.axis_size_ >= DEVICE_SCAN_MINIMUM_AXIS_SIZE &&
+      input.GetNumElements() <= std::numeric_limits<int32_t>::max()) {
+    const auto workspace_bytes = internal::GetCumulativeSumWorkspaceBytes(
+        static_cast<int32_t>(input.GetNumElements()), static_cast<int32_t>(parameters.axis_size_), location);
+    auto scratch = guard.MakeScratchScope();
+    auto *workspace = scratch.AllocateBytes(workspace_bytes, 256, location).GetData();
+    internal::LaunchCumulativeSumContiguous(guard.GetNativeStream(), parameters, workspace, workspace_bytes, location);
+  } else {
+    const auto index_width =
+        CanUse32BitIndexing(parameters) ? internal::IndexWidth::UINT32 : internal::IndexWidth::UINT64;
+    internal::LaunchCumulativeSum(guard.GetNativeStream(), input.GetDType(), index_width, parameters, location);
+  }
   guard.CheckLaunch();
 }
 

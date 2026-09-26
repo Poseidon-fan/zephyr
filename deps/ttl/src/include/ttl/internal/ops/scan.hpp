@@ -16,8 +16,8 @@ namespace ttl::internal {
 /**
  * @brief Trivially copyable host-to-kernel ABI for cumulative sum over arbitrary strided tensors.
  *
- * Strides are byte offsets. slice_count is the product of dimensions other than axis; each slice is scanned serially
- * by one CUDA thread so reads and writes remain correct for every legal non-overlapping output layout.
+ * Strides are byte offsets. slice_count is the product of dimensions other than axis, supporting strided input and
+ * every legal non-overlapping output layout.
  */
 template <typename Index>
 struct CumulativeSumParameters final {
@@ -39,6 +39,15 @@ static_assert(std::is_trivially_copyable_v<CumulativeSumParameters32>);
 static_assert(std::is_standard_layout_v<CumulativeSumParameters32>);
 static_assert(std::is_trivially_copyable_v<CumulativeSumParameters64>);
 static_assert(std::is_standard_layout_v<CumulativeSumParameters64>);
+
+/** Scratch required by the device-wide segmented scan of contiguous FLOAT32 rows. */
+[[nodiscard]] auto GetCumulativeSumWorkspaceBytes(int32_t num_items, int32_t axis_size,
+                                                  std::source_location location = std::source_location::current())
+    -> size_t;
+
+void LaunchCumulativeSumContiguous(cudaStream_t stream, const CumulativeSumParameters64 &parameters, void *workspace,
+                                   size_t workspace_bytes,
+                                   std::source_location location = std::source_location::current());
 
 void LaunchCumulativeSum(cudaStream_t stream, DType dtype, IndexWidth index_width,
                          const CumulativeSumParameters64 &parameters,

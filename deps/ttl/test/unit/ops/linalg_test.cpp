@@ -1,6 +1,8 @@
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <numbers>
 #include <optional>
 #include <vector>
@@ -142,6 +144,72 @@ TEST_F(LinalgNormalizationTest, SoftmaxAndLogSoftmaxNormalizeSelectedAxesStably)
 
   EXPECT_THROW(static_cast<void>(Softmax(GetContext(), input, {.axes_ = {}})), InvalidArgumentError);
   EXPECT_THROW(static_cast<void>(Softmax(GetContext(), input, {.axes_ = {0, -2}})), InvalidArgumentError);
+}
+
+TEST_F(LinalgNormalizationTest, SoftmaxIgnoresNegativeInfinityAndPreservesInvalidRowsAcrossReductionPaths) {
+  const auto infinity = std::numeric_limits<float>::infinity();
+  const auto nan = std::numeric_limits<float>::quiet_NaN();
+  for (const auto width : {8, 128, 65539}) {
+    std::vector<float> values(static_cast<size_t>(width) * 4, -infinity);
+    values[0] = 0.0F;
+    values[static_cast<size_t>(width) - 1] = 0.0F;
+    values[static_cast<size_t>(width) * 2] = nan;
+    values[static_cast<size_t>(width) * 3] = infinity;
+    for (const auto dtype : {DType::FLOAT32, DType::FLOAT16, DType::BFLOAT16}) {
+      Tensor input = FloatingTensorFromValues(GetContext(), Shape{4, width}, dtype, values);
+      const auto probabilities = FloatingTensorToValues(GetContext(), Softmax(GetContext(), input, {.axes_ = {1}}));
+      const auto logs = FloatingTensorToValues(GetContext(), LogSoftmax(GetContext(), input, {.axes_ = {1}}));
+      EXPECT_EQ(probabilities.front(), 0.5F);
+      EXPECT_EQ(probabilities[static_cast<size_t>(width) - 1], 0.5F);
+      EXPECT_NEAR(logs.front(), -std::log(2.0F), 0.002F);
+      EXPECT_NEAR(logs[static_cast<size_t>(width) - 1], -std::log(2.0F), 0.002F);
+      EXPECT_TRUE(std::all_of(probabilities.begin() + 1, probabilities.begin() + width - 1,
+                              [](float value) { return value == 0.0F; }));
+      EXPECT_TRUE(std::all_of(logs.begin() + 1, logs.begin() + width - 1,
+                              [infinity](float value) { return value == -infinity; }));
+      EXPECT_TRUE(std::all_of(probabilities.begin() + width, probabilities.end(),
+                              [](float value) { return std::isnan(value); }));
+      EXPECT_TRUE(std::all_of(logs.begin() + width, logs.end(), [](float value) { return std::isnan(value); }));
+    }
+  }
+}
+
+TEST_F(LinalgNormalizationTest, LargeSoftmaxNormalizesDisjointAxesIntoPermutedOutput) {
+  constexpr int64_t width = 4097;
+  const auto shape = Shape{3, 2, width};
+  const auto options = SoftmaxOptions{.axes_ = {0, 2}};
+  std::vector<float> values(static_cast<size_t>(3 * 2 * width));
+  for (size_t index = 0; index < values.size(); ++index) {
+    values[index] = (static_cast<float>(index % 17) * 0.125F) - 4.0F;
+  }
+  for (const auto dtype : {DType::FLOAT32, DType::FLOAT16, DType::BFLOAT16}) {
+    Tensor input = FloatingTensorFromValues(GetContext(), shape, dtype, values);
+    const auto decoded = FloatingTensorToValues(GetContext(), input);
+    std::vector<float> probabilities(values.size());
+    std::vector<float> logs(values.size());
+    for (size_t group = 0; group < 2; ++group) {
+      double total = 0.0;
+      for (size_t plane = 0; plane < 3; ++plane) {
+        for (size_t column = 0; column < static_cast<size_t>(width); ++column) {
+          const auto index = (((plane * 2) + group) * width) + column;
+          total += std::exp(static_cast<double>(decoded[index]));
+        }
+      }
+      for (size_t plane = 0; plane < 3; ++plane) {
+        for (size_t column = 0; column < static_cast<size_t>(width); ++column) {
+          const auto index = (((plane * 2) + group) * width) + column;
+          probabilities[index] = static_cast<float>(std::exp(static_cast<double>(decoded[index])) / total);
+          logs[index] = static_cast<float>(static_cast<double>(decoded[index]) - std::log(total));
+        }
+      }
+    }
+    const auto strides = Strides{width, 3 * width, 1};
+    Tensor output = EmptyStrided(GetContext(), shape, strides, dtype);
+    SoftmaxOut(GetContext(), output, input, options);
+    ExpectFloatValues(GetContext(), Contiguous(GetContext(), output), probabilities, 1.0e-6F, 0.01F);
+    LogSoftmaxOut(GetContext(), output, input, options);
+    ExpectFloatValues(GetContext(), Contiguous(GetContext(), output), logs, 0.04F, 0.005F);
+  }
 }
 
 TEST_F(LinalgNormalizationTest, ScaledDotProductAttentionHandlesUnmaskedCausalAndBooleanMaskCases) {

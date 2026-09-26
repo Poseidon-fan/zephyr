@@ -1,7 +1,10 @@
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <type_traits>
+#include <vector>
 
 #include <gtest/gtest.h>
 
@@ -94,6 +97,65 @@ TEST_F(ReductionIndexingTest, CumulativeSumSupportsNegativeAxisIntegerAndFloatin
   Tensor columns = CumulativeSum(GetContext(), input, 0);
   ExpectValues<int32_t>(GetContext(), columns, {1, 2, 3, 5, 7, 9});
   EXPECT_THROW(static_cast<void>(CumulativeSum(GetContext(), input, 2)), InvalidArgumentError);
+}
+
+TEST_F(ReductionIndexingTest, CumulativeSumScansPartialTilesAndStridedRowsInPlace) {
+  for (const auto length : {255, 256, 257, 2053}) {
+    std::vector<float> values(static_cast<size_t>(length) * 3);
+    std::vector<float> expected(values.size());
+    std::array<float, 3> totals{};
+    for (size_t index = 0; index < values.size(); ++index) {
+      values[index] = static_cast<float>(static_cast<int>(index % 17) - 8) * 0.25F;
+      totals[index % 3] += values[index];
+      expected[index] = totals[index % 3];
+    }
+    for (const auto dtype : {DType::FLOAT32, DType::FLOAT16, DType::BFLOAT16}) {
+      Tensor storage = FloatingTensorFromValues(GetContext(), Shape{length, 3}, dtype, values);
+      Tensor rows = Transpose(storage, 0, 1);
+      Tensor result = CumulativeSum(GetContext(), rows, -1);
+      ExpectFloatValues(GetContext(), Contiguous(GetContext(), Transpose(result, 0, 1)), expected, 0.0F, 0.0F);
+      CumulativeSumOut(GetContext(), rows, rows, -1);
+      ExpectFloatValues(GetContext(), storage, expected, 0.0F, 0.0F);
+    }
+  }
+}
+
+TEST_F(ReductionIndexingTest, CumulativeSumPreservesIntegerWrapAcrossTiles) {
+  const auto check = [this]<typename T>() {
+    using Unsigned = std::make_unsigned_t<T>;
+    const std::array<T, 4> pattern{std::numeric_limits<T>::max(), T{1}, T{2}, std::numeric_limits<T>::min()};
+    std::vector<T> values(513);
+    std::vector<T> expected(values.size());
+    auto total = Unsigned{0};
+    for (size_t index = 0; index < values.size(); ++index) {
+      values[index] = pattern[index % pattern.size()];
+      total = static_cast<Unsigned>(total + static_cast<Unsigned>(values[index]));
+      expected[index] = std::bit_cast<T>(total);
+    }
+    Tensor input = TensorFromValues<T>(GetContext(), Shape{513}, values);
+    CumulativeSumOut(GetContext(), input, input, 0);
+    EXPECT_EQ(TensorToValues<T>(GetContext(), input), expected);
+  };
+  check.template operator()<uint8_t>();
+  check.template operator()<int32_t>();
+  check.template operator()<int64_t>();
+}
+
+TEST_F(ReductionIndexingTest, CumulativeSumResetsLongContiguousRowsAndSupportsInPlaceOutput) {
+  for (const auto length : {4095, 4096, 4097, 150001}) {
+    std::vector<float> values(static_cast<size_t>(length) * 3);
+    std::vector<float> expected(values.size());
+    for (size_t index = 0; index < values.size(); ++index) {
+      const auto row = index / static_cast<size_t>(length);
+      const auto column = index % static_cast<size_t>(length);
+      values[index] = static_cast<float>(row + 1) * 0.125F;
+      expected[index] = static_cast<float>(column + 1) * values[index];
+    }
+    Tensor input = TensorFromValues<float>(GetContext(), Shape{3, length}, values);
+    ExpectFloatValues(GetContext(), CumulativeSum(GetContext(), input, -1), expected, 0.0F, 0.0F);
+    CumulativeSumOut(GetContext(), input, input, -1);
+    ExpectFloatValues(GetContext(), input, expected, 0.0F, 0.0F);
+  }
 }
 
 TEST_F(ReductionIndexingTest, IndexSelectGatherAndTakeAlongDimensionProduceIndependentCanonicalOutputs) {

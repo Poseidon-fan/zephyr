@@ -48,7 +48,7 @@ struct SoftmaxStatisticsCombine final {
     const auto maximum = fmaxf(lhs.maximum_, rhs.maximum_);
     return {
         .maximum_ = maximum,
-        .sum_ = lhs.sum_ * expf(lhs.maximum_ - maximum) + rhs.sum_ * expf(rhs.maximum_ - maximum),
+        .sum_ = (lhs.sum_ * expf(lhs.maximum_ - maximum)) + (rhs.sum_ * expf(rhs.maximum_ - maximum)),
     };
   }
 };
@@ -68,7 +68,10 @@ __device__ auto ReduceSoftmaxThread(const Parameters &parameters, RowwiseIndexTy
   for (auto index = first_index; index < parameters.reduction_count_; index = static_cast<Index>(index + step)) {
     const auto offset = GetRowwiseReductionOffset(parameters, index, false);
     const auto value = ToElementwiseFloat(*reinterpret_cast<const T *>(parameters.input_ + group_offset + offset));
-    statistics = combine(statistics, {.maximum_ = value, .sum_ = 1.0F});
+    // Masked elements carry no probability mass. Combining two -inf maxima with nonzero mass would evaluate
+    // exp(-inf - -inf) and poison an otherwise valid row before its finite elements are reduced.
+    const auto maximum = value == CUDART_INF_F ? CUDART_NAN_F : value;
+    statistics = combine(statistics, {.maximum_ = maximum, .sum_ = value == -CUDART_INF_F ? 0.0F : 1.0F});
     if (step >= parameters.reduction_count_ - index) {
       break;
     }
@@ -169,8 +172,8 @@ __global__ void PartialSoftmaxKernel(Parameters parameters, SoftmaxStatistics *p
   while (task < task_count) {
     const auto group_index = static_cast<Index>(task / parameters.partial_count_);
     const auto partial_index = static_cast<Index>(task % parameters.partial_count_);
-    const auto first = static_cast<Index>(partial_index * SOFTMAX_THREADS_PER_BLOCK + threadIdx.x);
-    const auto step = static_cast<Index>(parameters.partial_count_ * SOFTMAX_THREADS_PER_BLOCK);
+    const auto first = static_cast<Index>((partial_index * SOFTMAX_THREADS_PER_BLOCK) + threadIdx.x);
+    const auto step = static_cast<Index>(parameters.partial_count_) * SOFTMAX_THREADS_PER_BLOCK;
     const auto local = ReduceSoftmaxThread<T>(parameters, group_index, first, step);
     const auto aggregate = BlockReduce(block_storage).Reduce(local, SoftmaxStatisticsCombine{});
     if (threadIdx.x == 0) {
@@ -188,9 +191,12 @@ __global__ void FinalSoftmaxKernel(Parameters parameters, const SoftmaxStatistic
   __shared__ SoftmaxStatistics shared_statistics;
 
   using Index = RowwiseIndexType<Parameters>;
-  auto group_index = static_cast<Index>(blockIdx.x);
-  const auto group_step = static_cast<Index>(gridDim.x);
-  while (group_index < parameters.group_count_) {
+  const auto task_count = static_cast<uint64_t>(parameters.group_count_) * parameters.partial_count_;
+  auto task = static_cast<uint64_t>(blockIdx.x);
+  const auto task_step = static_cast<uint64_t>(gridDim.x);
+  while (task < task_count) {
+    const auto group_index = static_cast<Index>(task / parameters.partial_count_);
+    const auto partial_index = static_cast<Index>(task % parameters.partial_count_);
     auto local = IdentityStatistics();
     if (threadIdx.x < parameters.partial_count_) {
       const auto offset = static_cast<uint64_t>(group_index) * parameters.partial_count_ + threadIdx.x;
@@ -201,13 +207,13 @@ __global__ void FinalSoftmaxKernel(Parameters parameters, const SoftmaxStatistic
       shared_statistics = aggregate;
     }
     __syncthreads();
-    StoreSoftmaxValues<T, operation>(parameters, group_index, static_cast<Index>(threadIdx.x),
-                                     static_cast<Index>(SOFTMAX_THREADS_PER_BLOCK), shared_statistics);
+    // Repeating the bounded statistics reduction lets every partial write its own stripe without a third kernel or
+    // extra scratch. A single output block would otherwise serialize the full row after its parallel reduction.
+    const auto first = static_cast<Index>((partial_index * SOFTMAX_THREADS_PER_BLOCK) + threadIdx.x);
+    const auto step = static_cast<Index>(parameters.partial_count_) * SOFTMAX_THREADS_PER_BLOCK;
+    StoreSoftmaxValues<T, operation>(parameters, group_index, first, step, shared_statistics);
     __syncthreads();
-    if (group_step >= parameters.group_count_ - group_index) {
-      break;
-    }
-    group_index = static_cast<Index>(group_index + group_step);
+    task += task_step;
   }
 }
 
@@ -228,9 +234,8 @@ void LaunchWithParameters(cudaStream_t stream, const RowwisePlan &plan, const Pa
       }
       PartialSoftmaxKernel<T>
           <<<blocks, SOFTMAX_THREADS_PER_BLOCK, 0, stream>>>(parameters, static_cast<SoftmaxStatistics *>(scratch));
-      FinalSoftmaxKernel<T, operation>
-          <<<static_cast<uint32_t>(parameters.group_count_ < blocks ? parameters.group_count_ : blocks),
-             SOFTMAX_THREADS_PER_BLOCK, 0, stream>>>(parameters, static_cast<const SoftmaxStatistics *>(scratch));
+      FinalSoftmaxKernel<T, operation><<<blocks, SOFTMAX_THREADS_PER_BLOCK, 0, stream>>>(
+          parameters, static_cast<const SoftmaxStatistics *>(scratch));
       return;
   }
   throw InternalError("invalid softmax row-wise path", location);

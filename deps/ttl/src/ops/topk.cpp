@@ -119,7 +119,7 @@ void TopKOut(ExecutionContext &context, Tensor &values, Tensor &indices, const T
   guard.RecordTensor(values);
   guard.RecordTensor(indices);
   guard.RecordTensor(input);
-  // Prefer an in-block sorting network for short axes, segmented CUB radix sort when its 32-bit API can represent the
+  // Prefer an in-block sorting network for short axes, CUB radix sort when its 32-bit API can represent the
   // problem, and a constant-workspace serial selector for shapes outside the CUB range.
   if (shape_info.axis_size_ <= 1024) {
     internal::LaunchTopKSmall(guard.GetNativeStream(), input.GetDType(), parameters, location);
@@ -129,8 +129,8 @@ void TopKOut(ExecutionContext &context, Tensor &values, Tensor &indices, const T
     const auto num_items = internal::CheckedNarrow<int32_t>(input.GetNumElements(), "TopK item count", location);
     const auto num_segments = internal::CheckedNarrow<int32_t>(shape_info.slice_count_, "TopK segment count", location);
     const auto axis_size = internal::CheckedNarrow<int32_t>(shape_info.axis_size_, "TopK axis size", location);
-    const auto workspace_bytes =
-        internal::GetTopKSortWorkspaceBytes(num_items, num_segments, axis_size, options.largest_, location);
+    const auto workspace_bytes = internal::GetTopKSortWorkspaceBytes(input.GetDType(), num_items, num_segments,
+                                                                     axis_size, options.largest_, location);
     const auto item_bytes = internal::CheckedBytes(input.GetNumElements(), sizeof(uint64_t), location);
     auto scratch = guard.MakeScratchScope();
     auto *keys_input =
