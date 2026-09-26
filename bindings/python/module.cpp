@@ -4,14 +4,11 @@
 #include <utility>
 
 #include <pybind11/pybind11.h>
-#include <pybind11/stl.h>
 
 #include <ttl/common/error.hpp>
 
 #include "common/exception.hpp"
 #include "common/logger.hpp"
-
-#include <zephyr/vector_adder.hpp>
 
 namespace py = pybind11;
 
@@ -70,8 +67,4 @@ PYBIND11_MODULE(_C, module) {
   zephyr::bindings::BindOptions(module);
   zephyr::bindings::BindTypes(module);
   zephyr::bindings::BindEngine(module);
-
-  py::class_<zephyr::VectorAdder>(module, "VectorAdder")
-      .def(py::init<>())
-      .def("add", &zephyr::VectorAdder::Add, py::arg("left"), py::arg("right"));
 }

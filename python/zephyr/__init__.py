@@ -11,7 +11,6 @@ if TYPE_CHECKING:
         GenerationOutput,
         GenerationParams,
     )
-    from .vector_adder import VectorAdder
 
 __all__ = [
     "AsyncEngine",
@@ -19,7 +18,6 @@ __all__ = [
     "EngineConfig",
     "GenerationOutput",
     "GenerationParams",
-    "VectorAdder",
 ]
 
 
@@ -27,7 +25,6 @@ def __getattr__(name: str) -> Any:
     # Keep CLI help and tokenizer-only use independent of CUDA extension loading.
     if name not in __all__:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    module = ".vector_adder" if name == "VectorAdder" else ".engine"
-    value = getattr(import_module(module, __name__), name)
+    value = getattr(import_module(".engine", __name__), name)
     globals()[name] = value
     return value

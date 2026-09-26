@@ -28,7 +28,6 @@ __all__: list[str] = [
     "SamplingResult",
     "TokenLogprob",
     "Usage",
-    "VectorAdder",
     "set_log_level",
 ]
 
@@ -459,14 +458,6 @@ class Usage:
     def completion_tokens(self) -> int: ...
     @property
     def prompt_tokens(self) -> int: ...
-
-class VectorAdder:
-    def __init__(self) -> None: ...
-    def add(
-        self,
-        left: collections.abc.Sequence[typing.SupportsFloat | typing.SupportsIndex],
-        right: collections.abc.Sequence[typing.SupportsFloat | typing.SupportsIndex],
-    ) -> list[float]: ...
 
 def set_log_level(level: LogLevel) -> None:
     """
