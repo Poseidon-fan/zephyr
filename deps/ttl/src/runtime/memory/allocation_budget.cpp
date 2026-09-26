@@ -69,6 +69,8 @@ auto AllocationBudget::GetPeakBytes() const noexcept -> uint64_t { return peak_b
 
 auto AllocationBudget::GetMaximumBytes() const noexcept -> uint64_t { return maximum_bytes_; }
 
+void AllocationBudget::ResetPeakBytes() noexcept { peak_bytes_.store(GetCurrentBytes(), std::memory_order_relaxed); }
+
 void AllocationBudget::Release(uint64_t bytes) noexcept {
   if (current_bytes_.fetch_sub(bytes, std::memory_order_relaxed) < bytes) {
     std::terminate();

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <span>
 #include <vector>
 
 #include <ttl/common/device.hpp>
@@ -19,6 +20,10 @@ struct LayerCacheSpec final {
   size_t key_head_dim_;
   size_t value_head_dim_;
 };
+
+/** Return the bytes in one block across all rank-local layers, rejecting invalid dimensions or overflow. */
+[[nodiscard]] auto GetCacheBlockBytes(std::span<const LayerCacheSpec> layer_specs, ttl::DType dtype, size_t block_size)
+    -> size_t;
 
 /** Parameters shared by every layer in one rank-local cache engine. */
 struct CacheConfig final {

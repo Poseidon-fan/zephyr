@@ -47,12 +47,25 @@ void RunWorker(WorkerState &state, size_t rank) noexcept {
         throw ConfigurationException("execution factory returned no execution");
       }
     }
-    // Weight uploads may still refer to the shared checkpoint. Publish readiness only after they complete.
+    // All model uploads must finish before any rank profiles or allocates its runtime resources.
     context->Synchronize();
-    auto processor = execution->CreateInputProcessor();
+    {
+      const std::scoped_lock lock{state.latch_};
+      ++state.completed_;
+    }
+    state.changed_.notify_all();
+    {
+      std::unique_lock lock{state.latch_};
+      state.changed_.wait(lock, [&] { return state.stopping_ || state.initialization_started_; });
+      if (state.stopping_) {
+        return;
+      }
+    }
+    auto processor = execution->Initialize(*context, state.options_, rank_context);
     if (processor == nullptr) {
       throw ConfigurationException("execution returned no input processor");
     }
+    context->Synchronize();
     {
       const std::scoped_lock lock{state.latch_};
       state.processors_[rank] = std::move(processor);

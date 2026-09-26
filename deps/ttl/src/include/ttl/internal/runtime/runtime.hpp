@@ -84,11 +84,13 @@ class RuntimeState final : public std::enable_shared_from_this<RuntimeState> {
   [[nodiscard]] auto GetDevices() const noexcept -> std::span<const Device>;
   [[nodiscard]] auto GetDeviceContext(Device device, std::source_location location) const
       -> const std::shared_ptr<DeviceContext> &;
+  [[nodiscard]] auto GetDeviceMemoryInfo(Device device, std::source_location location) const -> DeviceMemoryInfo;
   [[nodiscard]] auto CanAccessPeer(Device device, Device peer_device, std::source_location location) const -> bool;
   [[nodiscard]] auto GetErrorSink() const noexcept -> const std::shared_ptr<ErrorSink> &;
   [[nodiscard]] auto GetPinnedAllocator() const noexcept -> const std::shared_ptr<PinnedAllocator> &;
   [[nodiscard]] auto GetStatus() const noexcept -> RuntimeStatus;
   [[nodiscard]] auto GetStatistics(std::source_location location) const -> RuntimeStatistics;
+  void ResetPeakMemoryStatistics(Device device, std::source_location location);
 
   void EnsureRunning(std::source_location location) const;
   [[nodiscard]] auto BeginExecutionContextCreation(std::source_location location) -> ExecutionContextRegistration;
@@ -103,6 +105,7 @@ class RuntimeState final : public std::enable_shared_from_this<RuntimeState> {
   [[nodiscard]] auto CreateCommunicatorGroup(std::span<const Device> rank_order, const NcclOptions &options,
                                              std::source_location location) -> std::shared_ptr<CommunicatorGroupState>;
   [[nodiscard]] auto AllocatePinned(size_t bytes, std::source_location location) -> PinnedBuffer;
+  void SynchronizeMemory(Device device, std::source_location location);
   void TrimMemory(Device device, size_t target_reserved_bytes, std::source_location location);
   void TrimPinnedMemory(std::source_location location);
   void Poll() noexcept;

@@ -16,8 +16,11 @@ namespace zephyr::executor {
 /** One loaded model and its process-local tensor-parallel device order. */
 struct ExecutorOptions final {
   std::filesystem::path model_dir_;
-  ttl::DType dtype_;
-  std::vector<ttl::Device> devices_;
+  ttl::DType dtype_{ttl::DType::BFLOAT16};
+  std::vector<ttl::Device> devices_{ttl::Device{0}};
+  ExecutionLimits execution_limits_;
+  /** Target total device occupancy, including pre-existing allocations; execution peaks are reserved before KV. */
+  double gpu_memory_utilization_{0.9};
 };
 
 struct WorkerState;
@@ -26,6 +29,7 @@ struct WorkerState;
  * Executes one batch on a fixed group of rank threads. Public calls belong to one control thread.
  * Execute is synchronous: success means every rank's GPU work has completed. Runtime is borrowed and
  * must outlive this object and all returned tensors. Requests, sequences, and page ownership stay with the caller.
+ * Create profiles the selected runtime devices; exclude concurrent allocations on those devices until it returns.
  */
 class Executor final {
  public:

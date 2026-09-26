@@ -1,14 +1,40 @@
 #include "engine/engine.hpp"
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <limits>
 #include <span>
+#include <type_traits>
 #include <utility>
+
+#include <ttl/common/error_sink.hpp>
 
 #include "common/exception.hpp"
 #include "common/logger.hpp"
 
 namespace zephyr::engine {
+
+/** Retain the first runtime failure without blocking or allocating in a cleanup callback. */
+class Engine::RuntimeErrors final : public ttl::ErrorSink {
+ public:
+  void Report(ttl::ErrorRecord error) noexcept override {
+    static_assert(std::is_nothrow_move_assignable_v<ttl::ErrorRecord>);
+    if (!claimed_.test_and_set(std::memory_order_relaxed)) {
+      error_ = std::move(error);
+      ready_.store(true, std::memory_order_release);
+    }
+  }
+
+  [[nodiscard]] auto GetError() const noexcept -> const ttl::ErrorRecord * {
+    return ready_.load(std::memory_order_acquire) ? &error_ : nullptr;
+  }
+
+ private:
+  std::atomic_flag claimed_;
+  std::atomic<bool> ready_{false};
+  ttl::ErrorRecord error_{};
+};
 
 Engine::RequestState::RequestState(request_id_t id, Request request, size_t num_sequences)
     : request_(std::move(request)),
@@ -32,15 +58,14 @@ auto Engine::RequestState::GetChoiceOutput(size_t index) -> ChoiceOutput & {
   return choices[position];
 }
 
-Engine::Engine(ttl::Runtime &runtime, EngineOptions options) : runtime_(runtime), options_(std::move(options)) {
+Engine::Engine(EngineOptions options) : options_(std::move(options)) {
   if (options_.max_outstanding_sequences_ == 0 || options_.max_buffered_output_bytes_ == 0) {
     throw ConfigurationException("Engine admission and output limits must be positive");
   }
 }
 
-auto Engine::Create(ttl::Runtime &runtime, EngineOptions options, executor::ExecutionFactory factory)
-    -> std::unique_ptr<Engine> {
-  auto engine = std::unique_ptr<Engine>{new Engine{runtime, std::move(options)}};
+auto Engine::Create(EngineOptions options, executor::ExecutionFactory factory) -> std::unique_ptr<Engine> {
+  auto engine = std::unique_ptr<Engine>{new Engine{std::move(options)}};
   engine->control_thread_ =
       std::jthread{[owner = engine.get(), factory = std::move(factory)]() mutable { owner->Run(std::move(factory)); }};
   std::unique_lock lock{engine->latch_};
@@ -62,7 +87,20 @@ Engine::~Engine() noexcept {
 }
 
 void Engine::Initialize(executor::ExecutionFactory factory) {
-  executor_ = executor::Executor::Create(runtime_, options_.executor_, std::move(factory));
+  runtime_errors_ = std::make_shared<RuntimeErrors>();
+  ttl::RuntimeOptions runtime_options;
+  runtime_options.devices_ = options_.executor_.devices_;
+  runtime_options.error_sink_ = runtime_errors_;
+  runtime_ = std::make_unique<ttl::Runtime>(std::move(runtime_options));
+  auto execution_options = options_.executor_;
+  auto &limits = execution_options.execution_limits_;
+  limits.max_num_seqs_ =
+      std::min(options_.max_outstanding_sequences_,
+               std::visit([](const auto &config) { return config.max_num_seqs_; }, options_.scheduler_));
+  const auto *paged = std::get_if<scheduler::PagedSchedulerConfig>(&options_.scheduler_);
+  limits.max_num_batched_tokens_ = paged != nullptr ? paged->max_num_batched_tokens_ : 0;
+  limits.max_num_output_tokens_ = limits.max_num_seqs_;
+  executor_ = executor::Executor::Create(*runtime_, execution_options, std::move(factory));
   const auto &spec = executor_->GetSpec();
   generation_spec_ = dynamic_cast<const executor::CausalLMExecutionSpec *>(&spec);
   embedding_spec_ = dynamic_cast<const executor::EmbeddingExecutionSpec *>(&spec);
@@ -81,7 +119,10 @@ void Engine::Initialize(executor::ExecutionFactory factory) {
   }
   scheduler_ = scheduler::Scheduler::Create(options_.scheduler_, sequences_, cache_manager_.get(),
                                             generation_spec_ != nullptr && generation_spec_->supports_packed_prefill_);
-  context_.emplace(runtime_.CreateExecutionContext(spec.device_));
+  context_.emplace(runtime_->CreateExecutionContext(spec.device_));
+  if (const auto *error = runtime_errors_->GetError(); error != nullptr) {
+    throw ttl::Error(error->code_, error->message_, error->location_);
+  }
 }
 
 auto Engine::Submit(Request request) -> request_id_t {
@@ -89,7 +130,7 @@ auto Engine::Submit(Request request) -> request_id_t {
   if ((generation != nullptr) != (generation_spec_ != nullptr)) {
     throw InvalidArgumentException("Request task does not match the loaded execution capabilities");
   }
-  const auto max_length = generation_spec_ != nullptr ? generation_spec_->max_seq_len_ : embedding_spec_->max_seq_len_;
+  const auto max_length = executor_->GetSpec().limits_.max_seq_len_;
   const auto vocabulary = generation_spec_ != nullptr ? generation_spec_->vocab_size_ : embedding_spec_->vocab_size_;
   const auto tokens =
       std::visit([](const auto &input) { return std::span<const token_id_t>{input.token_ids_}; }, request);
@@ -392,12 +433,21 @@ void Engine::Run(executor::ExecutionFactory factory) noexcept {
     }
     changed_.notify_all();
     while (true) {
+      bool has_work;
       {
         std::unique_lock lock{latch_};
-        changed_.wait(lock, [&] {
-          return closing_ || !pending_.empty() || !cancellations_.empty() ||
+        // Runtime callbacks cannot take this latch. Periodic polls advance errors and retirement while idle or paused.
+        has_work = changed_.wait_for(lock, std::chrono::milliseconds{100}, [&] {
+          return closing_ || runtime_errors_->GetError() != nullptr || !pending_.empty() || !cancellations_.empty() ||
                  (!sequences_.empty() && buffered_output_bytes_ < options_.max_buffered_output_bytes_);
         });
+      }
+      runtime_->Poll();
+      if (const auto *error = runtime_errors_->GetError(); error != nullptr) {
+        throw ttl::Error(error->code_, error->message_, error->location_);
+      }
+      if (!has_work) {
+        continue;
       }
       if (ProcessRequests()) {
         break;
@@ -410,10 +460,20 @@ void Engine::Run(executor::ExecutionFactory factory) noexcept {
       }
       const auto plan = scheduler_->Schedule();
       for (const auto &batch : plan.batches_) {
-        if (generation_spec_ != nullptr) {
-          ExecuteGeneration(batch);
-        } else {
-          ExecuteEmbedding(batch);
+        // Length buckets have a soft admission threshold. Execute large buckets in bounded slices without changing
+        // their selection or order, so queued request count cannot enlarge the profiled GPU working set.
+        const auto max_rows = executor_->GetSpec().limits_.max_num_seqs_;
+        for (size_t start = 0; start < batch.sequences_.size(); start += max_rows) {
+          const auto rows =
+              std::span{batch.sequences_}.subspan(start, std::min(max_rows, batch.sequences_.size() - start));
+          const scheduler::ScheduledBatch execution_batch{.phase_ = batch.phase_,
+                                                          .is_final_prompt_chunk_ = batch.is_final_prompt_chunk_,
+                                                          .sequences_ = {rows.begin(), rows.end()}};
+          if (generation_spec_ != nullptr) {
+            ExecuteGeneration(execution_batch);
+          } else {
+            ExecuteEmbedding(execution_batch);
+          }
         }
       }
       // Schedule can reject requests without returning a batch; those terminal states still need delivery.
@@ -445,6 +505,19 @@ void Engine::Run(executor::ExecutionFactory factory) noexcept {
       failure_ = std::current_exception();
     }
   }
+  context_.reset();
+  try {
+    if (runtime_ != nullptr) {
+      runtime_->Shutdown();
+      if (const auto *error = runtime_errors_->GetError(); error != nullptr) {
+        throw ttl::Error(error->code_, error->message_, error->location_);
+      }
+    }
+  } catch (...) {
+    if (failure_ == nullptr) {
+      failure_ = std::current_exception();
+    }
+  }
   if (failure_ != nullptr) {
     try {
       try {
@@ -463,7 +536,6 @@ void Engine::Run(executor::ExecutionFactory factory) noexcept {
   sequence_contexts_.clear();
   requests_.clear();
   sequences_.clear();
-  context_.reset();
   {
     const std::scoped_lock lock{latch_};
     stopped_ = true;

@@ -1,7 +1,10 @@
 #include "executor/executor.hpp"
 
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <exception>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <utility>
@@ -12,6 +15,31 @@
 
 namespace zephyr::executor {
 
+auto ExecutionLimits::Resolve(int64_t model_max_seq_len) const -> ExecutionLimits {
+  constexpr auto max_index = std::numeric_limits<int32_t>::max();
+  if (max_num_seqs_ == 0 || std::cmp_greater(max_num_seqs_, max_index) || max_num_output_tokens_ == 0 ||
+      max_seq_len_ < 0 || model_max_seq_len <= 0) {
+    throw ConfigurationException("execution requires positive sequence and output limits and a valid model context");
+  }
+  auto resolved = *this;
+  resolved.max_seq_len_ = max_seq_len_ == 0 ? model_max_seq_len : max_seq_len_;
+  if (resolved.max_seq_len_ > model_max_seq_len || resolved.max_seq_len_ > max_index) {
+    throw ConfigurationException("execution context limit must fit the model context and INT32 indexing");
+  }
+  const auto context_length = static_cast<size_t>(resolved.max_seq_len_);
+  if (max_num_seqs_ > std::numeric_limits<size_t>::max() / context_length) {
+    throw ConfigurationException("execution sequence and context limits overflow the batch token capacity");
+  }
+  const auto full_batch_tokens = max_num_seqs_ * context_length;
+  resolved.max_num_batched_tokens_ =
+      max_num_batched_tokens_ == 0 ? full_batch_tokens : std::min(max_num_batched_tokens_, full_batch_tokens);
+  if (std::cmp_greater(resolved.max_num_batched_tokens_, max_index)) {
+    throw ConfigurationException("execution batch token limit exceeds INT32 indexing");
+  }
+  resolved.max_num_output_tokens_ = std::min(max_num_output_tokens_, resolved.max_num_batched_tokens_);
+  return resolved;
+}
+
 Executor::Executor(ttl::Runtime &runtime, const ExecutorOptions &options, ExecutionFactory factory)
     : state_(std::make_unique<WorkerState>(runtime, options, std::move(factory))) {}
 
@@ -19,6 +47,15 @@ auto Executor::Create(ttl::Runtime &runtime, const ExecutorOptions &options, Exe
     -> std::unique_ptr<Executor> {
   if (!factory) {
     throw ConfigurationException("executor requires an execution factory");
+  }
+  const auto &limits = options.execution_limits_;
+  if (limits.max_num_seqs_ == 0 || limits.max_num_output_tokens_ == 0 || limits.max_seq_len_ < 0) {
+    throw ConfigurationException(
+        "executor requires positive sequence and output limits and a nonnegative context limit");
+  }
+  if (!std::isfinite(options.gpu_memory_utilization_) || options.gpu_memory_utilization_ <= 0.0 ||
+      options.gpu_memory_utilization_ > 1.0) {
+    throw ConfigurationException("GPU memory utilization must be finite and in (0, 1]");
   }
   auto executor = std::unique_ptr<Executor>{new Executor{runtime, options, std::move(factory)}};
   auto &state = *executor->state_;
@@ -28,13 +65,20 @@ auto Executor::Create(ttl::Runtime &runtime, const ExecutorOptions &options, Exe
       executor->workers_.emplace_back([&state, rank] { RunWorker(state, rank); });
     }
     executor->WaitForWorkers();
+    {
+      const std::scoped_lock lock{state.latch_};
+      state.completed_ = 0;
+      state.initialization_started_ = true;
+    }
+    state.changed_.notify_all();
+    executor->WaitForWorkers();
     const auto &processor = *state.processors_.front();
     const auto &spec = processor.GetSpec();
     for (size_t rank = 0; rank < state.processors_.size(); ++rank) {
       const auto &rank_processor = *state.processors_[rank];
       const auto &rank_spec = rank_processor.GetSpec();
       if (rank_spec.device_ != options.devices_[rank] || rank_spec.dtype_ != spec.dtype_ ||
-          !processor.IsCompatible(rank_processor)) {
+          rank_spec.limits_ != spec.limits_ || !processor.IsCompatible(rank_processor)) {
         throw ConfigurationException("tensor-parallel ranks must report consistent execution capabilities");
       }
     }

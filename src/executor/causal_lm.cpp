@@ -1,6 +1,7 @@
 #include "executor/causal_lm.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -16,17 +17,21 @@
 #include <ttl/tensor/layout.hpp>
 #include <ttl/tensor/shape.hpp>
 
+#include "attention/paged_decode.hpp"
 #include "attention/sdpa.hpp"
 #include "common/exception.hpp"
+#include "common/logger.hpp"
+#include "executor/executor.hpp"
 #include "kv_cache/cache_engine.hpp"
 #include "layer/paged_attention.hpp"
+#include "sampler/sampler.hpp"
 
 namespace zephyr::executor {
 
 CausalLMExecutionSpec::CausalLMExecutionSpec(const model::causal_lm::ModelSpec &model_spec,
-                                             std::optional<kv_cache::CacheCapacity> cache_capacity)
-    : ExecutionSpec(model_spec.device_, model_spec.dtype_),
-      max_seq_len_(model_spec.max_seq_len_),
+                                             std::optional<kv_cache::CacheCapacity> cache_capacity,
+                                             ExecutionLimits limits)
+    : ExecutionSpec(model_spec.device_, model_spec.dtype_, limits),
       vocab_size_(model_spec.vocab_size_),
       cache_capacity_(cache_capacity),
       supports_packed_prefill_(model_spec.supports_packed_prefill_) {}
@@ -78,12 +83,17 @@ class CausalLMExecution final : public Execution {
   CausalLMExecution(ttl::Runtime &runtime, std::unique_ptr<model::causal_lm::CausalLM> model,
                     const CausalLMOptions &options);
 
-  [[nodiscard]] auto CreateInputProcessor() const -> std::unique_ptr<InputProcessor> override;
+  [[nodiscard]] auto Initialize(ttl::ExecutionContext &context, const ExecutorOptions &options,
+                                const parallel::TpRankContext &rank) -> std::unique_ptr<InputProcessor> override;
   [[nodiscard]] auto Execute(ttl::ExecutionContext &context, const ExecutionPlan &prepared) -> ExecutionResult override;
 
  private:
+  /** Execute representative maximum-shape paths using a small, initialized scratch cache. */
+  void Profile(ttl::ExecutionContext &context, const ExecutionLimits &limits);
+
   ttl::Runtime &runtime_;
   std::unique_ptr<model::causal_lm::CausalLM> model_;
+  CausalLMOptions options_;
   std::unique_ptr<kv_cache::CacheEngine> cache_;
 };
 
@@ -93,8 +103,7 @@ auto CausalLMInputProcessor::IsCompatible(const InputProcessor &other) const noe
     return false;
   }
   const auto &spec = processor->spec_;
-  return spec_.max_seq_len_ == spec.max_seq_len_ && spec_.vocab_size_ == spec.vocab_size_ &&
-         spec_.cache_capacity_ == spec.cache_capacity_ &&
+  return spec_.vocab_size_ == spec.vocab_size_ && spec_.cache_capacity_ == spec.cache_capacity_ &&
          spec_.supports_packed_prefill_ == spec.supports_packed_prefill_;
 }
 
@@ -105,6 +114,7 @@ auto CausalLMInputProcessor::Prepare(const ExecutionBatch &inputs) const -> std:
   }
   const auto &batch = *causal_batch;
   const auto &spec = spec_;
+  const auto &limits = spec.limits_;
   const auto &capacity = spec.cache_capacity_;
   if (batch.inputs_.empty() || (batch.phase_ != CausalLMPhase::PREFILL && batch.phase_ != CausalLMPhase::DECODE)) {
     throw InvalidArgumentException("causal execution requires a nonempty prefill or decode batch");
@@ -112,13 +122,17 @@ auto CausalLMInputProcessor::Prepare(const ExecutionBatch &inputs) const -> std:
   if (!capacity.has_value() && batch.phase_ != CausalLMPhase::PREFILL) {
     throw InvalidArgumentException("decode requires an allocated KV cache");
   }
+  if (batch.inputs_.size() > limits.max_num_seqs_) {
+    throw InvalidArgumentException("causal batch exceeds the initialized sequence limit");
+  }
 
   constexpr auto max_index = std::numeric_limits<int32_t>::max();
-  const auto max_context = std::min(spec.max_seq_len_, static_cast<int64_t>(max_index));
+  const auto max_context = limits.max_seq_len_;
   auto owned_plan = std::make_unique<CausalLMPlan>();
   auto &plan = *owned_plan;
   plan.num_inputs_ = batch.inputs_.size();
   std::map<std::pair<int64_t, size_t>, size_t> groups;
+  size_t output_tokens = 0;
   for (size_t row = 0; row < batch.inputs_.size(); ++row) {
     const auto &input = batch.inputs_[row];
     const auto cached = input.num_computed_tokens_;
@@ -131,6 +145,10 @@ auto CausalLMInputProcessor::Prepare(const ExecutionBatch &inputs) const -> std:
     if (range.start_ < 0 || range.start_ > query || range.length_ < 0 || range.length_ > query - range.start_) {
       throw InvalidArgumentException("logits range must select positions within this call's new tokens");
     }
+    if (static_cast<size_t>(range.length_) > limits.max_num_output_tokens_ - output_tokens) {
+      throw InvalidArgumentException("selected logits exceed the initialized output token limit");
+    }
+    output_tokens += static_cast<size_t>(range.length_);
     if (std::ranges::any_of(input.token_ids_, [&](auto token) { return token < 0 || token >= spec.vocab_size_; })) {
       throw InvalidArgumentException("input token ID is outside the model vocabulary");
     }
@@ -159,6 +177,7 @@ auto CausalLMInputProcessor::Prepare(const ExecutionBatch &inputs) const -> std:
     plan.groups_[entry->second].row_indices_.push_back(row);
   }
 
+  size_t input_tokens = 0;
   for (auto &group : plan.groups_) {
     int64_t max_query = 0;
     int64_t total_query = 0;
@@ -188,10 +207,12 @@ auto CausalLMInputProcessor::Prepare(const ExecutionBatch &inputs) const -> std:
     }
     group.batch_size_ = packed ? 1 : rows;
     group.query_length_ = packed ? total_query : max_query;
-    if (group.batch_size_ > max_index / group.query_length_) {
-      throw InvalidArgumentException("physical batch dimensions exceed INT32 indexing");
-    }
+    // Resolved limits keep both factors within INT32, so their product fits INT64.
     const auto physical_tokens = group.batch_size_ * group.query_length_;
+    if (static_cast<size_t>(physical_tokens) > limits.max_num_batched_tokens_ - input_tokens) {
+      throw InvalidArgumentException("causal batch including padding exceeds the initialized token limit");
+    }
+    input_tokens += static_cast<size_t>(physical_tokens);
     group.token_ids_.assign(static_cast<size_t>(physical_tokens), 0);
     group.positions_.assign(static_cast<size_t>(physical_tokens), 0);
     group.slots_.assign(static_cast<size_t>(physical_tokens), kv_cache::PADDING_SLOT_ID);
@@ -274,20 +295,218 @@ auto CausalLMInputProcessor::Prepare(const ExecutionBatch &inputs) const -> std:
 
 CausalLMExecution::CausalLMExecution(ttl::Runtime &runtime, std::unique_ptr<model::causal_lm::CausalLM> model,
                                      const CausalLMOptions &options)
-    : runtime_(runtime), model_(std::move(model)) {
-  if (options.cache_capacity_.has_value()) {
-    const auto &spec = model_->GetSpec();
+    : runtime_(runtime), model_(std::move(model)), options_(options) {}
+
+void CausalLMExecution::Profile(ttl::ExecutionContext &context, const ExecutionLimits &limits) {
+  const auto &spec = model_->GetSpec();
+  auto profile_limits = limits;
+  profile_limits.max_num_seqs_ = std::min(limits.max_num_seqs_, limits.max_num_batched_tokens_);
+  // Round rectangular probes up, so neither padding nor a short last row understates the token budget.
+  profile_limits.max_num_batched_tokens_ = std::min(static_cast<size_t>(std::numeric_limits<int32_t>::max()),
+                                                    limits.max_num_batched_tokens_ + profile_limits.max_num_seqs_ - 1);
+  std::optional<kv_cache::CacheCapacity> capacity;
+  if (options_.kv_cache_.has_value()) {
+    const auto block_size = options_.kv_cache_->block_size_;
+    const auto pages = (profile_limits.max_num_batched_tokens_ / block_size) + (2 * profile_limits.max_num_seqs_) + 3;
+    capacity = kv_cache::CacheCapacity{.block_size_ = block_size, .num_gpu_blocks_ = pages};
     cache_ = std::make_unique<kv_cache::CacheEngine>(
         runtime_,
-        kv_cache::CacheConfig{
-            .capacity_ = *options.cache_capacity_, .dtype_ = spec.dtype_, .layer_specs_ = spec.layer_specs_},
+        kv_cache::CacheConfig{.capacity_ = *capacity, .dtype_ = spec.dtype_, .layer_specs_ = spec.layer_specs_},
         spec.device_);
+    for (size_t layer = 0; layer < cache_->GetNumLayers(); ++layer) {
+      auto &storage = cache_->GetLayerCache(layer);
+      ttl::FillOut(context, storage.key_cache_, ttl::Scalar{0.0F});
+      ttl::FillOut(context, storage.value_cache_, ttl::Scalar{0.0F});
+    }
+  }
+  context.Synchronize();
+  runtime_.ResetPeakMemoryStatistics(spec.device_);
+  // Attention-path probes must keep rows in one group even when the serving output budget is smaller.
+  profile_limits.max_num_output_tokens_ = std::max(limits.max_num_output_tokens_, profile_limits.max_num_seqs_);
+  const CausalLMInputProcessor processor{CausalLMExecutionSpec{spec, capacity, profile_limits}};
+  // Earlier groups' outputs remain live while later groups execute; reserve that overlap on every rank.
+  const auto retained_logits = ttl::Empty(
+      context, ttl::Shape{static_cast<int64_t>(limits.max_num_output_tokens_), spec.vocab_size_}, spec.dtype_);
+  const auto max_length = static_cast<size_t>(limits.max_seq_len_);
+  enum class ProfileKind : uint8_t { PROMPT, PACKED_PROMPT, PREFIX, DECODE, LOGITS };
+  const auto native_decode = capacity.has_value() && std::ranges::all_of(spec.layer_specs_, [&](const auto &layer) {
+                               return layer.key_head_dim_ == layer.value_head_dim_ &&
+                                      attention::SupportsPagedDecode(static_cast<int64_t>(layer.key_head_dim_),
+                                                                     static_cast<int64_t>(capacity->block_size_));
+                             });
+  std::array batch_sizes{size_t{1}, std::min(size_t{2}, profile_limits.max_num_seqs_), profile_limits.max_num_seqs_};
+  const auto end = std::ranges::unique(batch_sizes).begin();
+  for (const auto rows : std::span{batch_sizes.begin(), end}) {
+    for (const auto kind : {ProfileKind::PROMPT, ProfileKind::PACKED_PROMPT, ProfileKind::PREFIX, ProfileKind::DECODE,
+                            ProfileKind::LOGITS}) {
+      const auto prefix = kind == ProfileKind::PREFIX;
+      const auto decode = kind == ProfileKind::DECODE;
+      const auto packed = kind == ProfileKind::PACKED_PROMPT;
+      if ((!capacity.has_value() && (prefix || decode)) || (prefix && max_length == 1) ||
+          (packed && (rows < 2 || !spec.supports_packed_prefill_))) {
+        continue;
+      }
+      // Native decode uses grid.y for query rows; a larger prefill budget does not enlarge that kernel domain.
+      const auto token_budget = decode && native_decode ? std::min(limits.max_num_batched_tokens_, size_t{65535})
+                                                        : limits.max_num_batched_tokens_;
+      if (decode && rows > token_budget) {
+        continue;
+      }
+      const auto query = std::min(max_length, decode ? token_budget / rows : (token_budget + rows - 1) / rows);
+      if (packed && query < 2) {
+        continue;
+      }
+      CausalLMBatch batch;
+      batch.phase_ = decode ? CausalLMPhase::DECODE : CausalLMPhase::PREFILL;
+      batch.is_final_prompt_chunk_ = true;
+      size_t remaining_outputs = limits.max_num_output_tokens_;
+      kv_cache::block_id_t next_page = 2;
+      for (size_t row = 0; row < rows; ++row) {
+        auto length = prefix ? std::min(query, max_length - 1) : query;
+        if (packed && row == 0 && length < max_length) {
+          ++length;
+        }
+        if ((packed || prefix) && row + 1 == rows && rows > 1 && length > 1) {
+          --length;
+        }
+        auto context_length = prefix || decode ? max_length : length;
+        // Every short context creates its own padding/concat buffers; keep one full context to fix their width.
+        if (prefix && row > 0 && context_length > length) {
+          --context_length;
+        }
+        const auto cached = context_length - length;
+        const auto output_length = kind == ProfileKind::LOGITS
+                                       ? std::min(length, (remaining_outputs + rows - row - 1) / (rows - row))
+                                       : size_t{1};
+        if (kind == ProfileKind::LOGITS) {
+          remaining_outputs -= output_length;
+        }
+        CausalLMInput input{.token_ids_ = std::vector<token_id_t>(length, 0),
+                            .num_computed_tokens_ = static_cast<int64_t>(cached),
+                            .block_ids_ = {},
+                            .logits_range_ = {.start_ = static_cast<int64_t>(length - output_length),
+                                              .length_ = static_cast<int64_t>(output_length)}};
+        if (kind == ProfileKind::LOGITS && row > 0 && output_length < length) {
+          input.logits_range_.start_ = 0;
+        }
+        if (capacity.has_value()) {
+          const auto block_size = capacity->block_size_;
+          const auto pages = (context_length + block_size - 1) / block_size;
+          // Read-only history may repeat the initialized zero page. Every written page is private to its row.
+          input.block_ids_.assign(pages, 1);
+          for (size_t page = cached / block_size; page < pages; ++page) {
+            input.block_ids_[page] = next_page++;
+          }
+        }
+        batch.inputs_.push_back(std::move(input));
+      }
+      {
+        const auto plan = processor.Prepare(batch);
+        static_cast<void>(Execute(context, *plan));
+      }
+      context.Synchronize();
+    }
   }
 }
 
-auto CausalLMExecution::CreateInputProcessor() const -> std::unique_ptr<InputProcessor> {
-  return std::make_unique<CausalLMInputProcessor>(CausalLMExecutionSpec{
-      model_->GetSpec(), cache_ != nullptr ? std::optional{cache_->GetConfig().capacity_} : std::nullopt});
+auto CausalLMExecution::Initialize(ttl::ExecutionContext &context, const ExecutorOptions &options,
+                                   const parallel::TpRankContext &rank) -> std::unique_ptr<InputProcessor> {
+  const auto &spec = model_->GetSpec();
+  auto limits = options.execution_limits_;
+  if (!options_.kv_cache_.has_value()) {
+    // Uncached execution reevaluates whole histories; a scheduler's new-token quantum is not its allocation bound.
+    limits.max_num_batched_tokens_ = 0;
+  }
+  limits = limits.Resolve(spec.max_seq_len_);
+  size_t block_bytes = 0;
+  if (options_.kv_cache_.has_value()) {
+    const auto &cache = *options_.kv_cache_;
+    if ((cache.block_size_ != 8 && cache.block_size_ != 16 && cache.block_size_ != 32) || cache.memory_bytes_ == 0) {
+      throw ConfigurationException("KV cache requires page size 8, 16, or 32 and a positive explicit byte budget");
+    }
+    block_bytes = kv_cache::GetCacheBlockBytes(spec.layer_specs_, spec.dtype_, cache.block_size_);
+  }
+
+  const auto statistics = [&] {
+    for (const auto &entry : runtime_.GetStatistics().devices_) {
+      if (entry.device_ == spec.device_) {
+        return entry;
+      }
+    }
+    throw InternalException("execution device is missing from runtime statistics");
+  };
+  runtime_.SynchronizeMemory(spec.device_);
+  runtime_.TrimMemory(spec.device_, 0);
+  Profile(context, limits);
+  const auto peak_bytes = statistics().peak_physical_in_use_bytes_;
+  const auto temporary_cache_bytes =
+      cache_ != nullptr ? cache_->GetConfig().capacity_.num_gpu_blocks_ * block_bytes : 0;
+  cache_.reset();
+  context.Synchronize();
+  runtime_.SynchronizeMemory(spec.device_);
+  runtime_.TrimMemory(spec.device_, 0);
+  const auto persistent_bytes = statistics().logical_live_bytes_;
+  const auto model_peak = peak_bytes - temporary_cache_bytes;
+  size_t transient_bytes = model_peak > persistent_bytes ? model_peak - persistent_bytes : 0;
+  if (rank.Rank() == 0) {
+    const auto sampling_bytes = sampler::ProfileSamplingMemory(runtime_, spec.device_, limits.max_num_output_tokens_,
+                                                               spec.vocab_size_, spec.dtype_);
+    if (sampling_bytes > std::numeric_limits<size_t>::max() - transient_bytes) {
+      throw ConfigurationException("execution memory requirement exceeds the addressable range");
+    }
+    // Conservative addition also covers retained logits and independent worker/sampling contexts.
+    transient_bytes += sampling_bytes;
+  }
+  context.Synchronize();
+  runtime_.TrimMemory(spec.device_, 0);
+  const auto memory = runtime_.GetDeviceMemoryInfo(spec.device_);
+  // Retain headroom for native allocations, allocator granularity, and shape-dependent library workspaces.
+  const auto headroom = std::max<uint64_t>(512ULL * 1024 * 1024, memory.free_bytes_ / 50);
+  auto available = memory.free_bytes_ > headroom ? memory.free_bytes_ - headroom : 0;
+  const auto used = memory.total_bytes_ - memory.free_bytes_;
+  const auto target = static_cast<uint64_t>(static_cast<long double>(memory.total_bytes_) *
+                                            static_cast<long double>(options.gpu_memory_utilization_));
+  const auto explicit_bytes = options_.kv_cache_.has_value() ? options_.kv_cache_->memory_bytes_ : std::nullopt;
+  if (!explicit_bytes.has_value()) {
+    available = std::min(available, target > used ? target - used : 0);
+  }
+  if (memory.max_live_bytes_ != 0) {
+    runtime_.ResetPeakMemoryStatistics(spec.device_);
+    const auto charged = statistics().peak_physical_in_use_bytes_;
+    available = std::min(available, memory.max_live_bytes_ > charged ? memory.max_live_bytes_ - charged : 0);
+  }
+  if (transient_bytes > available) {
+    throw OutOfMemoryException("execution and sampling peaks exceed the GPU budget; reduce batch or context limits");
+  }
+  available -= transient_bytes;
+  if (!options_.kv_cache_.has_value()) {
+    return std::make_unique<CausalLMInputProcessor>(CausalLMExecutionSpec{spec, std::nullopt, limits});
+  }
+  if (explicit_bytes.has_value()) {
+    if (*explicit_bytes > available) {
+      throw OutOfMemoryException("explicit KV cache budget does not leave enough memory for execution");
+    }
+    available = *explicit_bytes;
+  }
+  auto num_blocks =
+      static_cast<int64_t>(std::min<uint64_t>(available / block_bytes, std::numeric_limits<int32_t>::max()));
+  auto count = ttl::Empty(context, ttl::Shape{1}, ttl::DType::INT64);
+  ttl::CopyFromHostBlocking(context, count, std::as_bytes(std::span{&num_blocks, size_t{1}}));
+  rank.AllReduce(context, count, count, ttl::ReduceOp::MINIMUM);
+  ttl::CopyToHostBlocking(context, std::as_writable_bytes(std::span{&num_blocks, size_t{1}}), count);
+  const auto block_size = options_.kv_cache_->block_size_;
+  const auto required_pages = (static_cast<size_t>(limits.max_seq_len_) + block_size - 1) / block_size;
+  if (num_blocks <= 1 || std::cmp_less(num_blocks - 1, required_pages)) {
+    throw OutOfMemoryException("KV cache cannot hold the configured context plus its reserved null page");
+  }
+  const kv_cache::CacheCapacity capacity{.block_size_ = block_size, .num_gpu_blocks_ = static_cast<size_t>(num_blocks)};
+  cache_ = std::make_unique<kv_cache::CacheEngine>(
+      runtime_, kv_cache::CacheConfig{.capacity_ = capacity, .dtype_ = spec.dtype_, .layer_specs_ = spec.layer_specs_},
+      spec.device_);
+  ZEPHYR_LOG_INFO("rank {}: KV cache {} pages x {} tokens, {} MiB; execution reserve {} MiB", rank.Rank(),
+                  capacity.num_gpu_blocks_, capacity.block_size_,
+                  (capacity.num_gpu_blocks_ * block_bytes) / (1024 * 1024), transient_bytes / (1024 * 1024));
+  return std::make_unique<CausalLMInputProcessor>(CausalLMExecutionSpec{spec, capacity, limits});
 }
 
 auto CausalLMExecution::Execute(ttl::ExecutionContext &context, const ExecutionPlan &prepared) -> ExecutionResult {

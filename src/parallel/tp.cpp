@@ -20,9 +20,9 @@ auto TpRankContext::WorldSize() const -> size_t { return static_cast<size_t>(com
 
 auto TpRankContext::Device() const -> ttl::Device { return communicator_->GetDevice(); }
 
-void TpRankContext::AllReduceSum(ttl::ExecutionContext &execution, ttl::Tensor &output,
-                                 const ttl::Tensor &input) const {
-  ttl::AllReduceOut(execution, output, input, *communicator_, ttl::ReduceOp::SUM);
+void TpRankContext::AllReduce(ttl::ExecutionContext &execution, ttl::Tensor &output, const ttl::Tensor &input,
+                              ttl::ReduceOp operation) const {
+  ttl::AllReduceOut(execution, output, input, *communicator_, operation);
 }
 
 auto TpContext::GetRank(size_t rank) -> TpRankContext {

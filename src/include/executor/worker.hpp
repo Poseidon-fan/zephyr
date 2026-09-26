@@ -41,6 +41,7 @@ struct WorkerState final {
   std::exception_ptr error_;
   uint64_t round_{0};
   size_t completed_{0};
+  bool initialization_started_{false};
   bool stopping_{false};
 };
 

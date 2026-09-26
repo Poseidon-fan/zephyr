@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <memory>
@@ -16,6 +18,23 @@
 
 namespace zephyr::executor {
 
+struct ExecutorOptions;
+
+/** Hard batch bounds shared by initialization, input preparation, and scheduling. */
+struct ExecutionLimits final {
+  size_t max_num_seqs_{1};
+  /** Total physical input tokens, including padding; zero resolves to max_num_seqs_ times the context limit. */
+  size_t max_num_batched_tokens_{512};
+  /** Total selected vocabulary-logit rows across all sequences in one batch. */
+  size_t max_num_output_tokens_{1};
+  /** Zero inherits the model's context limit. */
+  int64_t max_seq_len_{0};
+
+  /** Resolve inherited bounds and validate the complete batch against INT32 indexing. */
+  [[nodiscard]] auto Resolve(int64_t model_max_seq_len) const -> ExecutionLimits;
+  [[nodiscard]] auto operator==(const ExecutionLimits &) const noexcept -> bool = default;
+};
+
 /** Borrowed logical inputs. Preparation checks their category before publishing device work. */
 struct ExecutionBatch {
   virtual ~ExecutionBatch() = default;
@@ -26,13 +45,15 @@ struct ExecutionPlan {
   virtual ~ExecutionPlan() = default;
 };
 
-/** Common placement information; derived specifications describe a category's capabilities. */
+/** Common placement and resolved limits; derived specifications describe a category's capabilities. */
 struct ExecutionSpec {
-  ExecutionSpec(ttl::Device device, ttl::DType dtype) : device_(device), dtype_(dtype) {}
+  ExecutionSpec(ttl::Device device, ttl::DType dtype, ExecutionLimits limits)
+      : device_(device), dtype_(dtype), limits_(limits) {}
   virtual ~ExecutionSpec() = default;
 
   ttl::Device device_;
   ttl::DType dtype_;
+  ExecutionLimits limits_;
 };
 
 struct CausalLMResult final {
@@ -64,13 +85,20 @@ class Execution {
  public:
   virtual ~Execution() = default;
 
-  /** Return an independent host object whose lifetime is not tied to this execution or its model. */
-  [[nodiscard]] virtual auto CreateInputProcessor() const -> std::unique_ptr<InputProcessor> = 0;
+  /**
+   * Initialize rank resources after every model has loaded and synchronized. Every rank must submit the same
+   * collective sequence. Return an independent host processor describing the finalized execution capabilities.
+   */
+  [[nodiscard]] virtual auto Initialize(ttl::ExecutionContext &context, const ExecutorOptions &options,
+                                        const parallel::TpRankContext &rank) -> std::unique_ptr<InputProcessor> = 0;
   /** Every rank executes the same plan; the complete result must be available on rank zero. */
   [[nodiscard]] virtual auto Execute(ttl::ExecutionContext &context, const ExecutionPlan &plan) -> ExecutionResult = 0;
 };
 
-/** Captures category configuration and constructs one rank. Concurrent calls must not mutate captured state. */
+/**
+ * Load one rank of the same model and execution category on every device. Concurrent calls must not mutate captured
+ * state. Defer profiling and rank collectives until Initialize, after all model loads have completed.
+ */
 using ExecutionFactory =
     std::function<std::unique_ptr<Execution>(ttl::Runtime &, ttl::ExecutionContext &, const std::filesystem::path &,
                                              const weight::WeightBuilder &, const parallel::TpRankContext &)>;

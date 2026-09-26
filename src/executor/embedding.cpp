@@ -17,6 +17,7 @@
 #include <ttl/tensor/shape.hpp>
 
 #include "common/exception.hpp"
+#include "executor/executor.hpp"
 
 namespace zephyr::executor {
 
@@ -36,14 +37,13 @@ struct EmbeddingPlan final : ExecutionPlan {
 
 class EmbeddingInputProcessor final : public InputProcessor {
  public:
-  explicit EmbeddingInputProcessor(const model::embedding::ModelSpec &spec) : spec_(spec) {}
+  EmbeddingInputProcessor(const model::embedding::ModelSpec &spec, ExecutionLimits limits) : spec_(spec, limits) {}
 
   [[nodiscard]] auto GetSpec() const noexcept -> const EmbeddingExecutionSpec & override { return spec_; }
 
   [[nodiscard]] auto IsCompatible(const InputProcessor &other) const noexcept -> bool override {
     const auto *processor = dynamic_cast<const EmbeddingInputProcessor *>(&other);
-    return processor != nullptr && spec_.max_seq_len_ == processor->spec_.max_seq_len_ &&
-           spec_.vocab_size_ == processor->spec_.vocab_size_ &&
+    return processor != nullptr && spec_.vocab_size_ == processor->spec_.vocab_size_ &&
            spec_.embedding_size_ == processor->spec_.embedding_size_ &&
            spec_.causal_attention_ == processor->spec_.causal_attention_;
   }
@@ -53,17 +53,23 @@ class EmbeddingInputProcessor final : public InputProcessor {
     if (inputs == nullptr || inputs->token_ids_.empty()) {
       throw InvalidArgumentException("embedding execution requires a nonempty embedding batch");
     }
+    if (inputs->token_ids_.size() > spec_.limits_.max_num_seqs_) {
+      throw InvalidArgumentException("embedding batch exceeds the execution sequence limit");
+    }
 
     auto plan = std::make_unique<EmbeddingPlan>();
     plan->num_inputs_ = inputs->token_ids_.size();
     std::map<int64_t, size_t> groups;
-    constexpr auto max_index = std::numeric_limits<int32_t>::max();
-    const auto max_length = std::min(spec_.max_seq_len_, static_cast<int64_t>(max_index));
+    size_t total_tokens = 0;
     for (size_t row = 0; row < inputs->token_ids_.size(); ++row) {
       const auto &tokens = inputs->token_ids_[row];
-      if (tokens.empty() || std::cmp_greater(tokens.size(), max_length)) {
-        throw InvalidArgumentException("embedding tokens must fit the model context and INT32 indexing");
+      if (tokens.empty() || std::cmp_greater(tokens.size(), spec_.limits_.max_seq_len_)) {
+        throw InvalidArgumentException("embedding tokens must fit the execution context limit");
       }
+      if (tokens.size() > spec_.limits_.max_num_batched_tokens_ - total_tokens) {
+        throw InvalidArgumentException("embedding batch exceeds the execution token limit");
+      }
+      total_tokens += tokens.size();
       if (std::ranges::any_of(tokens, [&](auto token) { return token < 0 || token >= spec_.vocab_size_; })) {
         throw InvalidArgumentException("input token ID is outside the model vocabulary");
       }
@@ -74,9 +80,6 @@ class EmbeddingInputProcessor final : public InputProcessor {
         plan->groups_.push_back({.sequence_length_ = length, .row_indices_ = {}, .token_ids_ = {}});
       }
       auto &group = plan->groups_[entry->second];
-      if (group.token_ids_.size() > static_cast<size_t>(max_index) - tokens.size()) {
-        throw InvalidArgumentException("embedding batch dimensions exceed INT32 indexing");
-      }
       // Preserve first-occurrence group order, so every rank submits collectives in the same order.
       group.row_indices_.push_back(row);
       group.token_ids_.insert(group.token_ids_.end(), tokens.begin(), tokens.end());
@@ -98,8 +101,71 @@ class EmbeddingExecution final : public Execution {
     }
   }
 
-  [[nodiscard]] auto CreateInputProcessor() const -> std::unique_ptr<InputProcessor> override {
-    return std::make_unique<EmbeddingInputProcessor>(model_->GetSpec());
+  [[nodiscard]] auto Initialize(ttl::ExecutionContext &context, const ExecutorOptions &options,
+                                const parallel::TpRankContext &rank) -> std::unique_ptr<InputProcessor> override {
+    const auto &spec = model_->GetSpec();
+    if (context.GetDevice() != spec.device_ || rank.Device() != spec.device_) {
+      throw ConfigurationException("embedding initialization must use the model's tensor-parallel device");
+    }
+    auto requested_limits = options.execution_limits_;
+    // Embedding batches consume full sequences; length-bucket scheduling never chunks an input.
+    requested_limits.max_num_batched_tokens_ = 0;
+    const auto limits = requested_limits.Resolve(spec.max_seq_len_);
+    auto processor = std::make_unique<EmbeddingInputProcessor>(spec, limits);
+    context.Synchronize();
+    runtime_.SynchronizeMemory(spec.device_);
+    runtime_.TrimMemory(spec.device_, 0);
+    runtime_.ResetPeakMemoryStatistics(spec.device_);
+    const auto warmup = [&](size_t rows) {
+      EmbeddingBatch batch;
+      batch.token_ids_.assign(rows, std::vector<token_id_t>(static_cast<size_t>(limits.max_seq_len_), 0));
+      const auto plan = processor->Prepare(batch);
+      static_cast<void>(Execute(context, *plan));
+      // Release returned tensors before synchronization so their retirements are also observed.
+      context.Synchronize();
+    };
+    warmup(1);
+    if (limits.max_num_seqs_ > 1) {
+      warmup(limits.max_num_seqs_);
+    }
+
+    runtime_.SynchronizeMemory(spec.device_);
+    runtime_.TrimMemory(spec.device_, 0);
+    const auto statistics = [&] {
+      for (const auto &entry : runtime_.GetStatistics().devices_) {
+        if (entry.device_ == spec.device_) {
+          return entry;
+        }
+      }
+      throw InternalException("embedding device is missing from runtime statistics");
+    }();
+    const auto persistent_bytes = statistics.logical_live_bytes_;
+    auto transient_bytes = statistics.peak_physical_in_use_bytes_ > persistent_bytes
+                               ? statistics.peak_physical_in_use_bytes_ - persistent_bytes
+                               : uint64_t{0};
+    if (rank.Rank() == 0) {
+      // Engine readback may retain a float32 conversion alongside the model's output vectors.
+      const auto output_elements = static_cast<uint64_t>(
+          ttl::Shape{static_cast<int64_t>(limits.max_num_seqs_), spec.embedding_size_}.GetNumElements());
+      if (output_elements > (std::numeric_limits<uint64_t>::max() - transient_bytes) / sizeof(float)) {
+        throw ConfigurationException("embedding readback memory exceeds the addressable byte range");
+      }
+      transient_bytes += output_elements * sizeof(float);
+    }
+    const auto memory = runtime_.GetDeviceMemoryInfo(spec.device_);
+    const auto used = memory.total_bytes_ - memory.free_bytes_;
+    const auto target = static_cast<uint64_t>(static_cast<long double>(memory.total_bytes_) *
+                                              static_cast<long double>(options.gpu_memory_utilization_));
+    auto available = std::min(memory.free_bytes_, target > used ? target - used : uint64_t{0});
+    if (memory.max_live_bytes_ != 0) {
+      available =
+          std::min(available,
+                   memory.max_live_bytes_ > persistent_bytes ? memory.max_live_bytes_ - persistent_bytes : uint64_t{0});
+    }
+    if (used > target || transient_bytes > available) {
+      throw OutOfMemoryException("embedding execution exceeds the GPU budget; reduce batch or context limits");
+    }
+    return processor;
   }
 
   [[nodiscard]] auto Execute(ttl::ExecutionContext &context, const ExecutionPlan &plan) -> ExecutionResult override {

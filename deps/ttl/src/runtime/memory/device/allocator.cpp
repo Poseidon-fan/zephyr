@@ -326,8 +326,22 @@ class DeviceAllocatorImpl final {
   }
 
   void Poll() noexcept {
-    const std::shared_lock lifecycle_lock{lifecycle_latch_};
+    const std::shared_lock lifecycle_lock{lifecycle_latch_, std::try_to_lock};
+    if (!lifecycle_lock.owns_lock()) {
+      return;
+    }
     PollRetirements();
+  }
+
+  void SynchronizeRetirements(std::source_location location) {
+    const std::unique_lock lifecycle_lock{lifecycle_latch_};
+    lifecycle_.RequireRunning("device allocator", location);
+    try {
+      DrainRetirements(location);
+    } catch (...) {
+      lifecycle_.MarkFailed();
+      throw;
+    }
   }
 
   void SetPeerAccess(Device peer, bool enabled, std::source_location location) {
@@ -383,6 +397,26 @@ class DeviceAllocatorImpl final {
         .pool_reserved_bytes_ = pool_stats.reserved_bytes_,
         .outstanding_storage_count_ = outstanding_storage_count_.load(std::memory_order_relaxed),
     };
+  }
+
+  [[nodiscard]] auto GetMemoryInfo(std::source_location location) const -> DeviceMemoryInfo {
+    const std::shared_lock lifecycle_lock{lifecycle_latch_};
+    ValidateUsable(location);
+    DeviceGuard device_guard{device_, *error_sink_, location};
+    size_t free_bytes = 0;
+    size_t total_bytes = 0;
+    CheckCuda(GetCudaApi().get_memory_info_(&free_bytes, &total_bytes), "cudaMemGetInfo", location);
+    return DeviceMemoryInfo{
+        .total_bytes_ = CheckedNarrow<uint64_t>(total_bytes, "device total memory", location),
+        .free_bytes_ = CheckedNarrow<uint64_t>(free_bytes, "device free memory", location),
+        .max_live_bytes_ = budget_.GetMaximumBytes(),
+    };
+  }
+
+  void ResetPeakMemoryStatistics(std::source_location location) {
+    const std::unique_lock lifecycle_lock{lifecycle_latch_};
+    lifecycle_.RequireRunning("device allocator", location);
+    budget_.ResetPeakBytes();
   }
 
   void Shutdown(std::source_location location) {
@@ -820,12 +854,22 @@ void DeviceAllocator::SetPeerAccess(Device peer, bool enabled, std::source_locat
 
 void DeviceAllocator::Poll() noexcept { impl_->Poll(); }
 
+void DeviceAllocator::SynchronizeRetirements(std::source_location location) { impl_->SynchronizeRetirements(location); }
+
 void DeviceAllocator::TrimTo(size_t target_reserved_bytes, std::source_location location) {
   impl_->TrimTo(target_reserved_bytes, location);
 }
 
 auto DeviceAllocator::GetStats(std::source_location location) const -> DeviceAllocatorStats {
   return impl_->GetStats(location);
+}
+
+auto DeviceAllocator::GetMemoryInfo(std::source_location location) const -> DeviceMemoryInfo {
+  return impl_->GetMemoryInfo(location);
+}
+
+void DeviceAllocator::ResetPeakMemoryStatistics(std::source_location location) {
+  impl_->ResetPeakMemoryStatistics(location);
 }
 
 void DeviceAllocator::Shutdown(std::source_location location) { impl_->Shutdown(location); }

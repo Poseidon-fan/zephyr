@@ -180,7 +180,7 @@ TEST(TpContextTest, AllReduceSumSupportsOutOfPlaceAndInPlace) {
       for (size_t rank = 0; rank < 2; ++rank) {
         workers[rank] = std::thread([&, rank] {
           try {
-            context->GetRank(rank).AllReduceSum(execution_contexts[rank], outputs[rank], inputs[rank]);
+            context->GetRank(rank).AllReduce(execution_contexts[rank], outputs[rank], inputs[rank], ttl::ReduceOp::SUM);
           } catch (...) {
             failures[rank] = std::current_exception();
           }
@@ -206,7 +206,7 @@ TEST(TpContextTest, AllReduceSumSupportsOutOfPlaceAndInPlace) {
       for (size_t rank = 0; rank < 2; ++rank) {
         workers[rank] = std::thread([&, rank] {
           try {
-            context->GetRank(rank).AllReduceSum(execution_contexts[rank], inputs[rank], inputs[rank]);
+            context->GetRank(rank).AllReduce(execution_contexts[rank], inputs[rank], inputs[rank], ttl::ReduceOp::SUM);
           } catch (...) {
             failures[rank] = std::current_exception();
           }

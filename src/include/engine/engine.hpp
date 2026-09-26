@@ -28,8 +28,12 @@
 namespace zephyr::engine {
 
 struct EngineOptions final {
+  /** Engine derives execution batch limits from scheduler_; context and memory settings remain user-configurable. */
   executor::ExecutorOptions executor_;
-  scheduler::SchedulerConfig scheduler_;
+  scheduler::SchedulerConfig scheduler_{scheduler::PagedSchedulerConfig{.max_num_seqs_ = 8,
+                                                                        .max_num_batched_tokens_ = 512,
+                                                                        .max_prefill_chunk_tokens_ = 512,
+                                                                        .max_decode_steps_before_prefill_ = 8}};
   /** Includes queued, running, and completed-but-unread choices; independent of GPU residency. */
   size_t max_outstanding_sequences_{256};
   /** Pause scheduling at this unread-output watermark; the current plan and terminal outputs may exceed it. */
@@ -41,11 +45,14 @@ struct EngineOptions final {
 /**
  * One model and a single control thread owning scheduling, sequences, and logical KV state.
  * Submit/Cancel may run concurrently; WaitForOutputs has one consumer. No user callback runs on the
- * control thread. Runtime is borrowed and must outlive the engine. Returned outputs own only CPU data.
+ * control thread. The engine owns its GPU runtime; returned outputs own only CPU data.
+ * Initialization profiles the selected devices; exclude concurrent allocations on those devices until
+ * Create returns. Independent device groups may initialize concurrently.
  */
 class Engine final {
  public:
-  [[nodiscard]] static auto Create(ttl::Runtime &runtime, EngineOptions options, executor::ExecutionFactory factory)
+  [[nodiscard]] static auto Create(EngineOptions options,
+                                   executor::ExecutionFactory factory = executor::CreateCausalLMFactory())
       -> std::unique_ptr<Engine>;
 
   Engine(const Engine &) = delete;
@@ -60,10 +67,12 @@ class Engine final {
   void Cancel(request_id_t request_id);
   /** Wait for increments or final results; empty means normal shutdown, failures rethrow after outputs drain. */
   [[nodiscard]] auto WaitForOutputs() -> std::vector<RequestOutput>;
-  /** Stop admission, finish in-flight work, terminate remaining requests, and join. Rethrows fatal failures. */
+  /** Stop admission, finish in-flight work, cancel remaining requests, and shut down the runtime. Rethrows failures. */
   void Close();
 
  private:
+  class RuntimeErrors;
+
   struct RequestState final {
     RequestState(request_id_t id, Request request, size_t num_sequences);
 
@@ -95,7 +104,7 @@ class Engine final {
     bool finished_{false};
   };
 
-  Engine(ttl::Runtime &runtime, EngineOptions options);
+  explicit Engine(EngineOptions options);
   void Run(executor::ExecutionFactory factory) noexcept;
   void Initialize(executor::ExecutionFactory factory);
   /** Consume queued commands at a safe execution boundary; returns whether shutdown was requested. */
@@ -112,8 +121,9 @@ class Engine final {
   /** Complete a request after every sequence has been retired. */
   void FinishRequest(RequestState &request);
 
-  ttl::Runtime &runtime_;
   const EngineOptions options_;
+  std::shared_ptr<RuntimeErrors> runtime_errors_;
+  std::unique_ptr<ttl::Runtime> runtime_;
   std::unique_ptr<executor::Executor> executor_;
   const executor::CausalLMExecutionSpec *generation_spec_{nullptr};
   const executor::EmbeddingExecutionSpec *embedding_spec_{nullptr};

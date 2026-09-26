@@ -66,7 +66,7 @@ void Engine::ExecuteGeneration(const scheduler::ScheduledBatch &batch) {
                                .prompt_length_ = sequence.prompt_length_,
                                .rng_ = *state.rng_});
   }
-  auto samples = sampler::Sample(runtime_, *context_, sampling_inputs);
+  auto samples = sampler::Sample(*runtime_, *context_, sampling_inputs);
   for (size_t index = 0; index < samples.size(); ++index) {
     const auto id = batch.sequences_[index].sequence_id_;
     auto &sequence = sequences_.at(id);
@@ -82,7 +82,7 @@ void Engine::ExecuteGeneration(const scheduler::ScheduledBatch &batch) {
     } else if (generation.max_new_tokens_.has_value() &&
                sequence.token_ids_.size() - sequence.prompt_length_ + 1 >= *generation.max_new_tokens_) {
       reason = FinishReason::LENGTH;
-    } else if (std::cmp_greater_equal(sequence.token_ids_.size(), generation_spec_->max_seq_len_)) {
+    } else if (std::cmp_greater_equal(sequence.token_ids_.size(), generation_spec_->limits_.max_seq_len_)) {
       reason = FinishReason::MODEL_LENGTH;
     }
     // The sampled token enters history now; its KV is produced only by a later forward call.

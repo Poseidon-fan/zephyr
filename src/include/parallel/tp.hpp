@@ -6,6 +6,7 @@
 #include <utility>
 
 #include <ttl/common/device.hpp>
+#include <ttl/distributed/collective.hpp>
 #include <ttl/distributed/communicator.hpp>
 #include <ttl/runtime/execution_context.hpp>
 #include <ttl/runtime/runtime.hpp>
@@ -24,8 +25,9 @@ class TpRankContext final {
   [[nodiscard]] auto Rank() const -> size_t;
   [[nodiscard]] auto WorldSize() const -> size_t;
   [[nodiscard]] auto Device() const -> ttl::Device;
-  /** Enqueue an in-place or out-of-place sum all-reduce on this rank's stream. */
-  void AllReduceSum(ttl::ExecutionContext &execution, ttl::Tensor &output, const ttl::Tensor &input) const;
+  /** Enqueue an in-place or out-of-place all-reduce on this rank's stream. */
+  void AllReduce(ttl::ExecutionContext &execution, ttl::Tensor &output, const ttl::Tensor &input,
+                 ttl::ReduceOp operation) const;
 
  private:
   friend class TpContext;

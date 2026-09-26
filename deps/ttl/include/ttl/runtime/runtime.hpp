@@ -79,11 +79,23 @@ class Runtime final {
   [[nodiscard]] auto GetDeviceProperties(Device device,
                                          std::source_location location = std::source_location::current()) const
       -> const DeviceProperties &;
+  /** @brief Query the registered device's CUDA memory without synchronizing or trimming its pool. */
+  [[nodiscard]] auto GetDeviceMemoryInfo(Device device,
+                                         std::source_location location = std::source_location::current()) const
+      -> DeviceMemoryInfo;
   [[nodiscard]] auto CanAccessPeer(Device device, Device peer_device,
                                    std::source_location location = std::source_location::current()) const -> bool;
   [[nodiscard]] auto GetStatus() const noexcept -> RuntimeStatus;
   [[nodiscard]] auto GetStatistics(std::source_location location = std::source_location::current()) const
       -> RuntimeStatistics;
+
+  /**
+   * @brief Start a device-wide peak window at the allocator's currently charged live and retiring capacity.
+   *
+   * The window covers every context sharing this runtime/device. Callers coordinate measurement boundaries; this
+   * method neither synchronizes streams nor polls retirements. Read the peak with GetStatistics().
+   */
+  void ResetPeakMemoryStatistics(Device device, std::source_location location = std::source_location::current());
 
   /** @brief Create an execution context backed by a new non-default CUDA stream. */
   [[nodiscard]] auto CreateExecutionContext(Device device, const ExecutionContextOptions &options = {},
@@ -112,6 +124,15 @@ class Runtime final {
   /** @brief Allocate a page-locked host buffer from the runtime cache. */
   [[nodiscard]] auto AllocatePinned(size_t bytes, std::source_location location = std::source_location::current())
       -> PinnedBuffer;
+
+  /**
+   * @brief Wait for released device storage to finish retiring, without trimming cached pool pages.
+   *
+   * Callers must synchronize the contexts that used the storage, finish releasing its owners, and exclude new
+   * retirements on this device until this returns. Live storage is not synchronized. A failed allocator or retirement
+   * wait is reported to the caller.
+   */
+  void SynchronizeMemory(Device device, std::source_location location = std::source_location::current());
 
   /** @brief Poll retirements and ask one CUDA memory pool to release cached pages down to the target. */
   void TrimMemory(Device device, size_t target_reserved_bytes,

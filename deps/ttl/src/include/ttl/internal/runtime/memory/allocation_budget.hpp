@@ -53,6 +53,8 @@ class AllocationBudget final {
   [[nodiscard]] auto GetCurrentBytes() const noexcept -> uint64_t;
   [[nodiscard]] auto GetPeakBytes() const noexcept -> uint64_t;
   [[nodiscard]] auto GetMaximumBytes() const noexcept -> uint64_t;
+  /** Caller must exclude concurrent reservations and releases while resetting the measurement window. */
+  void ResetPeakBytes() noexcept;
 
  private:
   void Release(uint64_t bytes) noexcept;

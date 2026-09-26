@@ -1,6 +1,8 @@
 #include "kv_cache/cache_engine.hpp"
 
+#include <array>
 #include <cstdint>
+#include <limits>
 #include <utility>
 
 #include <ttl/tensor/dtype.hpp>
@@ -10,20 +12,48 @@
 
 namespace zephyr::kv_cache {
 
-CacheEngine::CacheEngine(ttl::Runtime &runtime, CacheConfig config, ttl::Device device)
-    : config_(std::move(config)), device_(device) {
-  if (config_.capacity_.block_size_ == 0) {
+auto GetCacheBlockBytes(std::span<const LayerCacheSpec> layer_specs, ttl::DType dtype, size_t block_size) -> size_t {
+  if (block_size == 0) {
     throw InvalidArgumentException("KV cache block size must be positive");
   }
+  if (!ttl::IsFloating(dtype)) {
+    throw InvalidArgumentException("KV cache dtype must be a floating-point type");
+  }
+  if (layer_specs.empty()) {
+    throw InvalidArgumentException("KV cache must contain at least one layer specification");
+  }
+
+  const auto element_size = ttl::GetDTypeInfo(dtype).size_bytes_;
+  constexpr auto maximum = std::numeric_limits<size_t>::max();
+  size_t total_bytes = 0;
+  for (const auto &spec : layer_specs) {
+    if (spec.num_kv_heads_ == 0 || spec.key_head_dim_ == 0 || spec.value_head_dim_ == 0) {
+      throw InvalidArgumentException("KV cache layer dimensions must be positive");
+    }
+    if (spec.key_head_dim_ > maximum - spec.value_head_dim_) {
+      throw InvalidArgumentException("KV cache block byte count overflows");
+    }
+    auto layer_bytes = spec.key_head_dim_ + spec.value_head_dim_;
+    for (const auto factor : std::array{spec.num_kv_heads_, block_size, element_size}) {
+      if (layer_bytes > maximum / factor) {
+        throw InvalidArgumentException("KV cache block byte count overflows");
+      }
+      layer_bytes *= factor;
+    }
+    if (total_bytes > maximum - layer_bytes) {
+      throw InvalidArgumentException("KV cache block byte count overflows");
+    }
+    total_bytes += layer_bytes;
+  }
+  return total_bytes;
+}
+
+CacheEngine::CacheEngine(ttl::Runtime &runtime, CacheConfig config, ttl::Device device)
+    : config_(std::move(config)), device_(device) {
   if (config_.capacity_.num_gpu_blocks_ == 0) {
     throw InvalidArgumentException("KV cache GPU block count must be positive");
   }
-  if (!ttl::IsFloating(config_.dtype_)) {
-    throw InvalidArgumentException("KV cache dtype must be a floating-point type");
-  }
-  if (config_.layer_specs_.empty()) {
-    throw InvalidArgumentException("KV cache must contain at least one layer specification");
-  }
+  static_cast<void>(GetCacheBlockBytes(config_.layer_specs_, config_.dtype_, config_.capacity_.block_size_));
 
   auto context = runtime.CreateExecutionContext(device_);
   layer_caches_.reserve(config_.layer_specs_.size());
@@ -34,10 +64,6 @@ CacheEngine::CacheEngine(ttl::Runtime &runtime, CacheConfig config, ttl::Device 
 }
 
 auto CacheEngine::AllocateLayerCache(const LayerCacheSpec &spec, ttl::ExecutionContext &context) const -> LayerCache {
-  if (spec.num_kv_heads_ == 0 || spec.key_head_dim_ == 0 || spec.value_head_dim_ == 0) {
-    throw InvalidArgumentException("KV cache layer dimensions must be positive");
-  }
-
   const auto element_size = ttl::GetDTypeInfo(config_.dtype_).size_bytes_;
   if (16 % element_size != 0) {
     throw InvalidArgumentException("KV cache dtype cannot use the 16-byte key packing");

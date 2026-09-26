@@ -63,7 +63,7 @@ auto RowParallelLayer::Load(ttl::ExecutionContext &context, int64_t in_features,
 auto RowParallelLayer::Forward(ttl::ExecutionContext &context, const ttl::Tensor &input) const -> ttl::Tensor {
   auto output = projection_.Forward(context, input);
   if (rank_.WorldSize() > 1) {
-    rank_.AllReduceSum(context, output, output);
+    rank_.AllReduce(context, output, output, ttl::ReduceOp::SUM);
   }
   if (bias_.has_value()) {
     ttl::AddOut(context, output, output, *bias_);

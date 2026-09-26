@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <numeric>
 #include <optional>
 #include <span>
 #include <type_traits>
@@ -17,12 +18,14 @@
 #include <ttl/ops/cast.hpp>
 #include <ttl/ops/composition.hpp>
 #include <ttl/ops/copy.hpp>
+#include <ttl/ops/creation.hpp>
 #include <ttl/ops/reduction.hpp>
 #include <ttl/ops/scan.hpp>
 #include <ttl/ops/softmax.hpp>
 #include <ttl/ops/topk.hpp>
 #include <ttl/runtime/kernel_launch.hpp>
 #include <ttl/runtime/pinned_buffer.hpp>
+#include <ttl/tensor/layout.hpp>
 
 #include "common/exception.hpp"
 #include "sampler/kernels.cuh"
@@ -58,7 +61,8 @@ auto UploadRecords(ttl::Runtime &runtime, ttl::ExecutionContext &context, std::s
 }
 
 auto EnqueueGroup(ttl::Runtime &runtime, ttl::ExecutionContext &context, std::span<const SamplingInput> inputs,
-                  std::span<const float> uniforms, std::vector<size_t> indices, SamplingMode mode) -> PendingSamples {
+                  std::span<const float> uniforms, std::vector<size_t> indices, SamplingMode mode, bool copy_results)
+    -> std::optional<PendingSamples> {
   const auto batch_size = static_cast<int64_t>(indices.size());
   const auto vocabulary = inputs[indices.front()].logits_.GetNumElements();
   const auto greedy = mode == SamplingMode::GREEDY;
@@ -253,6 +257,9 @@ auto EnqueueGroup(ttl::Runtime &runtime, ttl::ExecutionContext &context, std::sp
     }
   });
 
+  if (!copy_results) {
+    return std::nullopt;
+  }
   auto pending = PendingSamples{
       .indices_ = std::move(indices),
       .rows_ = std::move(rows),
@@ -328,8 +335,9 @@ auto Sample(ttl::Runtime &runtime, ttl::ExecutionContext &context, std::span<con
   pending.reserve(groups.size());
   for (size_t group = 0; group < groups.size(); ++group) {
     if (!groups[group].empty()) {
-      pending.push_back(
-          EnqueueGroup(runtime, context, inputs, uniforms, std::move(groups[group]), static_cast<SamplingMode>(group)));
+      auto samples = EnqueueGroup(runtime, context, inputs, uniforms, std::move(groups[group]),
+                                  static_cast<SamplingMode>(group), true);
+      pending.push_back(std::move(*samples));
     }
   }
   // Pinned buffers and tensors retain their submitted uses; all groups share one final host wait.
@@ -355,6 +363,100 @@ auto Sample(ttl::Runtime &runtime, ttl::ExecutionContext &context, std::span<con
     }
   }
   return results;
+}
+
+auto ProfileSamplingMemory(ttl::Runtime &runtime, ttl::Device device, size_t max_rows, int64_t vocab_size,
+                           ttl::DType logits_dtype) -> size_t {
+  SamplingParams params;
+  ValidateSamplingParams(params, vocab_size);
+  if (max_rows == 0 || !std::in_range<int64_t>(max_rows) || !ttl::IsFloating(logits_dtype) ||
+      std::cmp_greater(max_rows, std::numeric_limits<int64_t>::max() / (vocab_size + 1))) {
+    throw InvalidArgumentException("sampling profiling requires a positive representable batch and floating logits");
+  }
+
+  const auto statistics = [&] {
+    for (const auto &entry : runtime.GetStatistics().devices_) {
+      if (entry.device_ == device) {
+        return entry;
+      }
+    }
+    throw InvalidArgumentException("sampling profiling requires a registered runtime device");
+  };
+  size_t required_bytes = 0;
+  const auto add_bytes = [&](uint64_t bytes) {
+    if (bytes > std::numeric_limits<size_t>::max() - required_bytes) {
+      throw OutOfMemoryException("sampling memory requirement exceeds the addressable byte range");
+    }
+    required_bytes += static_cast<size_t>(bytes);
+  };
+
+  runtime.SynchronizeMemory(device);
+  runtime.TrimMemory(device, 0);
+  const auto initial_statistics = statistics();
+  const auto initial_memory = runtime.GetDeviceMemoryInfo(device);
+  runtime.ResetPeakMemoryStatistics(device);
+  const auto initial_peak = statistics().peak_physical_in_use_bytes_;
+  {
+    auto context = runtime.CreateExecutionContext(device);
+    const auto logits = ttl::Zeros(context, ttl::Shape{static_cast<int64_t>(max_rows), vocab_size}, logits_dtype);
+    context.Synchronize();
+    add_bytes(statistics().peak_physical_in_use_bytes_ - initial_peak);
+
+    params.top_logprobs_ = static_cast<size_t>(vocab_size);
+    params.frequency_penalty_ = 0.5F;
+    params.presence_penalty_ = 0.5F;
+    params.repetition_penalty_ = 1.1F;
+    params.min_p_ = 0.1;
+    params.logits_bias_.reserve(static_cast<size_t>(vocab_size));
+    std::vector<token_id_t> history(static_cast<size_t>(vocab_size));
+    std::iota(history.begin(), history.end(), token_id_t{0});
+    for (const auto token : history) {
+      params.logits_bias_.emplace(token, 0.1F);
+    }
+    std::mt19937_64 rng{0};
+    std::vector<ttl::Tensor> rows;
+    rows.reserve(max_rows);
+    std::vector<SamplingInput> inputs;
+    inputs.reserve(max_rows);
+    for (size_t row = 0; row < max_rows; ++row) {
+      rows.push_back(ttl::Select(logits, 0, static_cast<int64_t>(row)));
+      inputs.push_back(
+          {.logits_ = rows.back(), .params_ = params, .history_ = history, .prompt_length_ = 0, .rng_ = rng});
+    }
+    std::vector<size_t> indices(max_rows);
+    std::iota(indices.begin(), indices.end(), size_t{0});
+    const std::vector<float> uniforms(max_rows, 0.5F);
+
+    for (const auto mode : {SamplingMode::GREEDY, SamplingMode::UNSORTED, SamplingMode::TOP_K, SamplingMode::TOP_P}) {
+      params.temperature_ = mode == SamplingMode::GREEDY ? 0.0 : 1.0;
+      params.top_k_ = mode == SamplingMode::TOP_K ? vocab_size : -1;
+      params.top_p_ = mode == SamplingMode::TOP_K || mode == SamplingMode::TOP_P ? 0.9 : 1.0;
+      runtime.SynchronizeMemory(device);
+      runtime.TrimMemory(device, 0);
+      runtime.ResetPeakMemoryStatistics(device);
+      const auto before_peak = statistics().peak_physical_in_use_bytes_;
+      static_cast<void>(EnqueueGroup(runtime, context, inputs, uniforms, indices, mode, false));
+      context.Synchronize();
+      // Scratch survives between modes; only newly allocated capacity and each mode's transient peak are added.
+      add_bytes(statistics().peak_physical_in_use_bytes_ - before_peak);
+    }
+
+    const auto final_statistics = statistics();
+    const auto final_memory = runtime.GetDeviceMemoryInfo(device);
+    const auto consumed = initial_memory.free_bytes_ > final_memory.free_bytes_
+                              ? initial_memory.free_bytes_ - final_memory.free_bytes_
+                              : uint64_t{0};
+    const auto pool_growth = final_statistics.pool_reserved_bytes_ > initial_statistics.pool_reserved_bytes_
+                                 ? final_statistics.pool_reserved_bytes_ - initial_statistics.pool_reserved_bytes_
+                                 : uint64_t{0};
+    // Native stream/event allocations are outside TTL's allocator peak; pool retention is already accounted for.
+    add_bytes(consumed > pool_growth ? consumed - pool_growth : uint64_t{0});
+  }
+
+  // Context destruction retires its scratch after the last explicit stream synchronization.
+  runtime.SynchronizeMemory(device);
+  runtime.TrimMemory(device, 0);
+  return required_bytes;
 }
 
 }  // namespace zephyr::sampler

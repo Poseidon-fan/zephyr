@@ -17,6 +17,14 @@ struct DeviceMemoryOptions final {
   uint64_t max_live_bytes_{0};
 };
 
+/** CUDA device memory snapshot and the runtime allocator's configured admission limit. */
+struct DeviceMemoryInfo final {
+  uint64_t total_bytes_;
+  uint64_t free_bytes_;
+  /** Zero disables the TTL budget; external allocations and cached pool pages are not charged. */
+  uint64_t max_live_bytes_;
+};
+
 /** Configures the process-wide page-locked host-memory cache and admission budget. */
 struct PinnedMemoryOptions final {
   size_t max_cached_bytes_{256U * 1024U * 1024U};
@@ -29,6 +37,10 @@ struct DeviceMemoryStatistics final {
   Device device_;
   uint64_t logical_live_bytes_;
   uint64_t retiring_bytes_;
+  /**
+   * Peak charged allocation capacity since construction or the last peak reset, including scratch and cuBLAS
+   * workspaces, live and retiring storage, and pending reservations. Excludes external memory and cached pool pages.
+   */
   uint64_t peak_physical_in_use_bytes_;
   uint64_t allocation_count_;
   uint64_t retirement_count_;

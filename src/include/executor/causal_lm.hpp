@@ -12,17 +12,23 @@
 
 namespace zephyr::executor {
 
+/** Capacity is resolved after loading and profiling; physical page counts are never a serving input. */
+struct KvCacheOptions final {
+  size_t block_size_{16};
+  /** Explicit per-rank KV budget; absent uses the executor's GPU memory utilization target. */
+  std::optional<size_t> memory_bytes_;
+};
+
 struct CausalLMOptions final {
-  /** Absent capacity permits initial prompts without saving KV, but no incremental decoding. */
-  std::optional<kv_cache::CacheCapacity> cache_capacity_;
+  /** Absent disables KV storage and permits only full-history prefill. */
+  std::optional<KvCacheOptions> kv_cache_{KvCacheOptions{}};
 };
 
 /** Generation capabilities shared by all ranks; device placement is reported separately. */
 struct CausalLMExecutionSpec final : ExecutionSpec {
   CausalLMExecutionSpec(const model::causal_lm::ModelSpec &model_spec,
-                        std::optional<kv_cache::CacheCapacity> cache_capacity);
+                        std::optional<kv_cache::CacheCapacity> cache_capacity, ExecutionLimits limits);
 
-  int64_t max_seq_len_;
   int64_t vocab_size_;
   std::optional<kv_cache::CacheCapacity> cache_capacity_;
   bool supports_packed_prefill_{false};
@@ -46,7 +52,7 @@ struct CausalLMBatch final : ExecutionBatch {
   std::vector<CausalLMInput> inputs_;
 };
 
-/** Bind causal-model loading and cache capacity before starting the rank workers. */
+/** Bind causal-model loading and cache policy before starting the rank workers. */
 [[nodiscard]] auto CreateCausalLMFactory(CausalLMOptions options = {},
                                          model::ModelLoader<model::causal_lm::CausalLM> loader = model::LoadCausalLM)
     -> ExecutionFactory;

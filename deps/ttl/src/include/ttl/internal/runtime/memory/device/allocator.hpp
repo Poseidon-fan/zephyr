@@ -11,6 +11,7 @@
 
 #include "ttl/common/device.hpp"
 #include "ttl/internal/runtime/memory/device/allocation.hpp"
+#include "ttl/runtime/memory.hpp"
 #include "ttl/runtime/stream.hpp"
 #include "ttl/tensor/dtype.hpp"
 #include "ttl/tensor/shape.hpp"
@@ -89,9 +90,13 @@ class DeviceAllocator final : public std::enable_shared_from_this<DeviceAllocato
 
   void SetPeerAccess(Device peer, bool enabled, std::source_location location = std::source_location::current());
   void Poll() noexcept;
+  void SynchronizeRetirements(std::source_location location = std::source_location::current());
   void TrimTo(size_t target_reserved_bytes, std::source_location location = std::source_location::current());
+  [[nodiscard]] auto GetMemoryInfo(std::source_location location = std::source_location::current()) const
+      -> DeviceMemoryInfo;
   [[nodiscard]] auto GetStats(std::source_location location = std::source_location::current()) const
       -> DeviceAllocatorStats;
+  void ResetPeakMemoryStatistics(std::source_location location = std::source_location::current());
   void Shutdown(std::source_location location = std::source_location::current());
 
   [[nodiscard]] auto GetDevice() const noexcept -> Device;

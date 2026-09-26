@@ -71,4 +71,14 @@ struct SamplingInput final {
 [[nodiscard]] auto Sample(ttl::Runtime &runtime, ttl::ExecutionContext &context, std::span<const SamplingInput> inputs)
     -> std::vector<SamplingResult>;
 
+/**
+ * Profile full-vocabulary sampling in a temporary independent context before allocating the KV cache.
+ * Returns conservative additional GPU bytes, including input logits, context storage, cold scratch growth and
+ * retained scratch. Every sampling mode is measured at max_rows; their transient peaks are added to cover mixed
+ * groups without assuming that asynchronous frees complete between groups. CPU result materialization is skipped.
+ * The caller must synchronize other work on this device and exclude concurrent allocations or peak-stat resets.
+ */
+[[nodiscard]] auto ProfileSamplingMemory(ttl::Runtime &runtime, ttl::Device device, size_t max_rows, int64_t vocab_size,
+                                         ttl::DType logits_dtype) -> size_t;
+
 }  // namespace zephyr::sampler

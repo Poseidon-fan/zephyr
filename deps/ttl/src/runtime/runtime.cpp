@@ -229,6 +229,12 @@ auto RuntimeState::GetDeviceContext(Device device, std::source_location location
   return device_contexts_[FindDeviceIndex(device, location)];
 }
 
+auto RuntimeState::GetDeviceMemoryInfo(Device device, std::source_location location) const -> DeviceMemoryInfo {
+  const std::scoped_lock lock{lifecycle_latch_};
+  EnsureRunning(location);
+  return GetDeviceContext(device, location)->GetAllocator()->GetMemoryInfo(location);
+}
+
 auto RuntimeState::CanAccessPeer(Device device, Device peer_device, std::source_location location) const -> bool {
   const auto device_index = FindDeviceIndex(device, location);
   const auto peer_device_index = FindDeviceIndex(peer_device, location);
@@ -302,6 +308,12 @@ auto RuntimeState::GetStatistics(std::source_location location) const -> Runtime
       .outstanding_buffer_count_ = pinned.outstanding_buffer_count_,
   };
   return result;
+}
+
+void RuntimeState::ResetPeakMemoryStatistics(Device device, std::source_location location) {
+  const std::scoped_lock lock{lifecycle_latch_};
+  EnsureRunning(location);
+  GetDeviceContext(device, location)->GetAllocator()->ResetPeakMemoryStatistics(location);
 }
 
 void RuntimeState::EnsureRunning(std::source_location location) const {
@@ -429,6 +441,20 @@ auto RuntimeState::AllocatePinned(size_t bytes, std::source_location location) -
     throw CaptureError("cannot allocate pinned memory during CUDA graph capture", location);
   }
   return pinned_allocator_->Allocate(bytes, location);
+}
+
+void RuntimeState::SynchronizeMemory(Device device, std::source_location location) {
+  std::shared_ptr<DeviceAllocator> allocator;
+  {
+    const std::scoped_lock lock{lifecycle_latch_};
+    EnsureRunning(location);
+    if (HasActiveCapture()) {
+      throw CaptureError("cannot synchronize device memory during CUDA graph capture", location);
+    }
+    allocator = GetDeviceContext(device, location)->GetAllocator();
+  }
+  // Other devices may still need runtime services to complete a retired allocation's cross-device dependencies.
+  allocator->SynchronizeRetirements(location);
 }
 
 void RuntimeState::TrimMemory(Device device, size_t target_reserved_bytes, std::source_location location) {
@@ -578,6 +604,10 @@ auto Runtime::GetDeviceProperties(Device device, std::source_location location) 
   return state_->GetDeviceContext(device, location)->GetProperties();
 }
 
+auto Runtime::GetDeviceMemoryInfo(Device device, std::source_location location) const -> DeviceMemoryInfo {
+  return state_->GetDeviceMemoryInfo(device, location);
+}
+
 auto Runtime::CanAccessPeer(Device device, Device peer_device, std::source_location location) const -> bool {
   return state_->CanAccessPeer(device, peer_device, location);
 }
@@ -586,6 +616,10 @@ auto Runtime::GetStatus() const noexcept -> RuntimeStatus { return state_->GetSt
 
 auto Runtime::GetStatistics(std::source_location location) const -> RuntimeStatistics {
   return state_->GetStatistics(location);
+}
+
+void Runtime::ResetPeakMemoryStatistics(Device device, std::source_location location) {
+  state_->ResetPeakMemoryStatistics(device, location);
 }
 
 auto Runtime::CreateExecutionContext(Device device, const ExecutionContextOptions &options,
@@ -632,6 +666,10 @@ auto Runtime::FromBlob(ExecutionContext &context, ExternalDeviceMemory memory, c
 
 auto Runtime::AllocatePinned(size_t bytes, std::source_location location) -> PinnedBuffer {
   return state_->AllocatePinned(bytes, location);
+}
+
+void Runtime::SynchronizeMemory(Device device, std::source_location location) {
+  state_->SynchronizeMemory(device, location);
 }
 
 void Runtime::TrimMemory(Device device, size_t target_reserved_bytes, std::source_location location) {

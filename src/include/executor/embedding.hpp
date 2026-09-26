@@ -16,14 +16,12 @@ struct EmbeddingBatch final : ExecutionBatch {
 };
 
 struct EmbeddingExecutionSpec final : ExecutionSpec {
-  explicit EmbeddingExecutionSpec(const model::embedding::ModelSpec &spec)
-      : ExecutionSpec(spec.device_, spec.dtype_),
-        max_seq_len_(spec.max_seq_len_),
+  EmbeddingExecutionSpec(const model::embedding::ModelSpec &spec, ExecutionLimits limits)
+      : ExecutionSpec(spec.device_, spec.dtype_, limits),
         vocab_size_(spec.vocab_size_),
         embedding_size_(spec.embedding_size_),
         causal_attention_(spec.causal_attention_) {}
 
-  int64_t max_seq_len_;
   int64_t vocab_size_;
   int64_t embedding_size_;
   bool causal_attention_;
