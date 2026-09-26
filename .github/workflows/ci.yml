@@ -1,0 +1,109 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: Code checks
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          version: "0.11.1"
+          python-version: "3.12"
+          enable-cache: true
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit-${{ runner.os }}-py312-${{ hashFiles('.pre-commit-config.yaml') }}
+      - name: Install check tools
+        run: uv sync --locked --only-dev
+      - name: Check all tracked files
+        run: uv run --no-sync pre-commit run --all-files --show-diff-on-failure
+
+  build:
+    name: CUDA ${{ matrix.cuda }} / Python ${{ matrix.python }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # NVCC 12.0/12.1 cannot compile std::source_location with libstdc++.
+          - cuda: "12.2.2"
+            python: "3.10"
+          - cuda: "13.0.2"
+            python: "3.12"
+    # The official devel images include matching CUDA and NCCL development libraries.
+    container: nvidia/cuda:${{ matrix.cuda }}-devel-ubuntu22.04
+    defaults:
+      run:
+        shell: bash
+    env:
+      CUDAARCHS: "80"
+      CMAKE_BUILD_PARALLEL_LEVEL: "2"
+      LD_LIBRARY_PATH: /usr/local/cuda/lib64
+      ZEPHYR_CI_BUILD_DIR: ${{ github.workspace }}/build/ci
+    steps:
+      - name: Install build tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends build-essential ca-certificates curl git ninja-build xz-utils
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          version: "0.11.1"
+          python-version: ${{ matrix.python }}
+          enable-cache: true
+      - name: Install CMake
+        # Keep CMake's GoogleTest discovery scripts available after the isolated build exits.
+        run: |
+          uv tool install cmake==4.4.0
+          uv tool dir --bin >> "$GITHUB_PATH"
+      - name: Build source distribution, wheel, and CPU tests
+        # uv builds the wheel from the sdist; one native build also produces the test binaries.
+        run: |
+          uv build \
+            -Cbuild-dir="$ZEPHYR_CI_BUILD_DIR" \
+            -Ccmake.define.ZEPHYR_BUILD_TESTING=ON \
+            -Ccmake.define.TTL_BUILD_TESTING=ON \
+            '-Cbuild.targets=_C;exception_test;logger_test;macros_test;ttl_contract_tests;ttl_common_tests;ttl_tensor_host_tests;ttl_runtime_host_tests;ttl_distributed_unit_tests'
+      - name: Run existing CPU tests
+        run: |
+          ctest --test-dir "$ZEPHYR_CI_BUILD_DIR/test" \
+            -R '^(ExceptionTest|LoggerTest|MacrosTest)\.' --no-tests=error --output-on-failure
+          ctest --test-dir "$ZEPHYR_CI_BUILD_DIR/deps/ttl" \
+            -L host --no-tests=error --output-on-failure
+      - name: Verify wheel installation
+        run: |
+          uv venv .venv
+          wheels=(dist/*.whl)
+          uv pip install --python .venv/bin/python "${wheels[0]}[server]"
+          .venv/bin/python -I -c "from zephyr import _C, Engine, AsyncEngine; from zephyr.server import create_app"
+          .venv/bin/zephyr --help
+          .venv/bin/zephyr serve --help
+          uv pip check --python .venv/bin/python
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: zephyr-cu${{ matrix.cuda }}-py${{ matrix.python }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7

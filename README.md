@@ -33,7 +33,7 @@ Python provides a thin wrapper for tokenization and serving; the inference engin
 ## Quick Start
 
 Requires Linux, an NVIDIA GPU with compute capability 8.0 or newer, Python 3.10+, a C++20 compiler,
-CUDA Toolkit, NCCL, CMake 3.24+, and [uv](https://docs.astral.sh/uv/getting-started/installation/).
+CUDA Toolkit 12.2+, NCCL, CMake 3.24+, and [uv](https://docs.astral.sh/uv/getting-started/installation/).
 
 > [!NOTE]
 > Currently supported models: **Qwen3 dense models**, in FP16, BF16, and FP32. More architectures are on the roadmap.
@@ -121,6 +121,8 @@ uv run --no-sync zephyr serve --help
 
 - [ ] **Code refinement** — Review and polish code developed in collaboration with coding agents,
   focusing on correctness, clarity, and performance.
+- [ ] **Test coverage** — Add tests for core components and end-to-end inference, including GPU kernels,
+  tensor parallelism, and serving.
 - [ ] **More models** — Expand model support beyond the current Qwen3 dense architecture.
 - [ ] **CUDA Graphs** — Integrate TTL's existing graph capture and replay support into Zephyr,
   addressing buffer stability and capture constraints in the execution path.
