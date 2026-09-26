@@ -19,6 +19,7 @@ file(
 )
 
 pybind11_add_module(_C MODULE ${ZEPHYR_PYTHON_BINDING_SOURCES})
+add_dependencies(_C clangd-db)
 target_compile_features(_C PRIVATE cxx_std_20)
 target_link_libraries(_C PRIVATE zephyr::core zephyr::project_warnings)
 
