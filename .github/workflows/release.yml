@@ -1,0 +1,64 @@
+name: Release
+
+on:
+  push:
+    branches: [master]
+    paths: [VERSION]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    if: github.ref == 'refs/heads/master'
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    needs: validate
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Publish source release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          version=$(<VERSION)
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::VERSION must contain a version in X.Y.Z format."
+            exit 1
+          fi
+          tag="v$version"
+
+          releases=$(gh api --paginate "repos/$GH_REPO/releases" --jq '.[].tag_name')
+          if grep -Fxq -- "$tag" <<< "$releases"; then
+            echo "Release $tag already exists; leaving it unchanged."
+            exit 0
+          fi
+
+          if git show-ref --verify --quiet "refs/tags/$tag"; then
+            if [[ "$(git rev-parse "refs/tags/$tag^{commit}")" != "$GITHUB_SHA" ]]; then
+              echo "::error::Tag $tag points to a different commit. Bump VERSION to publish new code."
+              exit 1
+            fi
+          else
+            # Creating the ref atomically prevents a concurrent run from substituting another commit.
+            gh api "repos/$GH_REPO/git/refs" \
+              -f ref="refs/tags/$tag" -f sha="$GITHUB_SHA" > /dev/null
+          fi
+
+          gh release create "$tag" --verify-tag --target "$GITHUB_SHA" \
+            --title "$tag" --generate-notes
