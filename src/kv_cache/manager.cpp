@@ -246,26 +246,8 @@ auto KVCacheManager::GetSlotMapping(sequence_id_t sequence_id, size_t start_toke
   return slots;
 }
 
-auto KVCacheManager::GetBlockTable(sequence_id_t sequence_id, size_t max_blocks) const
-    -> std::optional<std::vector<int32_t>> {
-  const auto sequence = sequence_blocks_.find(sequence_id);
-  if (sequence == sequence_blocks_.end()) {
-    return std::nullopt;
-  }
-  if (sequence->second.block_ids_.size() > max_blocks) {
-    throw InvalidArgumentException("KV cache block table capacity is smaller than the sequence");
-  }
-
-  std::vector<int32_t> block_table;
-  block_table.reserve(max_blocks);
-  for (const auto block_id : sequence->second.block_ids_) {
-    if (!std::in_range<int32_t>(block_id)) {
-      throw InvalidArgumentException("KV cache block ID does not fit in the attention block table");
-    }
-    block_table.push_back(static_cast<int32_t>(block_id));
-  }
-  block_table.resize(max_blocks, static_cast<int32_t>(block_pool_.GetNullBlockId()));
-  return block_table;
+auto KVCacheManager::GetBlockTable(sequence_id_t sequence_id) const -> std::span<const block_id_t> {
+  return sequence_blocks_.at(sequence_id).block_ids_;
 }
 
 auto KVCacheManager::GetNumUnreservedBlocks() const -> size_t {

@@ -54,9 +54,12 @@ class KVCacheManager final {
   [[nodiscard]] auto GetSlotMapping(sequence_id_t sequence_id, size_t start_token, size_t num_tokens) const
       -> std::optional<std::vector<int64_t>>;
 
-  /** Return a sequence's physical page table padded to a fixed batch width. */
-  [[nodiscard]] auto GetBlockTable(sequence_id_t sequence_id, size_t max_blocks) const
-      -> std::optional<std::vector<int32_t>>;
+  /**
+   * Borrow the allocated physical page IDs of a registered sequence, without padding.
+   * Throws std::out_of_range for an unknown sequence. The view is invalidated by AllocateSlots or Free for
+   * this sequence, or by moving or destroying the manager; operations on other sequences preserve it.
+   */
+  [[nodiscard]] auto GetBlockTable(sequence_id_t sequence_id) const -> std::span<const block_id_t>;
 
   [[nodiscard]] auto GetBlockSize() const noexcept -> size_t { return capacity_.block_size_; }
   [[nodiscard]] auto GetNumGpuBlocks() const noexcept -> size_t { return block_pool_.GetNumGpuBlocks(); }

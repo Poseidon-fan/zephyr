@@ -1,10 +1,14 @@
 add_library(
     zephyr_kv_cache
     OBJECT
+    block_hash.cpp
     block_pool.cpp
     cache_engine.cpp
     manager.cpp
 )
+
+# xxHash 0.8.1 is compiled privately from its vendored upstream header.
+target_include_directories(zephyr_kv_cache SYSTEM PRIVATE "${PROJECT_SOURCE_DIR}/deps/3rd/xxhash")
 
 target_include_directories(
     zephyr_kv_cache
