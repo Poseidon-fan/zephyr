@@ -180,9 +180,9 @@ void LaunchCumulativeSumContiguous(cudaStream_t stream, const CumulativeSumParam
   // Generated row keys reset the prefix at each boundary without a key buffer or one launch per row.
   const auto num_items = static_cast<int32_t>(parameters.slice_count_ * parameters.axis_size_);
   const auto axis_size = static_cast<int32_t>(parameters.axis_size_);
-  CheckCuda(cub::DeviceScan::InclusiveSumByKey(
-                workspace, workspace_bytes, MakeScanRows(axis_size), reinterpret_cast<const float *>(parameters.input_),
-                reinterpret_cast<float *>(parameters.output_), num_items, cub::Equality{}, stream),
+  CheckCuda(cub::DeviceScan::InclusiveSumByKey(workspace, workspace_bytes, MakeScanRows(axis_size),
+                                               reinterpret_cast<const float *>(parameters.input_),
+                                               reinterpret_cast<float *>(parameters.output_), num_items, {}, stream),
             "cub::DeviceScan::InclusiveSumByKey", location);
 }
 
