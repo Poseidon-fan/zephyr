@@ -18,7 +18,7 @@ jobs:
     if: github.ref == 'refs/heads/master'
     uses: ./.github/workflows/ci.yml
 
-  publish:
+  draft:
     needs: validate
     runs-on: ubuntu-22.04
     timeout-minutes: 5
@@ -30,7 +30,7 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
-      - name: Publish source release
+      - name: Create source release draft
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -61,4 +61,4 @@ jobs:
           fi
 
           gh release create "$tag" --verify-tag --target "$GITHUB_SHA" \
-            --title "$tag" --generate-notes
+            --title "$tag" --generate-notes --draft
